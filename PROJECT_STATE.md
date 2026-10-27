@@ -23,7 +23,7 @@ npm run seed          # seeds demo org, users, Zimbabwean inventory, POs, and re
 npm run dev:server    # http://127.0.0.1:4000 (running in background)
 npm run dev:web       # http://localhost:5173 (running in background)
 npm test              # 39 server tests (all passing)
-npm test -w web       # 5 frontend routing, keyboard accessibility & portal tests (all passing)
+npm test -w web       # 6 frontend routing, keyboard accessibility, multi-currency & 3-tier sub-nav tests (all passing)
 npm run verify-ledger # audits ledger invariants (Ledger OK.)
 ```
 
@@ -43,10 +43,23 @@ npm run verify-ledger # audits ledger invariants (Ledger OK.)
   2. **Eliminated Duplicate `useCallback` / `useEffect` Fetch Loops Across 5 Pages:** Refactored `Organisation.tsx`, `Products.tsx`, `Warehouses.tsx`, `Procurement.tsx`, and `Operations.tsx` to use functional state updates (`setX((prev) => prev || defaultId)`) and depend only on active query filters instead of default form dropdown states.
   3. **Scoped Inventory Reports by Branch:** Scoped `warehouseStockSummary` and `departmentConsumption` in `GET /api/reports/inventory` (`server/src/inventory/routes.ts`) to the assigned branch when queried by a branch-bound Inventory Manager.
   4. **Human-Readable API Error Mapping & Keyboard Shortcut Display:** Added structured error code mapping in `web/src/api.ts` and `web/src/pages/Login.tsx` (preserving `ApiError.code`), and updated `web/src/components/Shell.tsx` to dynamically show `Alt+1..{cfg.items.length}`.
+- **Stage 6 (Zimbabwean SME Identity, 3-Tier Sub-Navigation Architecture & Zero-Computer-Background UX):**
+  1. **Exact Zimbabwean Visual Identity (`web/src/styles.css`):** Implemented `zimGreen` (`#114B3E` / `#0d3b30` / `#092922`), `zimGold` (`#C59B27`), `zimCharcoal` (`#26302C` / `#1C2421`), `zimCream` (`#FAF8F5`) with `#FFFFFF` surfaces and `#E7E5E4` borders, the 4px Ndebele stepped geometric ribbon (`.ndebele-ribbon`), and the Great Zimbabwe dry-stone chevron frieze (`.denderedzwa-frieze`).
+  2. **Global Zimbabwean Store Context (`web/src/zimContext.tsx`):** Added instant Multi-Currency Switcher (`USD $`, `ZiG`, `ZAR R`), Vernacular Language Helper (`English + Shona/Ndebele`, `ChiShona`, `IsiNdebele`, `English Only`), Visual Easy Mode toggle, Role View Switcher (`Storefloor View` vs `Executive View`), ZESA Load-Shedding Offline Status & Sync widget, and ZIMRA FDMS fiscal config.
+  3. **3-Tier Anti-Clutter Sub-Navigation Across All 9 Modules:**
+     - **1. Dashboard (`Dashboard.tsx`):** `1. Overview & Quick Actions` (max 4 KPI cards + 4 oversized step buttons) | `2. Visual Charts & Trends` | `3. Reorder Alerts` | `4. Recent Floor Activity` + 1-Tap WhatsApp Daily Summary & Reorder List modal.
+     - **2. Products (`Products.tsx`):** `1. Stock Catalog` (Visual Picture Cards with oversized `+1 Add`, `-1 Issue`, `+Bulk` steppers & Compact Table toggle) | `2. Batch & Expiry (MCAZ Pharmacy / Agro FEFO)` | `3. Serial / IMEI & Warranty (Solar / Electronics)` | `4. Paid & Uncollected Stock (Hardware "Collect Later" / Lay-By)`.
+     - **3. Stock Movements (`Operations.tsx`):** `1. Movement History` | `2. Till Shifts & Cash-Up` (USD, ZiG, ZAR, EcoCash, InnBucks, OneMoney) | `3. Damaged & Shrinkage Log` (mandatory reason codes).
+     - **4. Receiving / GRN (`Procurement.tsx`):** `1. 1-2-3 Guided Goods Receiving Wizard` | `2. Cross-Border Landed Cost Calculator` | `3. Supplier Balances Owed (Creditors)`.
+     - **5. Transfers (`Transfers.tsx`):** `1. Move Between Depts / Branches` | `2. Break Bulk (Crate/Bale/Sling -> Single Shelf Units)` | `3. Recipe / Butchery / Bakery Yield Transformation`.
+     - **6. Departments (`Warehouses.tsx`):** `1. Store & Yard Zones` | `2. Customer Credit & Farmers Debtors Book ("Chikwereti")` with WhatsApp reminders.
+     - **7. Reports (`Reports.tsx`):** `1. ZIMRA FDMS & 15% VAT Compliance` | `2. Multi-Currency Valuation (USD/ZiG/ZAR)` | `3. Item Profit & Fast Movers`.
+     - **8. Users (`Users.tsx`):** `1. Staff 4-Digit Fast PIN Directory` | `2. Role Permissions & Anti-Fraud Locks`.
+     - **9. Settings (`Organisation.tsx`):** `1. Daily Exchange Rates (1 USD to ZiG & ZAR)` | `2. ZIMRA FDMS Virtual Device Config` | `3. Offline Sync & Vernacular Preferences`.
 
 ## Actual Test Results
 - **Backend Automated Tests (`npm test`):** **39 / 39 passing** (`0` failures) across `server/test/app.test.ts` (10 auth, session, CSRF, lockout, and role-guard tests) and `server/test/inventory.test.ts` (29 ledger, packaging, negative-stock, idempotency, reversal, immutability, randomized property, PO, requisition, governance, approvals queue, backup/restore, concurrency, approval auditability, branch isolation, and safe file upload tests).
-- **Frontend Automated Tests (`npm test -w web`):** **5 / 5 passing** (`0` failures) in `web/src/App.test.tsx`.
+- **Frontend Automated Tests (`npm test -w web`):** **6 / 6 passing** (`0` failures) in `web/src/App.test.tsx`.
 - **Production Frontend Build (`npm run build -w web`):** **Passing** (`tsc --noEmit && vite build`).
 - **Ledger Invariant Verification (`npm run verify-ledger`):** **`Ledger OK.`** (`0` discrepancies).
 

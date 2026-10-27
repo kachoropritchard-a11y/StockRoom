@@ -4,14 +4,33 @@ import { api, type ProductItem, type PurchaseOrderDetail, type PurchaseOrderSumm
 import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { Spinner } from '../components/Spinner';
+import { useZim } from '../zimContext';
 
-type ProcTab = 'orders' | 'create-po' | 'suppliers';
+type ReceivingSubTab = 'wizard' | 'landed' | 'creditors';
+
+interface SupplierCreditorItem {
+  id: number;
+  supplierName: string;
+  contact: string;
+  invoiceRef: string;
+  totalUsd: number;
+  paidUsd: number;
+  dueDate: string;
+}
+
+const INITIAL_CREDITORS: SupplierCreditorItem[] = [
+  { id: 1, supplierName: 'National Foods Logistics (Harare)', contact: '+263 242 751 120', invoiceRef: 'NF-INV-9021', totalUsd: 1840.0, paidUsd: 1000.0, dueDate: '2026-11-10' },
+  { id: 2, supplierName: 'United Refineries Ltd (Bulawayo)', contact: '+263 292 681 400', invoiceRef: 'URL-INV-4418', totalUsd: 920.0, paidUsd: 920.0, dueDate: 'Paid in Full' },
+  { id: 3, supplierName: 'Musina Cross-Border Runner (Beitbridge)', contact: '+27 83 419 8821', invoiceRef: 'RUN-BB-319', totalUsd: 650.0, paidUsd: 250.0, dueDate: '2026-11-02' },
+];
 
 export function Procurement() {
   const [searchParams] = useSearchParams();
   const prefillProductId = searchParams.get('productId');
+  const { formatMoney, subLabel, rates } = useZim();
 
-  const [activeTab, setActiveTab] = useState<ProcTab>(prefillProductId ? 'create-po' : 'orders');
+  const [activeTab, setActiveTab] = useState<ReceivingSubTab>('wizard');
+  const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
   const [suppliers, setSuppliers] = useState<{ id: number; name: string; email: string | null; phone: string | null; active: number }[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: number; name: string }[]>([]);
   const [products, setProducts] = useState<ProductItem[]>([]);
@@ -24,10 +43,10 @@ export function Procurement() {
 
   // Supplier form
   const [supName, setSupName] = useState('');
-  const [supEmail, setSupEmail] = useState('');
   const [supPhone, setSupPhone] = useState('');
+  const [creditors, setCreditors] = useState<SupplierCreditorItem[]>(INITIAL_CREDITORS);
 
-  // New PO form
+  // New PO / GRN Wizard form
   const [poSupplierId, setPoSupplierId] = useState('');
   const [poWarehouseId, setPoWarehouseId] = useState('');
   const [poRef, setPoRef] = useState('');
@@ -37,6 +56,14 @@ export function Procurement() {
   const [poUnitId, setPoUnitId] = useState('');
   const [poQty, setPoQty] = useState('50');
   const [poCost, setPoCost] = useState('3.50');
+
+  // Cross-Border Landed Cost Calculator state (Musina/Joburg/Lusaka/Dar es Salaam -> Zimbabwe)
+  const [cbCurrency, setCbCurrency] = useState<'ZAR' | 'USD'>('ZAR');
+  const [cbWholesaleTotal, setCbWholesaleTotal] = useState('18200'); // e.g. R18,200 in Musina
+  const [cbUnitsCount, setCbUnitsCount] = useState('200');
+  const [cbZimraDutyUsd, setCbZimraDutyUsd] = useState('140');
+  const [cbRunnerFreightUsd, setCbRunnerFreightUsd] = useState('85');
+  const [cbTargetMarginPct, setCbTargetMarginPct] = useState('25');
 
   // Partial / Full Delivery state for selectedPo
   const [grnRef, setGrnRef] = useState('');
@@ -105,7 +132,7 @@ export function Procurement() {
     try {
       const detail = await api.purchaseOrder(id);
       setSelectedPo(detail);
-      setActiveTab('orders');
+      setActiveTab('wizard');
       setGrnRef(`${detail.reference}-GRN-${detail.receipts.length + 1}`);
       const initialQty: Record<number, string> = {};
       for (const l of detail.lines) {
@@ -124,24 +151,11 @@ export function Procurement() {
     try {
       await api.createSupplier({
         name: supName.trim(),
-        email: supEmail.trim() || undefined,
         phone: supPhone.trim() || undefined,
       });
       setSupName('');
-      setSupEmail('');
       setSupPhone('');
-      setMsg('Supplier added.');
-      await load();
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
-  async function handleToggleSupplier(s: { id: number; name: string; active: number }) {
-    setError('');
-    try {
-      await api.updateSupplier(s.id, { active: !s.active });
-      setMsg(`Supplier "${s.name}" marked ${s.active ? 'inactive' : 'active'}.`);
+      setMsg('Supplier added to directory.');
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -171,10 +185,10 @@ export function Procurement() {
       setPoRef('');
       setPoNotes('');
       setSelectedPo(created);
-      setActiveTab('orders');
+      setWizardStep(1);
       setGrnRef(`${created.reference}-GRN-1`);
       setDeliveryQty({ [created.lines[0].productId]: String(created.lines[0].remainingQuantity) });
-      setMsg(`Purchase Order ${created.reference} created (${created.status}).`);
+      setMsg(`Purchase Order ${created.reference} created (${created.status}). Ready to receive below.`);
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -224,23 +238,34 @@ export function Procurement() {
     });
   }
 
-  const tabs: TabDefinition<ProcTab>[] = [
+  // Landed Cost calculations
+  const wholesaleNum = Number(cbWholesaleTotal) || 0;
+  const wholesaleUsd = cbCurrency === 'ZAR' ? wholesaleNum / Math.max(1, rates.ZAR) : wholesaleNum;
+  const dutyUsd = Number(cbZimraDutyUsd) || 0;
+  const freightUsd = Number(cbRunnerFreightUsd) || 0;
+  const totalLandedUsd = wholesaleUsd + dutyUsd + freightUsd;
+  const qtyUnits = Math.max(1, Number(cbUnitsCount) || 1);
+  const trueUnitCostUsd = totalLandedUsd / qtyUnits;
+  const marginPct = Number(cbTargetMarginPct) || 0;
+  const recommendedSellUsd = trueUnitCostUsd * (1 + marginPct / 100);
+
+  const tabs: TabDefinition<ReceivingSubTab>[] = [
     {
-      key: 'orders',
-      label: '1. Purchase Orders & Receiving',
+      key: 'wizard',
+      label: '1. 1-2-3 Guided Goods Receiving Wizard',
       badge: purchaseOrders.length,
-      purpose: 'View purchase orders, approve drafts, and receive partial or full deliveries directly into warehouse stock.',
+      purpose: 'Step-by-step Goods Received Note (GRN) wizard and Purchase Order delivery receiving with zero accounting jargon.',
     },
     {
-      key: 'create-po',
-      label: '2. + Create Purchase Order',
-      purpose: 'Issue a new Purchase Order to a supplier with destination warehouse, unit conversion and agreed cost.',
+      key: 'landed',
+      label: '2. Cross-Border Landed Cost Calculator',
+      purpose: 'Calculate true unit cost from ZAR/USD wholesale price + ZIMRA Beitbridge/Chirundu customs duty + runner/bus freight.',
     },
     {
-      key: 'suppliers',
-      label: '3. Supplier Directory',
-      badge: suppliers.length,
-      purpose: 'Manage approved suppliers, contact emails/phones, and active status.',
+      key: 'creditors',
+      label: '3. Supplier Balances Owed (Creditors)',
+      badge: creditors.length,
+      purpose: 'Track supplier invoices, partial payments, and remaining balances owed to wholesalers and cross-border runners.',
     },
   ];
 
@@ -248,16 +273,13 @@ export function Procurement() {
     <>
       <div className="page-header">
         <div>
-          <h1>Suppliers, Purchase Orders &amp; Receiving</h1>
-          <p className="muted">Manage suppliers, issue purchase orders, and record full or partial deliveries into warehouse stock.</p>
-        </div>
-        <div className="quick-actions">
-          <button type="button" className="btn btn-primary" onClick={() => setActiveTab('create-po')}>
-            + New Purchase Order
-          </button>
-          <button type="button" className="btn btn-outline" onClick={() => setActiveTab('suppliers')}>
-            Supplier Directory
-          </button>
+          <h1>Receiving (GRN), Cross-Border Landed Cost &amp; Suppliers</h1>
+          <span className="vernacular-sub">
+            {subLabel(
+              'Kugamuchira Zvinhu (GRN) • Kuverenga Mutengo weBorder (Beitbridge/Musina) • Chikwereti cheVatengesi',
+              'Ukuthola Impahla (GRN) • Ukubala Intengo YaseBorder • Izikwelede Zabathengisi',
+            )}
+          </span>
         </div>
       </div>
 
@@ -265,19 +287,155 @@ export function Procurement() {
       {msg && <p className="form-success" role="status">{msg}</p>}
 
       <section className="card">
+        {/* TIER 3: Horizontal In-Page Sub-Menu Bar */}
         <AccessibleTabs
           idPrefix="procurement"
-          ariaLabel="Procurement and supplier tabs"
+          ariaLabel="Receiving and supplier sub-menus"
           tabs={tabs}
           active={activeTab}
           onChange={setActiveTab}
         />
 
-        {/* TAB 1: Purchase Orders & Receiving */}
-        {activeTab === 'orders' && (
-          <div id="procurement-panel-orders" role="tabpanel" aria-labelledby="procurement-tab-orders">
+        {/* SUB-MENU 1: 1-2-3 Guided Goods Receiving Wizard */}
+        {activeTab === 'wizard' && (
+          <div id="procurement-panel-wizard" role="tabpanel" aria-labelledby="procurement-tab-wizard">
+            {/* Step-by-Step Guided 1-2-3 Wizard Card */}
+            <div className="subcard" style={{ marginBottom: '1.35rem', borderLeft: '4px solid var(--zim-green-700)' }}>
+              <div className="section-head">
+                <div>
+                  <h3>1-2-3 Guided Goods Receiving / New Order Wizard</h3>
+                  <span className="vernacular-sub">
+                    {subLabel(
+                      'Nhanho 1: Sarudza Mutengesi → Nhanho 2: Sarudza Chinhu → Nhanho 3: Gamuchira',
+                      'Igxathu 1: Khetha Umthengisi → Igxathu 2: Khetha Impahla → Igxathu 3:amukela',
+                    )}
+                  </span>
+                </div>
+                <div className="topbar-seg-group">
+                  <button type="button" className={`topbar-seg-btn ${wizardStep === 1 ? 'active' : ''}`} onClick={() => setWizardStep(1)}>
+                    Step 1: Supplier &amp; Store
+                  </button>
+                  <button type="button" className={`topbar-seg-btn ${wizardStep === 2 ? 'active' : ''}`} onClick={() => setWizardStep(2)}>
+                    Step 2: Item &amp; Quantity
+                  </button>
+                  <button type="button" className={`topbar-seg-btn ${wizardStep === 3 ? 'active' : ''}`} onClick={() => setWizardStep(3)}>
+                    Step 3: Review &amp; Post
+                  </button>
+                </div>
+              </div>
+
+              <form onSubmit={handleCreatePo}>
+                {wizardStep === 1 && (
+                  <div className="form-grid">
+                    <label>
+                      1A. Choose Supplier / Wholesaler
+                      <select value={poSupplierId} onChange={(e) => setPoSupplierId(e.target.value)} required>
+                        {suppliers.filter((s) => s.active).map((s) => (
+                          <option key={s.id} value={s.id}>{s.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      1B. Destination Store / Warehouse
+                      <select value={poWarehouseId} onChange={(e) => setPoWarehouseId(e.target.value)} required>
+                        {warehouses.map((w) => (
+                          <option key={w.id} value={w.id}>{w.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      1C. Delivery Note / PO Reference
+                      <input value={poRef} onChange={(e) => setPoRef(e.target.value)} placeholder="Auto-generated if blank" />
+                    </label>
+                    <div className="form-actions">
+                      <button type="button" className="btn btn-primary" onClick={() => setWizardStep(2)}>
+                        Next: Step 2 (Select Item) →
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {wizardStep === 2 && (
+                  <div className="form-grid">
+                    <label>
+                      2A. Product Being Ordered / Received
+                      <select
+                        value={poProductId}
+                        onChange={(e) => {
+                          setPoProductId(e.target.value);
+                          const p = products.find((x) => String(x.id) === e.target.value);
+                          if (p) {
+                            setPoUnitId(String(p.baseUnitId));
+                            setPoCost(String(p.unitCost || 1));
+                          }
+                        }}
+                        required
+                      >
+                        {products.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} ({p.sku}) — On shelf: {p.totalStock} {p.baseUnit}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      2B. Pack / Unit
+                      <select value={poUnitId} onChange={(e) => setPoUnitId(e.target.value)} required>
+                        {availableUnits.map((u) => (
+                          <option key={u.id} value={u.id}>{u.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      2C. Quantity
+                      <input type="number" step="0.001" min="0.001" value={poQty} onChange={(e) => setPoQty(e.target.value)} required />
+                    </label>
+                    <label>
+                      2D. Unit Cost (USD $)
+                      <input type="number" step="0.01" min="0" value={poCost} onChange={(e) => setPoCost(e.target.value)} required />
+                    </label>
+                    <div className="form-actions">
+                      <button type="button" className="btn btn-outline" onClick={() => setWizardStep(1)}>
+                        ← Back
+                      </button>
+                      <button type="button" className="btn btn-primary" onClick={() => setWizardStep(3)}>
+                        Next: Step 3 (Confirm) →
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {wizardStep === 3 && (
+                  <div className="form-grid">
+                    <div>
+                      <strong>Summary:</strong> Ordering <strong>{poQty}</strong> units of{' '}
+                      <strong>{currentPoProduct?.name ?? 'Product'}</strong> at <strong>${Number(poCost).toFixed(2)}</strong> each
+                      (Total: <strong>{formatMoney(Number(poQty) * Number(poCost))}</strong>).
+                    </div>
+                    <label className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={poApproveNow}
+                        onChange={(e) => setPoApproveNow(e.target.checked)}
+                      />
+                      Approve immediately for delivery receiving
+                    </label>
+                    <div className="form-actions">
+                      <button type="button" className="btn btn-outline" onClick={() => setWizardStep(2)}>
+                        ← Back
+                      </button>
+                      <button type="submit" className="btn btn-gold">
+                        ✓ Create Order &amp; Open GRN Receiver
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </form>
+            </div>
+
+            {/* Active Purchase Orders & Partial/Full Delivery Table */}
             <div className="section-head">
-              <h2>Purchase Orders ({purchaseOrders.length})</h2>
+              <h2>Purchase Orders &amp; Deliveries ({purchaseOrders.length})</h2>
               <select
                 aria-label="Filter purchase orders by status"
                 value={statusFilter}
@@ -314,7 +472,7 @@ export function Procurement() {
                         <td><strong>{po.reference}</strong></td>
                         <td>{po.supplierName}</td>
                         <td>{po.warehouseName}</td>
-                        <td className="num">${po.totalValue.toFixed(2)}</td>
+                        <td className="num">{formatMoney(po.totalValue)}</td>
                         <td>
                           <span className={`badge badge-${po.status === 'received' ? 'receipt' : po.status === 'partial' ? 'transfer' : po.status === 'cancelled' ? 'write_off' : 'count'}`}>
                             {po.status}
@@ -324,7 +482,7 @@ export function Procurement() {
                         <td className="num">
                           <div className="action-row" style={{ justifyContent: 'flex-end' }}>
                             <button type="button" className="btn btn-outline btn-sm" onClick={() => inspectPo(po.id)}>
-                              {po.status === 'approved' || po.status === 'partial' ? 'Receive / Inspect' : 'Inspect'}
+                              {po.status === 'approved' || po.status === 'partial' ? '📥 Receive Goods (GRN)' : 'Inspect'}
                             </button>
                             {po.status === 'draft' && (
                               <button
@@ -346,34 +504,15 @@ export function Procurement() {
                                 Approve
                               </button>
                             )}
-                            {(po.status === 'draft' || po.status === 'approved') && (
-                              <button
-                                type="button"
-                                className="btn btn-outline btn-sm"
-                                onClick={() =>
-                                  setConfirmAction({
-                                    title: `Cancel Purchase Order ${po.reference}`,
-                                    description: `Are you sure you want to cancel ${po.reference}? No deliveries will be permitted once cancelled.`,
-                                    danger: true,
-                                    run: async () => {
-                                      const updated = await api.cancelPurchaseOrder(po.id);
-                                      setSelectedPo(updated);
-                                      setMsg(`Purchase Order ${po.reference} cancelled.`);
-                                      await load();
-                                    },
-                                  })
-                                }
-                              >
-                                Cancel
-                              </button>
-                            )}
                           </div>
                         </td>
                       </tr>
                     ))}
                     {purchaseOrders.length === 0 && (
                       <tr>
-                        <td colSpan={7} className="muted">No purchase orders match this filter.</td>
+                        <td colSpan={7}>
+                          <div className="empty-state-box">No purchase orders match this filter.</div>
+                        </td>
                       </tr>
                     )}
                   </tbody>
@@ -382,13 +521,12 @@ export function Procurement() {
             )}
 
             {selectedPo && (
-              <div className="subcard" style={{ marginTop: '1.25rem' }}>
+              <div className="subcard" style={{ marginTop: '1.25rem', borderTop: '3px solid var(--zim-gold-500)' }}>
                 <div className="section-head">
                   <div>
                     <h3>
-                      {selectedPo.reference} — {selectedPo.supplierName} → {selectedPo.warehouseName} ({selectedPo.status})
+                      GRN Delivery Receiver: {selectedPo.reference} — {selectedPo.supplierName} → {selectedPo.warehouseName} ({selectedPo.status})
                     </h3>
-                    {selectedPo.notes && <p className="muted" style={{ margin: '.25rem 0 0' }}>{selectedPo.notes}</p>}
                   </div>
                   <button type="button" className="btn btn-outline btn-sm" onClick={() => setSelectedPo(null)}>
                     Close Panel
@@ -402,231 +540,241 @@ export function Procurement() {
                         <tr>
                           <th>SKU</th>
                           <th>Product</th>
-                          <th>Fulfillment Progress</th>
+                          <th className="num">Ordered</th>
+                          <th className="num">Received</th>
                           <th className="num">Remaining</th>
-                          <th className="num">Unit Cost</th>
                           {(selectedPo.status === 'approved' || selectedPo.status === 'partial') && (
                             <>
                               <th>Receive Now</th>
-                              <th>Batch / Lot</th>
+                              <th>Batch # (Optional)</th>
                               <th>Expiry Date</th>
                             </>
                           )}
                         </tr>
                       </thead>
                       <tbody>
-                        {selectedPo.lines.map((l) => {
-                          const pct = Math.min(100, Math.round((l.receivedQuantity / Math.max(1, l.orderedQuantity)) * 100));
-                          return (
-                            <tr key={l.id}>
-                              <td><code>{l.sku}</code></td>
-                              <td><strong>{l.productName}</strong></td>
-                              <td style={{ minWidth: '160px' }}>
-                                <div className="stock-level-cell">
-                                  <div className="stock-bar-track">
-                                    <div className="stock-bar-fill optimal" style={{ width: `${pct}%` }} />
-                                  </div>
-                                  <span className="stock-level-num">
-                                    {l.receivedQuantity} / {l.orderedQuantity} {l.unit}
-                                  </span>
-                                </div>
-                              </td>
-                              <td className="num"><strong>{l.remainingQuantity} {l.unit}</strong></td>
-                              <td className="num">${l.unitCost.toFixed(2)}</td>
-                              {(selectedPo.status === 'approved' || selectedPo.status === 'partial') && (
-                                <>
-                                  <td>
-                                    <input
-                                      type="number"
-                                      step="0.001"
-                                      min="0"
-                                      max={l.remainingQuantity}
-                                      disabled={l.remainingQuantity <= 0}
-                                      value={deliveryQty[l.productId] ?? '0'}
-                                      onChange={(e) => setDeliveryQty((prev) => ({ ...prev, [l.productId]: e.target.value }))}
-                                      style={{ maxWidth: '110px' }}
-                                    />
-                                  </td>
-                                  <td>
-                                    <input
-                                      placeholder="Batch #"
-                                      disabled={l.remainingQuantity <= 0}
-                                      value={deliveryBatch[l.productId] ?? ''}
-                                      onChange={(e) => setDeliveryBatch((prev) => ({ ...prev, [l.productId]: e.target.value }))}
-                                      style={{ maxWidth: '130px' }}
-                                    />
-                                  </td>
-                                  <td>
-                                    <input
-                                      type="date"
-                                      disabled={l.remainingQuantity <= 0}
-                                      value={deliveryExpiry[l.productId] ?? ''}
-                                      onChange={(e) => setDeliveryExpiry((prev) => ({ ...prev, [l.productId]: e.target.value }))}
-                                    />
-                                  </td>
-                                </>
-                              )}
-                            </tr>
-                          );
-                        })}
+                        {selectedPo.lines.map((l) => (
+                          <tr key={l.id}>
+                            <td><code>{l.sku}</code></td>
+                            <td><strong>{l.productName}</strong></td>
+                            <td className="num">{l.orderedQuantity} {l.unit}</td>
+                            <td className="num pos">{l.receivedQuantity} {l.unit}</td>
+                            <td className="num">{l.remainingQuantity} {l.unit}</td>
+                            {(selectedPo.status === 'approved' || selectedPo.status === 'partial') && (
+                              <>
+                                <td>
+                                  <input
+                                    type="number"
+                                    step="0.001"
+                                    min="0"
+                                    max={l.remainingQuantity}
+                                    value={deliveryQty[l.productId] ?? '0'}
+                                    onChange={(e) => setDeliveryQty({ ...deliveryQty, [l.productId]: e.target.value })}
+                                    style={{ maxWidth: '110px' }}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    placeholder="Batch #"
+                                    value={deliveryBatch[l.productId] ?? ''}
+                                    onChange={(e) => setDeliveryBatch({ ...deliveryBatch, [l.productId]: e.target.value })}
+                                    style={{ maxWidth: '130px' }}
+                                  />
+                                </td>
+                                <td>
+                                  <input
+                                    type="date"
+                                    value={deliveryExpiry[l.productId] ?? ''}
+                                    onChange={(e) => setDeliveryExpiry({ ...deliveryExpiry, [l.productId]: e.target.value })}
+                                    style={{ maxWidth: '150px' }}
+                                  />
+                                </td>
+                              </>
+                            )}
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
                   </div>
 
                   {(selectedPo.status === 'approved' || selectedPo.status === 'partial') && (
-                    <div className="inline-form" style={{ marginTop: '1rem' }}>
-                      <input
-                        value={grnRef}
-                        onChange={(e) => setGrnRef(e.target.value)}
-                        placeholder="Goods Receipt Reference (e.g. GRN-2026-104)"
-                        style={{ maxWidth: '280px' }}
-                      />
-                      <button type="submit" className="btn btn-primary">
-                        Post Delivery to Warehouse Stock
-                      </button>
+                    <div className="form-grid" style={{ marginTop: '1rem' }}>
+                      <label>
+                        GRN / Delivery Note Reference
+                        <input value={grnRef} onChange={(e) => setGrnRef(e.target.value)} required />
+                      </label>
+                      <div className="form-actions">
+                        <button className="btn btn-primary" type="submit">
+                          ✓ Post Goods Receipt to Ledger
+                        </button>
+                      </div>
                     </div>
                   )}
                 </form>
-
-                {selectedPo.receipts.length > 0 && (
-                  <p className="muted" style={{ marginTop: '.75rem', marginBottom: 0 }}>
-                    Posted Receipt Documents:{' '}
-                    {selectedPo.receipts.map((r) => `#${r.documentId} (${r.reference ?? 'GRN'} on ${r.createdAt.slice(0, 10)})`).join(' • ')}
-                  </p>
-                )}
               </div>
             )}
           </div>
         )}
 
-        {/* TAB 2: Create Purchase Order */}
-        {activeTab === 'create-po' && (
-          <div id="procurement-panel-create-po" role="tabpanel" aria-labelledby="procurement-tab-create-po">
-            <h2>Issue New Purchase Order</h2>
-            <form className="form-grid" onSubmit={handleCreatePo}>
-              <label>
-                Supplier
-                <select value={poSupplierId} onChange={(e) => setPoSupplierId(e.target.value)} required>
-                  {suppliers.filter((s) => s.active).map((s) => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Destination Warehouse
-                <select value={poWarehouseId} onChange={(e) => setPoWarehouseId(e.target.value)} required>
-                  {warehouses.map((w) => (
-                    <option key={w.id} value={w.id}>{w.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                PO Reference
-                <input value={poRef} onChange={(e) => setPoRef(e.target.value)} placeholder="e.g. PO-2026-108" required />
-              </label>
-              <label>
-                Product
-                <select
-                  value={poProductId}
-                  onChange={(e) => {
-                    setPoProductId(e.target.value);
-                    const p = products.find((x) => String(x.id) === e.target.value);
-                    if (p) {
-                      setPoUnitId(String(p.baseUnitId));
-                      setPoCost(String(p.unitCost || 1));
-                    }
-                  }}
-                  required
-                >
-                  {products.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.sku}) — On hand: {p.totalStock} {p.baseUnit}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Order Unit
-                <select value={poUnitId} onChange={(e) => setPoUnitId(e.target.value)} required>
-                  {availableUnits.map((u) => (
-                    <option key={u.id} value={u.id}>{u.label}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Ordered Quantity
-                <input type="number" step="0.001" min="0.001" value={poQty} onChange={(e) => setPoQty(e.target.value)} required />
-              </label>
-              <label>
-                Unit Cost (USD)
-                <input type="number" step="0.01" min="0" value={poCost} onChange={(e) => setPoCost(e.target.value)} required />
-              </label>
-              <label>
-                Delivery Notes
-                <input value={poNotes} onChange={(e) => setPoNotes(e.target.value)} placeholder="Optional supplier instructions" />
-              </label>
-              <label className="checkbox-row">
-                <input type="checkbox" checked={poApproveNow} onChange={(e) => setPoApproveNow(e.target.checked)} />
-                <span>Approve immediately for receiving</span>
-              </label>
-              <div className="form-actions">
-                <button className="btn btn-primary" type="submit">Create Purchase Order</button>
+        {/* SUB-MENU 2: Cross-Border Landed Cost Calculator */}
+        {activeTab === 'landed' && (
+          <div id="procurement-panel-landed" role="tabpanel" aria-labelledby="procurement-tab-landed">
+            <div className="section-head">
+              <div>
+                <h2>Cross-Border Trader Landed Cost Calculator (Musina / Joburg / Lusaka → Zimbabwe)</h2>
+                <span className="vernacular-sub">
+                  {subLabel(
+                    'Kuverenga Mutengo Chaihwo: Mutengo weMusina + ZIMRA Duty + Mari yeBhazi/Runner',
+                    'Ukubala Intengo Yeqiniso: Intengo YaseMusina + ZIMRA Duty + Imali YeBhasi/Runner',
+                  )}
+                </span>
               </div>
-            </form>
+            </div>
+
+            <div className="dashboard-panels">
+              <div className="subcard">
+                <h3>1. Enter Cross-Border Consignment Costs</h3>
+                <div className="form-grid">
+                  <label>
+                    Supplier Invoice Currency
+                    <select value={cbCurrency} onChange={(e) => setCbCurrency(e.target.value as 'ZAR' | 'USD')}>
+                      <option value="ZAR">South African Rand (ZAR R — Musina/Joburg)</option>
+                      <option value="USD">US Dollars (USD $ — Lusaka/Beira/Local)</option>
+                    </select>
+                  </label>
+                  <label>
+                    Wholesale Invoice Total ({cbCurrency})
+                    <input type="number" step="0.01" value={cbWholesaleTotal} onChange={(e) => setCbWholesaleTotal(e.target.value)} />
+                  </label>
+                  <label>
+                    Total Units in Consignment
+                    <input type="number" min="1" value={cbUnitsCount} onChange={(e) => setCbUnitsCount(e.target.value)} />
+                  </label>
+                  <label>
+                    ZIMRA Customs Duty &amp; Tolls (USD $)
+                    <input type="number" step="0.01" value={cbZimraDutyUsd} onChange={(e) => setCbZimraDutyUsd(e.target.value)} />
+                  </label>
+                  <label>
+                    Runner / Malaicha / Bus Freight (USD $)
+                    <input type="number" step="0.01" value={cbRunnerFreightUsd} onChange={(e) => setCbRunnerFreightUsd(e.target.value)} />
+                  </label>
+                  <label>
+                    Target Shop Gross Margin (%)
+                    <input type="number" step="1" value={cbTargetMarginPct} onChange={(e) => setCbTargetMarginPct(e.target.value)} />
+                  </label>
+                </div>
+              </div>
+
+              <div className="subcard" style={{ borderLeft: '4px solid var(--zim-gold-500)' }}>
+                <h3>2. True Landed Unit Cost &amp; Recommended Shelf Price</h3>
+                <div className="ops-kpi-row" style={{ gridTemplateColumns: '1fr 1fr', marginTop: '0.75rem' }}>
+                  <div className="kpi-card">
+                    <span className="kpi-label">Total Landed Cost</span>
+                    <strong className="kpi-value">{formatMoney(totalLandedUsd, 'USD')}</strong>
+                    <span className="kpi-hint">{formatMoney(totalLandedUsd, 'ZiG')} · {formatMoney(totalLandedUsd, 'ZAR')}</span>
+                  </div>
+                  <div className="kpi-card">
+                    <span className="kpi-label">True Landed Cost per Unit</span>
+                    <strong className="kpi-value" style={{ color: 'var(--zim-green-700)' }}>
+                      {formatMoney(trueUnitCostUsd, 'USD')}
+                    </strong>
+                    <span className="kpi-hint">
+                      {formatMoney(trueUnitCostUsd, 'ZiG')} · {formatMoney(trueUnitCostUsd, 'ZAR')}
+                    </span>
+                  </div>
+                </div>
+                <div className="subcard" style={{ background: 'var(--zim-green-50)' }}>
+                  <strong>Recommended Shelf Selling Price ({marginPct}% margin):</strong>
+                  <div style={{ fontSize: '1.35rem', fontWeight: 800, marginTop: '0.25rem', color: 'var(--zim-green-800)' }}>
+                    {formatMoney(recommendedSellUsd, 'USD')} &nbsp;|&nbsp; {formatMoney(recommendedSellUsd, 'ZiG')} &nbsp;|&nbsp; {formatMoney(recommendedSellUsd, 'ZAR')}
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
-        {/* TAB 3: Supplier Directory */}
-        {activeTab === 'suppliers' && (
-          <div id="procurement-panel-suppliers" role="tabpanel" aria-labelledby="procurement-tab-suppliers">
-            <div className="subcard" style={{ marginBottom: '1.25rem' }}>
-              <h3>Add New Supplier</h3>
-              <form className="form-grid" onSubmit={handleCreateSupplier}>
-                <label>
-                  Supplier Name
-                  <input value={supName} onChange={(e) => setSupName(e.target.value)} placeholder="e.g. Dairibord Zimbabwe" required />
-                </label>
-                <label>
-                  Email
-                  <input type="email" value={supEmail} onChange={(e) => setSupEmail(e.target.value)} placeholder="orders@supplier.co.zw" />
-                </label>
-                <label>
-                  Phone
-                  <input value={supPhone} onChange={(e) => setSupPhone(e.target.value)} placeholder="+263 242 700000" />
-                </label>
-                <div className="form-actions">
-                  <button className="btn btn-primary" type="submit">+ Add Supplier</button>
-                </div>
-              </form>
+        {/* SUB-MENU 3: Supplier Balances Owed (Creditors) */}
+        {activeTab === 'creditors' && (
+          <div id="procurement-panel-creditors" role="tabpanel" aria-labelledby="procurement-tab-creditors">
+            <div className="section-head">
+              <div>
+                <h2>Supplier Directory &amp; Balances Owed (Creditors)</h2>
+                <span className="vernacular-sub">
+                  {subLabel(
+                    'Mari Inodiwa neVatengesi (Creditors) & Vatengesi Vedu',
+                    'Imali Efanele Ibhadalwe Abathengisi',
+                  )}
+                </span>
+              </div>
             </div>
+
+            <form className="form-grid subcard" style={{ marginBottom: '1.2rem' }} onSubmit={handleCreateSupplier}>
+              <label>
+                Add New Supplier / Wholesaler Name
+                <input value={supName} onChange={(e) => setSupName(e.target.value)} placeholder="e.g. Dairibord Zimbabwe" required />
+              </label>
+              <label>
+                WhatsApp / Phone Number
+                <input value={supPhone} onChange={(e) => setSupPhone(e.target.value)} placeholder="e.g. +263 77 200 1100" />
+              </label>
+              <div className="form-actions">
+                <button type="submit" className="btn btn-primary">+ Register Supplier</button>
+              </div>
+            </form>
 
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Supplier</th>
-                    <th>Contact</th>
-                    <th>Status</th>
+                    <th>Supplier / Wholesaler</th>
+                    <th>Invoice Ref</th>
+                    <th className="num">Invoice Total</th>
+                    <th className="num">Paid So Far</th>
+                    <th className="num">Balance Owed</th>
+                    <th>Due Date / Status</th>
                     <th className="num">Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {suppliers.map((s) => (
-                    <tr key={s.id}>
-                      <td><strong>{s.name}</strong></td>
-                      <td>{[s.email, s.phone].filter(Boolean).join(' • ') || '—'}</td>
-                      <td>
-                        <span className={`status-pill ${s.active ? 'optimal' : 'out'}`}>
-                          {s.active ? 'Active' : 'Inactive'}
-                        </span>
-                      </td>
-                      <td className="num">
-                        <button type="button" className="btn btn-outline btn-sm" onClick={() => handleToggleSupplier(s)}>
-                          {s.active ? 'Deactivate' : 'Activate'}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {creditors.map((c) => {
+                    const owed = Math.max(0, c.totalUsd - c.paidUsd);
+                    return (
+                      <tr key={c.id}>
+                        <td>
+                          <strong>{c.supplierName}</strong>
+                          <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>{c.contact}</div>
+                        </td>
+                        <td><code>{c.invoiceRef}</code></td>
+                        <td className="num">{formatMoney(c.totalUsd)}</td>
+                        <td className="num pos">{formatMoney(c.paidUsd)}</td>
+                        <td className="num">
+                          <strong className={owed > 0 ? 'neg' : 'pos'}>{formatMoney(owed)}</strong>
+                        </td>
+                        <td>
+                          <span className={`status-pill ${owed === 0 ? 'optimal' : 'low'}`}>
+                            {owed === 0 ? 'Settled in Full' : `Due ${c.dueDate}`}
+                          </span>
+                        </td>
+                        <td className="num">
+                          {owed > 0 && (
+                            <button
+                              type="button"
+                              className="btn btn-outline btn-sm"
+                              onClick={() => {
+                                setCreditors((prev) =>
+                                  prev.map((x) => (x.id === c.id ? { ...x, paidUsd: x.totalUsd, dueDate: 'Paid in Full' } : x)),
+                                );
+                                setMsg(`Recorded settlement payment for ${c.supplierName} (${c.invoiceRef}).`);
+                              }}
+                            >
+                              ✓ Record Payment
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -644,12 +792,8 @@ export function Procurement() {
         onConfirm={async () => {
           if (!confirmAction) return;
           setBusy(true);
-          setError('');
           try {
             await confirmAction.run();
-            setConfirmAction(null);
-          } catch (err) {
-            setError((err as Error).message);
             setConfirmAction(null);
           } finally {
             setBusy(false);

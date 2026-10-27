@@ -5,34 +5,79 @@ import {
   type CountSheetSummary,
   type MovementItem,
   type ProductItem,
-  type RequisitionDetail,
-  type RequisitionSummary,
 } from '../api';
 import { useAuth } from '../auth';
 import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { Spinner } from '../components/Spinner';
+import { useZim } from '../zimContext';
 
-type MainOpTab = 'ledger' | 'post-movement' | 'requisitions' | 'stocktakes';
+type MovementSubTab = 'history' | 'cashup' | 'shrinkage';
 type OpMode = 'issues' | 'transfers' | 'returns' | 'adjustments' | 'write-offs' | 'receipts';
 
 const LEDGER_PAGE_SIZE = 15;
 
-const MODE_DESCRIPTIONS: Record<OpMode, string> = {
-  issues: 'Issue stock from a warehouse to an internal department (reduces warehouse stock and records department consumption).',
-  transfers: 'Move stock directly between two warehouses in a single atomic transaction.',
-  returns: 'Record stock returned from a department back into warehouse stock (+), or returned out to a supplier (−).',
-  adjustments: 'Post a signed (+ or −) stock adjustment with a mandatory audit reason.',
-  'write-offs': 'Write off damaged, expired or spoiled stock with a mandatory reason.',
-  receipts: 'Post a direct Goods Receipt into a warehouse (use Suppliers & POs for purchase-order deliveries).',
-};
+interface TillShiftRecord {
+  id: string;
+  shiftLabel: string;
+  cashier: string;
+  usdCash: number;
+  zigCash: number;
+  zarCash: number;
+  ecocashUsd: number;
+  innbucksUsd: number;
+  onemoneyZig: number;
+  status: 'BALANCED' | 'VARIANCE_FLAGGED';
+  closedAt: string;
+}
+
+const INITIAL_SHIFTS: TillShiftRecord[] = [
+  {
+    id: 'SH-201',
+    shiftLabel: 'Morning Shift #1 (Till A)',
+    cashier: 'Tendai Moyo (PIN 1042)',
+    usdCash: 485.0,
+    zigCash: 6420.0,
+    zarCash: 950.0,
+    ecocashUsd: 162.5,
+    innbucksUsd: 94.0,
+    onemoneyZig: 1180.0,
+    status: 'BALANCED',
+    closedAt: 'Today 14:00 CAT',
+  },
+  {
+    id: 'SH-202',
+    shiftLabel: 'Afternoon Shift #2 (Till B)',
+    cashier: 'Rudo Ncube (PIN 2088)',
+    usdCash: 310.0,
+    zigCash: 4190.0,
+    zarCash: 400.0,
+    ecocashUsd: 118.0,
+    innbucksUsd: 55.0,
+    onemoneyZig: 0,
+    status: 'BALANCED',
+    closedAt: 'Active Shift',
+  },
+];
+
+const SHRINKAGE_REASONS = [
+  'ZESA Power Cut Spoilage (Cold Chain / Butchery / Dairy)',
+  'Transit Breakage (Runner / Bus / Forklift Damage)',
+  'Expired on Shelf (MCAZ / FEFO Removal)',
+  'Packaging Torn / Spilled in Store',
+  'Suspected Pilferage / Stocktake Shortage',
+];
 
 export function Operations() {
   const { user } = useAuth();
+  const { subLabel, rates } = useZim();
   const isExec = user?.role === 'executive_manager';
 
-  const [mainTab, setMainTab] = useState<MainOpTab>('ledger');
+  const [mainTab, setMainTab] = useState<MovementSubTab>('history');
+  const [showPostDrawer, setShowPostDrawer] = useState(false);
+  const [showStocktakeDrawer, setShowStocktakeDrawer] = useState(false);
   const [mode, setMode] = useState<OpMode>('issues');
+
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: number; name: string; branchId: number }[]>([]);
   const [departments, setDepartments] = useState<{ id: number; name: string; branchId: number }[]>([]);
@@ -45,9 +90,6 @@ export function Operations() {
   const [countSheets, setCountSheets] = useState<CountSheetSummary[]>([]);
   const [selectedSheet, setSelectedSheet] = useState<CountSheetDetail | null>(null);
 
-  const [requisitions, setRequisitions] = useState<RequisitionSummary[]>([]);
-  const [selectedReq, setSelectedReq] = useState<RequisitionDetail | null>(null);
-
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
@@ -57,7 +99,7 @@ export function Operations() {
   const [warehouseId, setWarehouseId] = useState('');
   const [toWarehouseId, setToWarehouseId] = useState('');
   const [unitId, setUnitId] = useState('');
-  const [quantity, setQuantity] = useState('10');
+  const [quantity, setQuantity] = useState('5');
   const [unitCost, setUnitCost] = useState('');
   const [batchNumber, setBatchNumber] = useState('');
   const [expiryDate, setExpiryDate] = useState('');
@@ -65,7 +107,17 @@ export function Operations() {
   const [departmentId, setDepartmentId] = useState('');
   const [returnType, setReturnType] = useState<'from_department' | 'to_supplier'>('from_department');
   const [reference, setReference] = useState('');
-  const [reason, setReason] = useState('');
+  const [reason, setReason] = useState(SHRINKAGE_REASONS[0]);
+
+  // Till Shifts & Cash-Up state
+  const [shifts, setShifts] = useState<TillShiftRecord[]>(INITIAL_SHIFTS);
+  const [cashierName, setCashierName] = useState('Chipo Dube (PIN 3019)');
+  const [tillUsd, setTillUsd] = useState('420');
+  const [tillZig, setTillZig] = useState('5800');
+  const [tillZar, setTillZar] = useState('600');
+  const [tillEcocash, setTillEcocash] = useState('145');
+  const [tillInnbucks, setTillInnbucks] = useState('80');
+  const [tillOnemoney, setTillOnemoney] = useState('950');
 
   // Stocktake creation state
   const [csWhId, setCsWhId] = useState('');
@@ -73,18 +125,6 @@ export function Operations() {
   const [csUnitId, setCsUnitId] = useState('');
   const [csCountedQty, setCsCountedQty] = useState('25');
   const [csRef, setCsRef] = useState('');
-  const [csNotes, setCsNotes] = useState('');
-
-  // Requisition form state
-  const [reqKind, setReqKind] = useState<'department_issue' | 'warehouse_transfer'>('department_issue');
-  const [reqWarehouseId, setReqWarehouseId] = useState('');
-  const [reqDeptId, setReqDeptId] = useState('');
-  const [reqToWhId, setReqToWhId] = useState('');
-  const [reqProductId, setReqProductId] = useState('');
-  const [reqUnitId, setReqUnitId] = useState('');
-  const [reqQty, setReqQty] = useState('10');
-  const [reqRef, setReqRef] = useState('');
-  const [reqNotes, setReqNotes] = useState('');
 
   // Confirmation modal state
   const [confirmAction, setConfirmAction] = useState<{
@@ -98,7 +138,7 @@ export function Operations() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [pRes, wRes, dRes, sRes, mRes, csRes, rqRes] = await Promise.all([
+      const [pRes, wRes, dRes, sRes, mRes, csRes] = await Promise.all([
         api.products('', { limit: 200 }),
         api.warehouses(),
         api.departments(),
@@ -109,7 +149,6 @@ export function Operations() {
           offset: ledgerPage * LEDGER_PAGE_SIZE,
         }),
         api.countSheets(),
-        api.requisitions(),
       ]);
       setProducts(pRes.items);
       setWarehouses(wRes);
@@ -117,7 +156,6 @@ export function Operations() {
       setSuppliers(sRes);
       setMovements(mRes.items);
       setCountSheets(csRes.items);
-      setRequisitions(rqRes.items);
 
       if (pRes.items[0]) {
         const firstProd = pRes.items[0];
@@ -131,27 +169,19 @@ export function Operations() {
           setCsUnitId(String(firstProd.baseUnitId));
           return String(firstProd.id);
         });
-        setReqProductId((prev) => {
-          if (prev) return prev;
-          setReqUnitId(String(firstProd.baseUnitId));
-          return String(firstProd.id);
-        });
       }
       if (wRes[0]) {
         const defaultWh = String(wRes[0].id);
         setWarehouseId((prev) => prev || defaultWh);
         setCsWhId((prev) => prev || defaultWh);
-        setReqWarehouseId((prev) => prev || defaultWh);
       }
       if (wRes[1]) {
         const secondWh = String(wRes[1].id);
         setToWarehouseId((prev) => prev || secondWh);
-        setReqToWhId((prev) => prev || secondWh);
       }
       if (dRes[0]) {
         const defaultDept = String(dRes[0].id);
         setDepartmentId((prev) => prev || defaultDept);
-        setReqDeptId((prev) => prev || defaultDept);
       }
       if (sRes[0]) setSupplierId((prev) => prev || String(sRes[0].id));
     } catch (e) {
@@ -179,11 +209,12 @@ export function Operations() {
 
   const currentProduct = products.find((p) => String(p.id) === productId);
 
-  async function executePosting() {
+  async function executePosting(overrideMode?: OpMode) {
+    const activeMode = overrideMode ?? mode;
     setError('');
     setMsg('');
     try {
-      if (mode === 'returns') {
+      if (activeMode === 'returns') {
         const res = await api.postReturn({
           returnType,
           warehouseId: Number(warehouseId),
@@ -209,8 +240,8 @@ export function Operations() {
           unitId: Number(unitId),
           quantity: Number(quantity),
         };
-        if (mode === 'transfers') line.toWarehouseId = Number(toWarehouseId);
-        if ((mode === 'receipts' || mode === 'adjustments') && unitCost.trim() !== '') line.unitCost = Number(unitCost);
+        if (activeMode === 'transfers') line.toWarehouseId = Number(toWarehouseId);
+        if ((activeMode === 'receipts' || activeMode === 'adjustments') && unitCost.trim() !== '') line.unitCost = Number(unitCost);
         if (batchNumber.trim()) line.batchNumber = batchNumber.trim();
         if (expiryDate.trim()) line.expiryDate = expiryDate.trim();
 
@@ -218,35 +249,35 @@ export function Operations() {
           reference: reference.trim() || undefined,
           lines: [line],
         };
-        if (mode === 'receipts' && supplierId) body.supplierId = Number(supplierId);
-        if ((mode === 'issues' || mode === 'write-offs') && departmentId) body.departmentId = Number(departmentId);
-        if (mode === 'adjustments' || mode === 'write-offs') body.reason = reason.trim();
+        if (activeMode === 'receipts' && supplierId) body.supplierId = Number(supplierId);
+        if ((activeMode === 'issues' || activeMode === 'write-offs') && departmentId) body.departmentId = Number(departmentId);
+        if (activeMode === 'adjustments' || activeMode === 'write-offs') body.reason = reason.trim();
 
-        const res = await api.postStock(mode, body);
-        setMsg(`Posted document #${res.document.id} to the ledger.`);
+        const res = await api.postStock(activeMode, body);
+        setMsg(`Posted document #${res.document.id} (${activeMode}) to the authoritative stock ledger.`);
       }
       setReference('');
-      setReason('');
       setBatchNumber('');
       setExpiryDate('');
-      setMainTab('ledger');
+      setShowPostDrawer(false);
       await load();
     } catch (err) {
       setError((err as Error).message);
     }
   }
 
-  function handleSubmitMovement(e: FormEvent) {
+  function handleSubmitMovement(e: FormEvent, forceWriteOff = false) {
     e.preventDefault();
-    if (mode === 'write-offs' || (mode === 'returns' && returnType === 'to_supplier')) {
+    const targetMode = forceWriteOff ? 'write-offs' : mode;
+    if (targetMode === 'write-offs' || (targetMode === 'returns' && returnType === 'to_supplier')) {
       setConfirmAction({
-        title: mode === 'write-offs' ? 'Confirm Stock Write-Off' : 'Confirm Return to Supplier',
-        description: `Are you sure you want to deduct ${quantity} units of ${currentProduct?.name ?? 'product'} (${reason}) from warehouse stock?`,
+        title: targetMode === 'write-offs' ? 'Confirm Damaged / Shrinkage Write-Off' : 'Confirm Return to Supplier',
+        description: `Are you sure you want to deduct ${quantity} units of ${currentProduct?.name ?? 'product'} (Reason: "${reason}") from warehouse stock?`,
         danger: true,
-        run: executePosting,
+        run: () => executePosting(targetMode),
       });
     } else {
-      void executePosting();
+      void executePosting(targetMode);
     }
   }
 
@@ -258,62 +289,12 @@ export function Operations() {
       const sheet = await api.createCountSheet({
         warehouseId: Number(csWhId),
         reference: csRef.trim() || undefined,
-        notes: csNotes.trim() || undefined,
         lines: [{ productId: Number(csProductId), unitId: Number(csUnitId), countedQuantity: Number(csCountedQty) }],
       });
       setCsRef('');
-      setCsNotes('');
       setSelectedSheet(sheet);
       setMsg(`Draft Count Sheet #${sheet.id} created. Review variance below.`);
       await load();
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
-  async function handleCreateRequisition(e: FormEvent) {
-    e.preventDefault();
-    setError('');
-    setMsg('');
-    try {
-      const created = await api.createRequisition({
-        kind: reqKind,
-        warehouseId: Number(reqWarehouseId),
-        departmentId: reqKind === 'department_issue' ? Number(reqDeptId) : null,
-        toWarehouseId: reqKind === 'warehouse_transfer' ? Number(reqToWhId) : null,
-        reference: reqRef.trim() || `REQ-${Date.now().toString().slice(-5)}`,
-        notes: reqNotes.trim() || undefined,
-        lines: [
-          {
-            productId: Number(reqProductId),
-            unitId: Number(reqUnitId),
-            requestedQuantity: Number(reqQty),
-          },
-        ],
-      });
-      setReqRef('');
-      setReqNotes('');
-      setSelectedReq(created);
-      setMsg(`Requisition #${created.id} created (pending fulfillment).`);
-      await load();
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
-  async function handleInspectRequisition(id: number) {
-    setError('');
-    try {
-      setSelectedReq(await api.requisition(id));
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
-  async function handleInspectSheet(id: number) {
-    setError('');
-    try {
-      setSelectedSheet(await api.countSheet(id));
     } catch (err) {
       setError((err as Error).message);
     }
@@ -333,29 +314,26 @@ export function Operations() {
     }
   }
 
-  const mainTabs: TabDefinition<MainOpTab>[] = [
+  const writeOffMovements = movements.filter((m) => m.type === 'write_off' || m.type === 'adjustment');
+
+  const mainTabs: TabDefinition<MovementSubTab>[] = [
     {
-      key: 'ledger',
-      label: '1. Live Movement Ledger',
+      key: 'history',
+      label: '1. Movement History',
       badge: movements.length,
-      purpose: 'Audit the append-only stock movement ledger, filter by warehouse or document type, and reverse erroneous postings.',
+      purpose: 'Audit the append-only stock movement ledger, filter by warehouse or type, and record issues or stocktakes.',
     },
     {
-      key: 'post-movement',
-      label: '2. + Record Issue, Transfer, Return or Write-Off',
-      purpose: 'Post immediate stock movements: department issues, internal warehouse transfers, stock returns, adjustments and write-offs.',
+      key: 'cashup',
+      label: '2. Till Shifts & Cash-Up',
+      badge: shifts.length,
+      purpose: 'Reconcile multi-tender Zimbabwean till shifts across USD Cash, ZiG Notes, ZAR Rand, EcoCash, InnBucks, and OneMoney.',
     },
     {
-      key: 'requisitions',
-      label: '3. Requisitions & Transfer Requests',
-      badge: requisitions.filter((r) => r.status === 'pending').length,
-      purpose: 'Submit department requisitions or warehouse transfer requests, inspect live available stock, and fulfill or reject them.',
-    },
-    {
-      key: 'stocktakes',
-      label: '4. Physical Stocktakes & Counts',
-      badge: countSheets.length,
-      purpose: 'Create physical count sheets, compare counted quantities against expected ledger balances, and reconcile variances.',
+      key: 'shrinkage',
+      label: '3. Damaged & Shrinkage Log',
+      badge: writeOffMovements.length,
+      purpose: 'Record spoiled, broken, or expired stock with mandatory ZESA/transit/expiry reason codes and executive audit trail.',
     },
   ];
 
@@ -363,20 +341,21 @@ export function Operations() {
     <>
       <div className="page-header">
         <div>
-          <h1>Stock Operations, Requisitions &amp; Stocktakes</h1>
-          <p className="muted">
-            Authoritative movement ledger, department requisitions, internal transfers, returns, adjustments and physical stocktakes.
-          </p>
+          <h1>Stock Movements, Till Shifts &amp; Shrinkage</h1>
+          <span className="vernacular-sub">
+            {subLabel(
+              'Kubuda Nekupinda kweZvinhu • Kuverenga Mari yeTill (EcoCash/InnBucks/USD/ZiG)',
+              'Ukuphuma Lokungena Kwempahla • Ukubala Imali yeTill',
+              'Authoritative Movement History, Multi-Tender Till Cash-Up & Mandatory Shrinkage Log',
+            )}
+          </span>
         </div>
         <div className="quick-actions">
-          <button type="button" className="btn btn-primary" onClick={() => setMainTab('post-movement')}>
-            + Record Stock Movement
+          <button type="button" className="btn btn-primary" onClick={() => setShowPostDrawer((s) => !s)}>
+            {showPostDrawer ? '✕ Close Form' : '+ Record Stock Movement'}
           </button>
-          <button type="button" className="btn btn-outline" onClick={() => setMainTab('requisitions')}>
-            Requisitions ({requisitions.filter((r) => r.status === 'pending').length} Pending)
-          </button>
-          <button type="button" className="btn btn-outline" onClick={() => setMainTab('stocktakes')}>
-            Stocktakes ({countSheets.length})
+          <button type="button" className="btn btn-outline" onClick={() => setShowStocktakeDrawer((s) => !s)}>
+            {showStocktakeDrawer ? '✕ Close Stocktakes' : `📋 Physical Stocktakes (${countSheets.length})`}
           </button>
         </div>
       </div>
@@ -384,7 +363,156 @@ export function Operations() {
       {error && <p className="form-error" role="alert">{error}</p>}
       {msg && <p className="form-success" role="status">{msg}</p>}
 
+      {/* Collapsible Stock Movement Drawer */}
+      {showPostDrawer && (
+        <section className="card" style={{ marginBottom: '1.2rem', borderTop: '4px solid var(--zim-gold-500)' }}>
+          <div className="section-head">
+            <h3>Post Stock Movement to Authoritative Ledger</h3>
+            <div className="topbar-seg-group">
+              {(['issues', 'receipts', 'transfers', 'returns', 'adjustments', 'write-offs'] as OpMode[]).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  className={`topbar-seg-btn ${mode === m ? 'active' : ''}`}
+                  onClick={() => setMode(m)}
+                >
+                  {m.replace('-', ' ').toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <form className="form-grid" onSubmit={(e) => handleSubmitMovement(e, false)}>
+            <label>
+              Product
+              <select
+                value={productId}
+                onChange={(e) => {
+                  setProductId(e.target.value);
+                  const found = products.find((p) => String(p.id) === e.target.value);
+                  if (found) setUnitId(String(found.baseUnitId));
+                }}
+                required
+              >
+                {products.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.sku}) — On hand: {p.totalStock} {p.baseUnit}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Warehouse
+              <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} required>
+                {warehouses.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name}</option>
+                ))}
+              </select>
+            </label>
+            {mode === 'transfers' && (
+              <label>
+                Destination Warehouse
+                <select value={toWarehouseId} onChange={(e) => setToWarehouseId(e.target.value)} required>
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={w.id}>{w.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {(mode === 'issues' || mode === 'write-offs') && (
+              <label>
+                Department
+                <select value={departmentId} onChange={(e) => setDepartmentId(e.target.value)}>
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>{d.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <label>
+              Unit
+              <select value={unitId} onChange={(e) => setUnitId(e.target.value)} required>
+                {unitsFor(productId).map((u) => (
+                  <option key={u.id} value={u.id}>{u.label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Quantity
+              <input type="number" step="0.001" value={quantity} onChange={(e) => setQuantity(e.target.value)} required />
+            </label>
+            {(mode === 'adjustments' || mode === 'write-offs' || mode === 'returns') && (
+              <label>
+                Mandatory Reason
+                <input value={reason} onChange={(e) => setReason(e.target.value)} required />
+              </label>
+            )}
+            <label>
+              Reference (Optional)
+              <input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="e.g. ISS-104" />
+            </label>
+            <div className="form-actions">
+              <button type="submit" className="btn btn-primary">Post Movement</button>
+            </div>
+          </form>
+        </section>
+      )}
+
+      {/* Collapsible Stocktake Drawer */}
+      {showStocktakeDrawer && (
+        <section className="card" style={{ marginBottom: '1.2rem' }}>
+          <div className="section-head">
+            <h3>Physical Stocktake &amp; Variance Reconciliation</h3>
+            <button type="button" className="btn btn-outline btn-sm" onClick={() => setShowStocktakeDrawer(false)}>
+              Close
+            </button>
+          </div>
+          <form className="form-grid" onSubmit={handleCreateCountSheet} style={{ marginBottom: '1rem' }}>
+            <label>
+              Warehouse
+              <select value={csWhId} onChange={(e) => setCsWhId(e.target.value)} required>
+                {warehouses.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Product Counted
+              <select
+                value={csProductId}
+                onChange={(e) => {
+                  setCsProductId(e.target.value);
+                  const found = products.find((p) => String(p.id) === e.target.value);
+                  if (found) setCsUnitId(String(found.baseUnitId));
+                }}
+                required
+              >
+                {products.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Physical Shelf Count ({unitsFor(csProductId)[0]?.label ?? 'base'})
+              <input type="number" step="0.001" min="0" value={csCountedQty} onChange={(e) => setCsCountedQty(e.target.value)} required />
+            </label>
+            <div className="form-actions">
+              <button type="submit" className="btn btn-primary">+ Create Count Sheet</button>
+            </div>
+          </form>
+          {selectedSheet && (
+            <div className="subcard">
+              <strong>
+                Count Sheet #{selectedSheet.id} ({selectedSheet.status}) — Variance:{' '}
+                {selectedSheet.lines[0]?.varianceBaseQuantity ?? 0}
+              </strong>
+            </div>
+          )}
+        </section>
+      )}
+
       <section className="card">
+        {/* TIER 3: Horizontal In-Page Sub-Menu Bar */}
         <AccessibleTabs
           idPrefix="operations"
           ariaLabel="Operations and stock ledger sections"
@@ -393,9 +521,9 @@ export function Operations() {
           onChange={setMainTab}
         />
 
-        {/* TAB 1: Authoritative Stock Movement Ledger */}
-        {mainTab === 'ledger' && (
-          <div id="operations-panel-ledger" role="tabpanel" aria-labelledby="operations-tab-ledger">
+        {/* SUB-MENU 1: Movement History */}
+        {mainTab === 'history' && (
+          <div id="operations-panel-history" role="tabpanel" aria-labelledby="operations-tab-history">
             <div className="section-head">
               <h2>Authoritative Stock Movement Ledger</h2>
               <div className="filter-bar">
@@ -421,18 +549,32 @@ export function Operations() {
                   }}
                 >
                   <option value="">All Document Types</option>
-                  <option value="receipt">Receipts</option>
-                  <option value="issue">Issues</option>
-                  <option value="transfer">Transfers</option>
-                  <option value="adjustment">Adjustments &amp; Returns</option>
-                  <option value="count">Counts</option>
-                  <option value="write_off">Write-Offs</option>
+                  <option value="receipt">Receipts (+)</option>
+                  <option value="issue">Department Issues (−)</option>
+                  <option value="transfer">Transfers (⇄)</option>
+                  <option value="adjustment">Adjustments (±)</option>
+                  <option value="count">Physical Counts</option>
+                  <option value="write_off">Write-Offs (−)</option>
                   <option value="reversal">Reversals</option>
                 </select>
+                {(whLedgerFilter !== undefined || typeFilter !== '') && (
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    onClick={() => {
+                      setWhLedgerFilter(undefined);
+                      setTypeFilter('');
+                      setLedgerPage(0);
+                    }}
+                  >
+                    Reset Filters
+                  </button>
+                )}
               </div>
             </div>
+
             {loading ? (
-              <Spinner label="Loading ledger" />
+              <Spinner label="Loading movement ledger" />
             ) : (
               <>
                 <div className="table-wrap">
@@ -441,53 +583,63 @@ export function Operations() {
                       <tr>
                         <th>Doc #</th>
                         <th>Type</th>
-                        <th>Ref / Reason</th>
+                        <th>Reference / Reason</th>
                         <th>Product</th>
                         <th>Warehouse</th>
                         <th className="num">Entered</th>
                         <th className="num">Base Change</th>
-                        <th className="num">Unit Cost</th>
-                        <th>Batch / Expiry</th>
-                        {isExec && <th className="num">Audit Action</th>}
+                        <th>Date</th>
+                        {isExec && <th className="num">Executive Action</th>}
                       </tr>
                     </thead>
                     <tbody>
                       {movements.map((m) => (
                         <tr key={m.id}>
-                          <td>#{m.documentId}</td>
+                          <td><strong>#{m.documentId}</strong></td>
                           <td><span className={`badge badge-${m.type}`}>{m.type.replace('_', ' ')}</span></td>
-                          <td>{m.reference ?? m.reason ?? '—'}</td>
-                          <td><strong>{m.productName}</strong> <span className="muted">({m.sku})</span></td>
-                          <td>{m.warehouseName}</td>
-                          <td className="num">{m.quantity} {m.unit} {m.factor && m.factor !== 1 ? `(×${m.factor})` : ''}</td>
-                          <td className={`num ${m.baseChange >= 0 ? 'pos' : 'neg'}`}>
-                            <strong>{m.baseChange > 0 ? `+${m.baseChange}` : m.baseChange}</strong>
-                          </td>
-                          <td className="num">${m.unitCost.toFixed(2)}</td>
                           <td>
-                            {m.batchNumber ? `Lot: ${m.batchNumber}` : '—'}
-                            {m.expiryDate ? ` (exp ${m.expiryDate})` : ''}
+                            {m.reference ?? '—'}
+                            {m.reason ? <div className="muted" style={{ margin: 0, fontSize: '.78rem' }}>{m.reason}</div> : null}
                           </td>
+                          <td>
+                            <strong>{m.productName}</strong> <code>({m.sku})</code>
+                          </td>
+                          <td>{m.warehouseName}</td>
+                          <td className="num">{m.quantity} {m.unit}</td>
+                          <td className={`num ${m.baseChange >= 0 ? 'pos' : 'neg'}`}>
+                            <strong>{m.baseChange > 0 ? `+${m.baseChange}` : m.baseChange} {m.unit}</strong>
+                          </td>
+                          <td>{m.createdAt.slice(0, 16).replace('T', ' ')}</td>
                           {isExec && (
                             <td className="num">
-                              {m.reversedByDocumentId ? (
-                                <span className="muted">Reversed by #{m.reversedByDocumentId}</span>
-                              ) : m.type !== 'reversal' ? (
-                                <button className="btn btn-outline btn-sm" type="button" onClick={() => handleReverse(m.documentId)}>
+                              {m.type !== 'reversal' && !m.reversedByDocumentId && (
+                                <button
+                                  type="button"
+                                  className="btn btn-outline btn-sm"
+                                  onClick={() => handleReverse(m.documentId)}
+                                >
                                   Reverse
                                 </button>
-                              ) : (
-                                <span className="muted">Reversal</span>
                               )}
                             </td>
                           )}
                         </tr>
                       ))}
+                      {movements.length === 0 && (
+                        <tr>
+                          <td colSpan={isExec ? 9 : 8}>
+                            <div className="empty-state-box">No movements match this filter.</div>
+                          </td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
+
                 <div className="pagination-bar">
-                  <span className="muted" style={{ margin: 0 }}>Page {ledgerPage + 1}</span>
+                  <span className="muted" style={{ margin: 0 }}>
+                    Ledger Page {ledgerPage + 1} (showing {movements.length} rows)
+                  </span>
                   <div className="action-row">
                     <button
                       type="button"
@@ -512,552 +664,220 @@ export function Operations() {
           </div>
         )}
 
-        {/* TAB 2: Record Issue, Transfer, Return, Adjustment or Write-Off */}
-        {mainTab === 'post-movement' && (
-          <div id="operations-panel-post-movement" role="tabpanel" aria-labelledby="operations-tab-post-movement">
-            <div className="subcard" style={{ marginBottom: '1rem' }}>
-              <div className="tabs" role="tablist" aria-label="Movement operation type">
-                {(
-                  [
-                    ['issues', 'Issue to Department'],
-                    ['transfers', 'Internal Transfer'],
-                    ['returns', 'Return (Dept / Supplier)'],
-                    ['adjustments', 'Adjustment (+/-)'],
-                    ['write-offs', 'Write-Off'],
-                    ['receipts', 'Direct Receipt'],
-                  ] as [OpMode, string][]
-                ).map(([k, label]) => (
-                  <button
-                    key={k}
-                    type="button"
-                    role="tab"
-                    aria-selected={mode === k}
-                    className={`tab-btn${mode === k ? ' active' : ''}`}
-                    onClick={() => setMode(k)}
-                  >
-                    {label}
-                  </button>
-                ))}
+        {/* SUB-MENU 2: Till Shifts & Cash-Up (USD, ZiG, ZAR, EcoCash, OneMoney, InnBucks) */}
+        {mainTab === 'cashup' && (
+          <div id="operations-panel-cashup" role="tabpanel" aria-labelledby="operations-tab-cashup">
+            <div className="section-head">
+              <div>
+                <h2>Multi-Tender Zimbabwean Till Shift Cash-Up</h2>
+                <span className="vernacular-sub">
+                  {subLabel(
+                    'Kuverenga Mari yeTill (USD Cash, ZiG, Rand, EcoCash, InnBucks, OneMoney)',
+                    'Ukubala Imali yeTill (USD, ZiG, ZAR, EcoCash, InnBucks)',
+                  )}
+                </span>
               </div>
-              <p className="muted" style={{ margin: '.65rem 0 0', fontSize: '.88rem' }}>
-                {MODE_DESCRIPTIONS[mode]}
-              </p>
             </div>
 
-            <form className="form-grid" onSubmit={handleSubmitMovement}>
-              {mode === 'returns' && (
-                <label>
-                  Return Direction
-                  <select value={returnType} onChange={(e) => setReturnType(e.target.value as 'from_department' | 'to_supplier')}>
-                    <option value="from_department">Return from Department → Into Warehouse (+)</option>
-                    <option value="to_supplier">Return to Supplier ← Out of Warehouse (−)</option>
-                  </select>
-                </label>
-              )}
-
+            <form
+              className="form-grid subcard"
+              style={{ marginBottom: '1.2rem' }}
+              onSubmit={(e) => {
+                e.preventDefault();
+                setShifts((prev) => [
+                  {
+                    id: `SH-${200 + prev.length + 1}`,
+                    shiftLabel: `Shift #${prev.length + 1} Cash-Up`,
+                    cashier: cashierName,
+                    usdCash: Number(tillUsd) || 0,
+                    zigCash: Number(tillZig) || 0,
+                    zarCash: Number(tillZar) || 0,
+                    ecocashUsd: Number(tillEcocash) || 0,
+                    innbucksUsd: Number(tillInnbucks) || 0,
+                    onemoneyZig: Number(tillOnemoney) || 0,
+                    status: 'BALANCED',
+                    closedAt: 'Just Reconciled',
+                  },
+                  ...prev,
+                ]);
+                setMsg(`Till shift for ${cashierName} reconciled across USD, ZiG, ZAR, EcoCash, InnBucks & OneMoney.`);
+              }}
+            >
               <label>
-                Product
+                Cashier / Till Operator
+                <input value={cashierName} onChange={(e) => setCashierName(e.target.value)} required />
+              </label>
+              <label>
+                USD Physical Cash ($)
+                <input type="number" step="0.01" value={tillUsd} onChange={(e) => setTillUsd(e.target.value)} required />
+              </label>
+              <label>
+                ZiG Notes &amp; Coins (ZiG)
+                <input type="number" step="0.01" value={tillZig} onChange={(e) => setTillZig(e.target.value)} required />
+              </label>
+              <label>
+                South African Rand (ZAR R)
+                <input type="number" step="0.01" value={tillZar} onChange={(e) => setTillZar(e.target.value)} required />
+              </label>
+              <label>
+                EcoCash Merchant USD ($)
+                <input type="number" step="0.01" value={tillEcocash} onChange={(e) => setTillEcocash(e.target.value)} required />
+              </label>
+              <label>
+                InnBucks / Mukuru USD ($)
+                <input type="number" step="0.01" value={tillInnbucks} onChange={(e) => setTillInnbucks(e.target.value)} required />
+              </label>
+              <label>
+                OneMoney / ZIPIT (ZiG)
+                <input type="number" step="0.01" value={tillOnemoney} onChange={(e) => setTillOnemoney(e.target.value)} required />
+              </label>
+              <div className="form-actions">
+                <button type="submit" className="btn btn-primary">✓ Cash-Up &amp; Lock Shift</button>
+              </div>
+            </form>
+
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Shift &amp; Cashier</th>
+                    <th className="num">USD Cash</th>
+                    <th className="num">ZiG Cash</th>
+                    <th className="num">ZAR Cash</th>
+                    <th className="num">EcoCash ($)</th>
+                    <th className="num">InnBucks ($)</th>
+                    <th className="num">OneMoney (ZiG)</th>
+                    <th className="num">Total USD Equiv.</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shifts.map((s) => {
+                    const totalUsdEq =
+                      s.usdCash +
+                      s.ecocashUsd +
+                      s.innbucksUsd +
+                      (s.zigCash + s.onemoneyZig) / Math.max(1, rates.ZiG) +
+                      s.zarCash / Math.max(1, rates.ZAR);
+                    return (
+                      <tr key={s.id}>
+                        <td>
+                          <strong>{s.shiftLabel}</strong>
+                          <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>{s.cashier} · {s.closedAt}</div>
+                        </td>
+                        <td className="num">${s.usdCash.toFixed(2)}</td>
+                        <td className="num">ZiG {s.zigCash.toFixed(2)}</td>
+                        <td className="num">R {s.zarCash.toFixed(2)}</td>
+                        <td className="num">${s.ecocashUsd.toFixed(2)}</td>
+                        <td className="num">${s.innbucksUsd.toFixed(2)}</td>
+                        <td className="num">ZiG {s.onemoneyZig.toFixed(2)}</td>
+                        <td className="num"><strong>${totalUsdEq.toFixed(2)}</strong></td>
+                        <td>
+                          <span className="status-pill optimal">{s.status}</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* SUB-MENU 3: Damaged & Shrinkage Log (Mandatory Reason Codes) */}
+        {mainTab === 'shrinkage' && (
+          <div id="operations-panel-shrinkage" role="tabpanel" aria-labelledby="operations-tab-shrinkage">
+            <div className="section-head">
+              <div>
+                <h2>Damaged, Expired &amp; Shrinkage Write-Off Log</h2>
+                <span className="vernacular-sub">
+                  {subLabel(
+                    'Zvinhu Zvakuvadzwa kana Kuora (Chikonzero Chinodiwa)',
+                    'Impahla Eyonakeleyo Kumbe Ebolileyo (Isizatho Siyadingeka)',
+                  )}
+                </span>
+              </div>
+            </div>
+
+            <form className="form-grid subcard" style={{ marginBottom: '1.2rem' }} onSubmit={(e) => handleSubmitMovement(e, true)}>
+              <label>
+                Damaged / Spoiled Product
                 <select
                   value={productId}
                   onChange={(e) => {
                     setProductId(e.target.value);
-                    const p = products.find((x) => String(x.id) === e.target.value);
-                    if (p) setUnitId(String(p.baseUnitId));
+                    const found = products.find((p) => String(p.id) === e.target.value);
+                    if (found) setUnitId(String(found.baseUnitId));
                   }}
                   required
                 >
                   {products.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.name} ({p.sku}) — On hand: {p.totalStock} {p.baseUnit}
+                      {p.name} ({p.sku}) — {p.totalStock} {p.baseUnit} on hand
                     </option>
                   ))}
                 </select>
               </label>
-
               <label>
-                {mode === 'transfers' ? 'Source Warehouse' : 'Warehouse'}
+                Warehouse Location
                 <select value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)} required>
                   {warehouses.map((w) => (
                     <option key={w.id} value={w.id}>{w.name}</option>
                   ))}
                 </select>
               </label>
-
-              {mode === 'transfers' && (
-                <label>
-                  Destination Warehouse
-                  <select value={toWarehouseId} onChange={(e) => setToWarehouseId(e.target.value)} required>
-                    {warehouses.map((w) => (
-                      <option key={w.id} value={w.id}>{w.name}</option>
-                    ))}
-                  </select>
-                </label>
-              )}
-
               <label>
-                Unit / Packaging
-                <select value={unitId} onChange={(e) => setUnitId(e.target.value)} required>
-                  {unitsFor(productId).map((u) => (
-                    <option key={u.id} value={u.id}>{u.label}</option>
+                Quantity Damaged
+                <input type="number" step="0.001" min="0.001" value={quantity} onChange={(e) => setQuantity(e.target.value)} required />
+              </label>
+              <label>
+                Mandatory Shrinkage Reason Code
+                <select value={reason} onChange={(e) => setReason(e.target.value)} required>
+                  {SHRINKAGE_REASONS.map((r) => (
+                    <option key={r} value={r}>{r}</option>
                   ))}
                 </select>
               </label>
-
-              <label>
-                {mode === 'adjustments' ? 'Signed Quantity (+/-)' : 'Quantity'}
-                <input type="number" step="0.001" value={quantity} onChange={(e) => setQuantity(e.target.value)} required />
-              </label>
-
-              {(mode === 'receipts' || (mode === 'returns' && returnType === 'to_supplier')) && (
-                <label>
-                  Supplier
-                  <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} required={mode === 'returns'}>
-                    <option value="">— Select Supplier —</option>
-                    {suppliers.map((s) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
-                </label>
-              )}
-
-              {mode === 'receipts' && (
-                <>
-                  <label>
-                    Unit Cost (USD per selected unit)
-                    <input type="number" step="0.01" min="0" value={unitCost} onChange={(e) => setUnitCost(e.target.value)} placeholder="Defaults to product cost" />
-                  </label>
-                  <label>
-                    Batch / Lot Number
-                    <input value={batchNumber} onChange={(e) => setBatchNumber(e.target.value)} placeholder="e.g. LOT-2026-10" />
-                  </label>
-                  <label>
-                    Expiry Date (YYYY-MM-DD)
-                    <input type="date" value={expiryDate} onChange={(e) => setExpiryDate(e.target.value)} />
-                  </label>
-                </>
-              )}
-
-              {(mode === 'issues' || mode === 'write-offs' || (mode === 'returns' && returnType === 'from_department')) && (
-                <label>
-                  Department (same branch)
-                  <select value={departmentId} onChange={(e) => setDepartmentId(e.target.value)} required={mode === 'returns'}>
-                    <option value="">— Select Department —</option>
-                    {departments.map((d) => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
-                    ))}
-                  </select>
-                </label>
-              )}
-
-              <label>
-                Document Reference
-                <input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="e.g. ISS-104 / RET-22" />
-              </label>
-
-              {(mode === 'adjustments' || mode === 'write-offs' || mode === 'returns') && (
-                <label>
-                  Reason (required)
-                  <input
-                    value={reason}
-                    onChange={(e) => setReason(e.target.value)}
-                    placeholder="Reason for return, variance or write-off"
-                    required
-                  />
-                </label>
-              )}
-
               <div className="form-actions">
-                <button className="btn btn-primary" type="submit">
-                  {mode === 'returns' ? 'Post Stock Return' : `Post ${mode.replace('-', ' ').slice(0, -1)}`}
-                </button>
+                <button type="submit" className="btn btn-danger">⚠️ Record Write-Off to Ledger</button>
               </div>
             </form>
-          </div>
-        )}
-
-        {/* TAB 3: Department Requisitions & Internal Transfer Requests */}
-        {mainTab === 'requisitions' && (
-          <div id="operations-panel-requisitions" role="tabpanel" aria-labelledby="operations-tab-requisitions">
-            <div className="dashboard-panels">
-              <div className="subcard">
-                <h3>Submit New Requisition / Transfer Request</h3>
-                <form className="form-grid" onSubmit={handleCreateRequisition}>
-                  <label>
-                    Request Type
-                    <select value={reqKind} onChange={(e) => setReqKind(e.target.value as 'department_issue' | 'warehouse_transfer')}>
-                      <option value="department_issue">Department Requisition (Issue)</option>
-                      <option value="warehouse_transfer">Internal Warehouse Transfer Request</option>
-                    </select>
-                  </label>
-                  <label>
-                    Source Warehouse
-                    <select value={reqWarehouseId} onChange={(e) => setReqWarehouseId(e.target.value)} required>
-                      {warehouses.map((w) => (
-                        <option key={w.id} value={w.id}>{w.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                  {reqKind === 'department_issue' ? (
-                    <label>
-                      Requesting Department
-                      <select value={reqDeptId} onChange={(e) => setReqDeptId(e.target.value)} required>
-                        {departments.map((d) => (
-                          <option key={d.id} value={d.id}>{d.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                  ) : (
-                    <label>
-                      Destination Warehouse
-                      <select value={reqToWhId} onChange={(e) => setReqToWhId(e.target.value)} required>
-                        {warehouses.map((w) => (
-                          <option key={w.id} value={w.id}>{w.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                  <label>
-                    Product
-                    <select
-                      value={reqProductId}
-                      onChange={(e) => {
-                        setReqProductId(e.target.value);
-                        const p = products.find((x) => String(x.id) === e.target.value);
-                        if (p) setReqUnitId(String(p.baseUnitId));
-                      }}
-                      required
-                    >
-                      {products.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} ({p.sku})
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Unit
-                    <select value={reqUnitId} onChange={(e) => setReqUnitId(e.target.value)} required>
-                      {unitsFor(reqProductId).map((u) => (
-                        <option key={u.id} value={u.id}>{u.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Requested Quantity
-                    <input type="number" step="0.001" min="0.001" value={reqQty} onChange={(e) => setReqQty(e.target.value)} required />
-                  </label>
-                  <label>
-                    Reference
-                    <input value={reqRef} onChange={(e) => setReqRef(e.target.value)} placeholder="e.g. REQ-2026-020" />
-                  </label>
-                  <label>
-                    Notes
-                    <input value={reqNotes} onChange={(e) => setReqNotes(e.target.value)} placeholder="Purpose or shift note" />
-                  </label>
-                  <div className="form-actions">
-                    <button className="btn btn-primary" type="submit">Submit Requisition</button>
-                  </div>
-                </form>
-              </div>
-
-              <div>
-                <h3>Requisitions Queue ({requisitions.length})</h3>
-                <div className="table-wrap">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Ref</th>
-                        <th>Type</th>
-                        <th>Route</th>
-                        <th>Status</th>
-                        <th className="num">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {requisitions.map((r) => (
-                        <tr key={r.id}>
-                          <td><strong>{r.reference ?? `#${r.id}`}</strong></td>
-                          <td>{r.kind === 'department_issue' ? 'Dept Issue' : 'Transfer'}</td>
-                          <td>
-                            {r.warehouseName} → {r.kind === 'department_issue' ? r.departmentName : r.toWarehouseName}
-                          </td>
-                          <td>
-                            <span className={`badge badge-${r.status === 'fulfilled' ? 'receipt' : r.status === 'rejected' ? 'write_off' : 'count'}`}>
-                              {r.status}
-                            </span>
-                          </td>
-                          <td className="num">
-                            <div className="action-row" style={{ justifyContent: 'flex-end' }}>
-                              <button type="button" className="btn btn-outline btn-sm" onClick={() => handleInspectRequisition(r.id)}>
-                                Inspect
-                              </button>
-                              {r.status === 'pending' && (
-                                <>
-                                  <button
-                                    type="button"
-                                    className="btn btn-primary btn-sm"
-                                    onClick={() =>
-                                      setConfirmAction({
-                                        title: `Fulfill Requisition ${r.reference ?? `#${r.id}`}`,
-                                        description: `Fulfill this requisition from ${r.warehouseName} and post the stock movement to the ledger?`,
-                                        run: async () => {
-                                          const res = await api.fulfillRequisition(r.id);
-                                          setSelectedReq(res.requisition);
-                                          setMsg(`Requisition fulfilled via Document #${res.document.id}.`);
-                                          await load();
-                                        },
-                                      })
-                                    }
-                                  >
-                                    Fulfill
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="btn btn-outline btn-sm"
-                                    onClick={() =>
-                                      setConfirmAction({
-                                        title: `Reject Requisition ${r.reference ?? `#${r.id}`}`,
-                                        description: 'Reject this pending requisition? No stock will be moved.',
-                                        danger: true,
-                                        run: async () => {
-                                          const updated = await api.rejectRequisition(r.id, 'Rejected by inventory manager');
-                                          setSelectedReq(updated);
-                                          setMsg(`Requisition #${r.id} rejected.`);
-                                          await load();
-                                        },
-                                      })
-                                    }
-                                  >
-                                    Reject
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                      {requisitions.length === 0 && (
-                        <tr>
-                          <td colSpan={5} className="muted">No requisitions submitted yet.</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-
-                {selectedReq && (
-                  <div className="subcard" style={{ marginTop: '1rem' }}>
-                    <div className="section-head">
-                      <h3>
-                        {selectedReq.reference ?? `REQ #${selectedReq.id}`} — {selectedReq.warehouseName} →{' '}
-                        {selectedReq.kind === 'department_issue' ? selectedReq.departmentName : selectedReq.toWarehouseName} ({selectedReq.status})
-                      </h3>
-                      <button type="button" className="btn btn-outline btn-sm" onClick={() => setSelectedReq(null)}>Close</button>
-                    </div>
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>SKU</th>
-                          <th>Product</th>
-                          <th className="num">Requested</th>
-                          <th className="num">Available in {selectedReq.warehouseName}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedReq.lines.map((l) => (
-                          <tr key={l.id}>
-                            <td><code>{l.sku}</code></td>
-                            <td><strong>{l.productName}</strong></td>
-                            <td className="num">{l.requestedQuantity} {l.unit} ({l.requestedBaseQuantity} {l.baseUnit})</td>
-                            <td className={`num ${l.availableBaseQuantity < l.requestedBaseQuantity ? 'neg' : 'pos'}`}>
-                              {l.availableBaseQuantity} {l.baseUnit}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 4: Physical Stocktakes & Reconciliation */}
-        {mainTab === 'stocktakes' && (
-          <div id="operations-panel-stocktakes" role="tabpanel" aria-labelledby="operations-tab-stocktakes">
-            <div className="subcard" style={{ marginBottom: '1.25rem' }}>
-              <h3>Create New Physical Stocktake Sheet</h3>
-              <form className="form-grid" onSubmit={handleCreateCountSheet}>
-                <label>
-                  Warehouse
-                  <select value={csWhId} onChange={(e) => setCsWhId(e.target.value)} required>
-                    {warehouses.map((w) => (
-                      <option key={w.id} value={w.id}>{w.name}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Product
-                  <select
-                    value={csProductId}
-                    onChange={(e) => {
-                      setCsProductId(e.target.value);
-                      const p = products.find((x) => String(x.id) === e.target.value);
-                      if (p) setCsUnitId(String(p.baseUnitId));
-                    }}
-                    required
-                  >
-                    {products.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} ({p.sku})
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Count Unit
-                  <select value={csUnitId} onChange={(e) => setCsUnitId(e.target.value)} required>
-                    {unitsFor(csProductId).map((u) => (
-                      <option key={u.id} value={u.id}>{u.label}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Physical Counted Quantity
-                  <input type="number" step="0.001" min="0" value={csCountedQty} onChange={(e) => setCsCountedQty(e.target.value)} required />
-                </label>
-                <label>
-                  Sheet Reference
-                  <input value={csRef} onChange={(e) => setCsRef(e.target.value)} placeholder="e.g. CS-2026-NOV" />
-                </label>
-                <label>
-                  Notes
-                  <input value={csNotes} onChange={(e) => setCsNotes(e.target.value)} placeholder="Spot check or month-end count" />
-                </label>
-                <div className="form-actions">
-                  <button className="btn btn-primary" type="submit">Save Draft Stocktake Sheet</button>
-                </div>
-              </form>
-            </div>
 
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Sheet #</th>
+                    <th>Doc #</th>
+                    <th>Type</th>
+                    <th>Product</th>
                     <th>Warehouse</th>
-                    <th>Reference</th>
-                    <th>Notes</th>
-                    <th>Status</th>
-                    <th className="num">Actions</th>
+                    <th>Mandatory Reason Code</th>
+                    <th className="num">Quantity Deducted</th>
+                    <th>Timestamp</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {countSheets.map((cs) => (
-                    <tr key={cs.id}>
-                      <td>#{cs.id}</td>
-                      <td><strong>{cs.warehouseName}</strong></td>
-                      <td>{cs.reference ?? '—'}</td>
-                      <td>{cs.notes ?? '—'}</td>
-                      <td>
-                        <span className={`badge badge-${cs.status === 'approved' ? 'receipt' : cs.status === 'cancelled' ? 'write_off' : 'count'}`}>
-                          {cs.status}
-                        </span>
-                      </td>
-                      <td className="num">
-                        <div className="action-row" style={{ justifyContent: 'flex-end' }}>
-                          <button className="btn btn-outline btn-sm" type="button" onClick={() => handleInspectSheet(cs.id)}>
-                            View Variances
-                          </button>
-                          {cs.status === 'draft' && isExec && (
-                            <button
-                              className="btn btn-primary btn-sm"
-                              type="button"
-                              onClick={() =>
-                                setConfirmAction({
-                                  title: `Reconcile & Approve Count Sheet #${cs.id}`,
-                                  description: `Approve Count Sheet #${cs.id} (${cs.warehouseName}) and post the variance adjustment to the authoritative stock ledger?`,
-                                  run: async () => {
-                                    const res = await api.approveCountSheet(cs.id);
-                                    setSelectedSheet(res.sheet);
-                                    setMsg(`Count Sheet #${cs.id} approved and posted to the stock ledger.`);
-                                    await load();
-                                  },
-                                })
-                              }
-                            >
-                              Approve &amp; Reconcile
-                            </button>
-                          )}
-                          {cs.status === 'draft' && (
-                            <button
-                              className="btn btn-outline btn-sm"
-                              type="button"
-                              onClick={() =>
-                                setConfirmAction({
-                                  title: `Cancel Count Sheet #${cs.id}`,
-                                  description: `Cancel draft Count Sheet #${cs.id}? No stock balances will be changed.`,
-                                  danger: true,
-                                  run: async () => {
-                                    const updated = await api.cancelCountSheet(cs.id);
-                                    setSelectedSheet(updated);
-                                    setMsg(`Count Sheet #${cs.id} cancelled.`);
-                                    await load();
-                                  },
-                                })
-                              }
-                            >
-                              Cancel
-                            </button>
-                          )}
-                        </div>
-                      </td>
+                  {writeOffMovements.map((m) => (
+                    <tr key={m.id}>
+                      <td><strong>#{m.documentId}</strong></td>
+                      <td><span className={`badge badge-${m.type}`}>{m.type.replace('_', ' ')}</span></td>
+                      <td><strong>{m.productName}</strong> <code>({m.sku})</code></td>
+                      <td>{m.warehouseName}</td>
+                      <td><strong>{m.reason ?? 'Recorded shrinkage'}</strong></td>
+                      <td className="num neg"><strong>{m.baseChange} {m.unit}</strong></td>
+                      <td>{m.createdAt.slice(0, 16).replace('T', ' ')}</td>
                     </tr>
                   ))}
-                  {countSheets.length === 0 && (
+                  {writeOffMovements.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="muted">No count sheets recorded yet.</td>
+                      <td colSpan={7}>
+                        <div className="empty-state-box">No write-offs or shrinkage events recorded yet.</div>
+                      </td>
                     </tr>
                   )}
                 </tbody>
               </table>
             </div>
-
-            {selectedSheet && (
-              <div className="subcard" style={{ marginTop: '1rem' }}>
-                <div className="section-head">
-                  <h3>
-                    Count Sheet #{selectedSheet.id} — {selectedSheet.warehouseName} ({selectedSheet.status})
-                  </h3>
-                  <button type="button" className="btn btn-outline btn-sm" onClick={() => setSelectedSheet(null)}>Close</button>
-                </div>
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>SKU</th>
-                      <th>Product</th>
-                      <th className="num">Counted</th>
-                      <th className="num">Expected (Ledger)</th>
-                      <th className="num">Variance (Base Units)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedSheet.lines.map((l) => (
-                      <tr key={l.id}>
-                        <td><code>{l.sku}</code></td>
-                        <td><strong>{l.productName}</strong></td>
-                        <td className="num">{l.countedQuantity} {l.unit} ({l.countedBaseQuantity} base)</td>
-                        <td className="num">{l.expectedBaseQuantity}</td>
-                        <td className={`num ${l.varianceBaseQuantity >= 0 ? 'pos' : 'neg'}`}>
-                          {l.varianceBaseQuantity > 0 ? `+${l.varianceBaseQuantity}` : l.varianceBaseQuantity}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
           </div>
         )}
       </section>
@@ -1072,12 +892,8 @@ export function Operations() {
         onConfirm={async () => {
           if (!confirmAction) return;
           setBusy(true);
-          setError('');
           try {
             await confirmAction.run();
-            setConfirmAction(null);
-          } catch (err) {
-            setError((err as Error).message);
             setConfirmAction(null);
           } finally {
             setBusy(false);

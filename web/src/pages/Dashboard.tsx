@@ -2,19 +2,25 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, type BalanceItem, type Summary } from '../api';
 import { portalPath, useAuth } from '../auth';
+import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { QuickTransferModal } from '../components/QuickTransferModal';
 import { Spinner } from '../components/Spinner';
+import { useZim } from '../zimContext';
 
 const ZONE_ROWS = ['A', 'B', 'C', 'D'];
 const ZONE_COLS = [1, 2, 3, 4];
 
+type DashSubTab = 'overview' | 'charts' | 'reorder' | 'activity';
+
 export function Dashboard() {
   const { user } = useAuth();
+  const { formatMoney, subLabel, roleView, currency, rates } = useZim();
+  const [activeSubTab, setActiveSubTab] = useState<DashSubTab>('overview');
   const [data, setData] = useState<Summary | null>(null);
   const [balances, setBalances] = useState<BalanceItem[]>([]);
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
-  const [rightTab, setRightTab] = useState<'stock' | 'activity'>('stock');
   const [transferTarget, setTransferTarget] = useState<{ productId?: number; warehouseId?: number } | null>(null);
+  const [whatsappOpen, setWhatsappOpen] = useState(false);
   const [flashMsg, setFlashMsg] = useState('');
   const [error, setError] = useState('');
   const basePath = user ? portalPath(user.role) : '/inventory';
@@ -48,8 +54,12 @@ export function Dashboard() {
     data?.totalStockUnits !== undefined
       ? data.totalStockUnits
       : (data?.warehouseSummary ?? []).reduce((acc, w) => acc + w.totalUnits, 0);
+  const totalValUsd =
+    data?.totalStockValue !== undefined
+      ? data.totalStockValue
+      : (data?.warehouseSummary ?? []).reduce((acc, w) => acc + w.stockValue, 0);
 
-  // Build 16 zone cells (A1..D4) mapped strictly to real warehouse stock balances (no synthetic numbers)
+  // Build 16 zone cells (A1..D4) mapped strictly to real warehouse stock balances
   const zoneCells = ZONE_ROWS.flatMap((r, rIdx) =>
     ZONE_COLS.map((c, cIdx) => {
       const idx = rIdx * 4 + cIdx;
@@ -72,371 +82,418 @@ export function Dashboard() {
     }),
   );
 
-  const latestMovement = data?.recentMovements?.[0];
+  const subTabs: TabDefinition<DashSubTab>[] = [
+    {
+      key: 'overview',
+      label: '1. Overview & Quick Actions',
+      purpose: 'Four core store health indicators and oversized 1-tap buttons for daily storefloor tasks.',
+    },
+    {
+      key: 'charts',
+      label: '2. Visual Charts & Trends',
+      badge: `${healthPct}%`,
+      purpose: 'Visual warehouse zone heatmap, stock health gauge, and multi-currency valuation breakdown.',
+    },
+    {
+      key: 'reorder',
+      label: '3. Reorder Alerts',
+      badge: lowStockCount,
+      purpose: 'Items running low on the shelf with 1-tap Purchase Order restocking and WhatsApp supplier list.',
+    },
+    {
+      key: 'activity',
+      label: '4. Recent Floor Activity',
+      badge: data?.recentMovements?.length ?? 0,
+      purpose: 'Live stream of goods received, issued to departments, or moved between warehouses.',
+    },
+  ];
+
+  // Build WhatsApp Daily Summary & Reorder List text
+  const lowItemsList = (data?.lowStockItems ?? [])
+    .map((i) => `• ${i.productName} (${i.sku}): Only ${i.quantity} ${i.unit} left (Reorder at ${i.reorderLevel})`)
+    .join('\n');
+  const whatsappText = [
+    `🇿🇼 *GREAT ZIMBABWE STOCKROOM — DAILY SUMMARY*`,
+    `📅 Date: ${new Date().toISOString().slice(0, 10)}`,
+    `📦 Active SKUs: ${totalSkus} (${totalUnitsAll.toLocaleString()} base units)`,
+    `💰 Total Stock Valuation: ${formatMoney(totalValUsd, 'USD')} | ${formatMoney(totalValUsd, 'ZiG')} | ${formatMoney(totalValUsd, 'ZAR')}`,
+    `📥 Receipts Posted: ${data?.receiptsCount ?? 0} (+${data?.receiptsUnits ?? 0} units)`,
+    `📤 Issues Posted: ${data?.issuesCount ?? 0} (-${data?.issuesUnits ?? 0} units)`,
+    `⚠️ Low-Stock Items (${lowStockCount}):`,
+    lowItemsList || '• All items above reorder level ✓',
+  ].join('\n');
 
   return (
     <>
+      <div className="page-header">
+        <div>
+          <h1>
+            {roleView === 'executive'
+              ? 'Executive Business Command & Capital Overview'
+              : 'Storefloor Operations & Quick Actions'}
+          </h1>
+          <span className="vernacular-sub">
+            {subLabel(
+              'Mufananidzo Webhizinesi & Zvinhu Zviri Muchitoro',
+              'Isimo Sebhizimusi Lempahla Yesitolo',
+              'Real-time Zimbabwean SME Stock & Multi-Currency Overview',
+            )}
+          </span>
+        </div>
+        <div className="quick-actions">
+          <button
+            type="button"
+            className="btn btn-whatsapp"
+            onClick={() => setWhatsappOpen(true)}
+            title="Generate 1-Tap WhatsApp Daily Summary & Reorder List for Owner or Supplier"
+          >
+            📲 1-Tap WhatsApp Summary &amp; Reorder List
+          </button>
+          <button type="button" className="btn btn-outline" onClick={load}>
+            ↻ Refresh
+          </button>
+        </div>
+      </div>
+
       {error && <p className="form-error" role="alert">Could not load the dashboard. {error}</p>}
       {flashMsg && <p className="form-success" role="status">{flashMsg}</p>}
 
-      {/* TIER 1: 4 Command KPI Cards backed 100% by real SQLite queries */}
-      {data && (
-        <section className="ops-kpi-row" aria-label="Key operational metrics">
-          {/* Card 1: Total Stock Valuation & Units */}
-          <article className="ops-kpi-card">
-            <div className="ops-kpi-top">
-              <span className="ops-kpi-title">Total Stock Valuation</span>
-              <span className="ops-kpi-trend">{totalUnitsAll.toLocaleString()} base units</span>
-            </div>
-            <div className="ops-kpi-Mid">
+      {/* TIER 3: Horizontal In-Page Pill Sub-Menu Bar (renders ONE sub-view at a time) */}
+      <AccessibleTabs
+        idPrefix="dashboard"
+        ariaLabel="Dashboard sub-navigation"
+        tabs={subTabs}
+        active={activeSubTab}
+        onChange={setActiveSubTab}
+      />
+
+      {/* SUB-MENU 1: Overview & Quick Actions (Max 4 KPI Cards + 4 Oversized Step Buttons) */}
+      {activeSubTab === 'overview' && data && (
+        <div id="dashboard-panel-overview" role="tabpanel" aria-labelledby="dashboard-tab-overview">
+          <section className="ops-kpi-row" aria-label="Key operational metrics">
+            {/* KPI Card 1 */}
+            <article className="ops-kpi-card">
+              <div className="ops-kpi-top">
+                <span className="ops-kpi-title">
+                  {roleView === 'executive' ? `Total Capital Value (${currency})` : 'Total Stock On Hand'}
+                </span>
+                <span className="ops-kpi-trend">{totalUnitsAll.toLocaleString()} base units</span>
+              </div>
+              <div className="ops-kpi-Mid">
+                <div>
+                  <div className="ops-kpi-big">{formatMoney(totalValUsd)}</div>
+                  <span className="ops-pill-badge">{data.products ?? 0} Active SKUs · {data.warehouses} Warehouses</span>
+                </div>
+                <svg className="ops-sparkline" viewBox="0 0 110 38" aria-hidden="true">
+                  <path
+                    d="M2 30 L18 25 L32 28 L48 16 L63 21 L78 10 L94 14 L108 4"
+                    fill="none"
+                    stroke="var(--zim-green-700)"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d="M2 30 L18 25 L32 28 L48 16 L63 21 L78 10 L94 14 L108 4 L108 38 L2 38 Z"
+                    fill="var(--accent-indigo-soft)"
+                  />
+                </svg>
+              </div>
+            </article>
+
+            {/* KPI Card 2 */}
+            <article className="ops-kpi-card">
+              <div className="ops-kpi-top">
+                <span className="ops-kpi-title">Goods In vs Goods Out</span>
+                <span className="muted" style={{ margin: 0, fontSize: '.78rem' }}>
+                  {(data.receiptsCount ?? 0) + (data.issuesCount ?? 0)} Posted Docs
+                </span>
+              </div>
+              <div className="ops-kpi-big ops-kpi-split-num">
+                <span title="Total received base units">
+                  <strong>+{(data.receiptsUnits ?? 0).toLocaleString()}</strong> <small>In ({data.receiptsCount ?? 0})</small>
+                </span>
+                <span className="sep">/</span>
+                <span title="Total issued base units">
+                  <strong>-{(data.issuesUnits ?? 0).toLocaleString()}</strong> <small>Out ({data.issuesCount ?? 0})</small>
+                </span>
+              </div>
+              <div className="ops-dot-strip">
+                <span className="dot active" aria-hidden="true" />
+                <span className="ops-dot-caption">
+                  {data.branches} Branches · {data.departments} Depts
+                  {data.users !== null ? ` · ${data.users} Staff` : ''}
+                </span>
+              </div>
+            </article>
+
+            {/* KPI Card 3 */}
+            <article className="ops-kpi-card">
+              <div className="ops-kpi-top">
+                <span className="ops-kpi-title">
+                  {roleView === 'executive' ? 'Est. 15% ZIMRA VAT Pool' : 'Transfers & Pending Approvals'}
+                </span>
+                <span className="muted" style={{ margin: 0, fontSize: '.78rem' }}>
+                  {data.transfersCount ?? 0} Transfer Docs
+                </span>
+              </div>
+              {roleView === 'executive' ? (
+                <>
+                  <div className="ops-kpi-big">{formatMoney(totalValUsd * 0.15)}</div>
+                  <div className="ops-dot-strip">
+                    <span className="ops-dot-caption">
+                      1 USD = {rates.ZiG} ZiG · {rates.ZAR} ZAR
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="ops-kpi-big ops-kpi-split-num">
+                    <span>
+                      <strong>{(data.transfersUnits ?? 0).toLocaleString()}</strong> <small>Units Moved</small>
+                    </span>
+                    <span className="sep">/</span>
+                    <span>
+                      <strong>{data.pendingApprovals?.total ?? data.pendingCountSheets ?? 0}</strong> <small>Pending</small>
+                    </span>
+                  </div>
+                  <div className="ops-dot-strip">
+                    <span className="ops-dot-caption">
+                      {data.pendingApprovals
+                        ? `${data.pendingApprovals.draftPurchaseOrders} POs · ${data.pendingApprovals.pendingRequisitions} Reqs`
+                        : `${data.pendingCountSheets ?? 0} draft stocktakes`}
+                    </span>
+                  </div>
+                </>
+              )}
+            </article>
+
+            {/* KPI Card 4 */}
+            <article className="ops-kpi-card ops-kpi-gauge-card">
               <div>
-                <div className="ops-kpi-big">
-                  {data.totalStockValue !== undefined
-                    ? `$${data.totalStockValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                    : `${totalUnitsAll.toLocaleString()}`}
+                <span className="ops-kpi-title">Shelf Stock Health</span>
+                <div className="ops-gauge-sub">
+                  <strong>{healthPct}% Optimal</strong>
+                  <span>({lowStockCount} low-stock · {data.expiringSoonCount ?? 0} expiring)</span>
                 </div>
-                <span className="ops-pill-badge">{data.products ?? 0} Active SKUs · {data.warehouses} Warehouses</span>
-              </div>
-              <svg className="ops-sparkline" viewBox="0 0 110 38" aria-hidden="true">
-                <path
-                  d="M2 30 L18 25 L32 28 L48 16 L63 21 L78 10 L94 14 L108 4"
-                  fill="none"
-                  stroke="var(--accent-indigo)"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                />
-                <path
-                  d="M2 30 L18 25 L32 28 L48 16 L63 21 L78 10 L94 14 L108 4 L108 38 L2 38 Z"
-                  fill="var(--accent-indigo-soft)"
-                />
-              </svg>
-            </div>
-          </article>
-
-          {/* Card 2: Receipts vs Issues (Real Ledger Totals) */}
-          <article className="ops-kpi-card">
-            <div className="ops-kpi-top">
-              <span className="ops-kpi-title">Receipts &amp; Issues Ledger</span>
-              <span className="muted" style={{ margin: 0, fontSize: '.78rem' }}>
-                {(data.receiptsCount ?? 0) + (data.issuesCount ?? 0)} Posted Docs
-              </span>
-            </div>
-            <div className="ops-kpi-big ops-kpi-split-num">
-              <span title="Total received base units">
-                <strong>+{(data.receiptsUnits ?? 0).toLocaleString()}</strong> <small>Received ({data.receiptsCount ?? 0})</small>
-              </span>
-              <span className="sep">/</span>
-              <span title="Total issued base units">
-                <strong>-{(data.issuesUnits ?? 0).toLocaleString()}</strong> <small>Issued ({data.issuesCount ?? 0})</small>
-              </span>
-            </div>
-            <div className="ops-dot-strip">
-              <span className="dot active" aria-hidden="true" />
-              <span className="ops-dot-caption">
-                {data.branches} Branches · {data.departments} Depts
-                {data.users !== null ? ` · ${data.users} Users` : ''}
-              </span>
-            </div>
-          </article>
-
-          {/* Card 3: Internal Transfers & Pending Approvals */}
-          <article className="ops-kpi-card">
-            <div className="ops-kpi-top">
-              <span className="ops-kpi-title">Transfers &amp; Approvals</span>
-              <span className="muted" style={{ margin: 0, fontSize: '.78rem' }}>
-                {data.transfersCount ?? 0} Transfer Docs
-              </span>
-            </div>
-            <div className="ops-kpi-big ops-kpi-split-num">
-              <span>
-                <strong>{(data.transfersUnits ?? 0).toLocaleString()}</strong> <small>Units Moved</small>
-              </span>
-              <span className="sep">/</span>
-              <span>
-                <strong>{data.pendingApprovals?.total ?? data.pendingCountSheets ?? 0}</strong> <small>Pending</small>
-              </span>
-            </div>
-            <div className="ops-dot-strip">
-              <span className="ops-dot-caption">
-                {data.pendingApprovals
-                  ? `${data.pendingApprovals.draftPurchaseOrders} POs · ${data.pendingApprovals.pendingRequisitions} Reqs · ${data.pendingApprovals.draftCountSheets} Counts`
-                  : `${data.pendingCountSheets ?? 0} draft stocktakes`}
-              </span>
-            </div>
-          </article>
-
-          {/* Card 4: Overall Utilization / Reorder Health Gauge */}
-          <article className="ops-kpi-card ops-kpi-gauge-card">
-            <div>
-              <span className="ops-kpi-title">Low-Stock &amp; Health</span>
-              <div className="ops-gauge-sub">
-                <strong>{healthPct}% Optimal</strong>
-                <span>({lowStockCount} low-stock · {data.expiringSoonCount ?? 0} expiring)</span>
-              </div>
-              <div className="ops-gauge-legend">
-                <span className="warn">▲ {lowStockCount} Low Stock</span>
-                <span className="opt">● {healthySkus} Optimal</span>
-              </div>
-            </div>
-            <div className="ops-gauge-wrap" aria-hidden="true">
-              <svg viewBox="0 0 100 60" className="ops-gauge-svg">
-                <path
-                  d="M 12 50 A 38 38 0 0 1 88 50"
-                  fill="none"
-                  stroke="var(--line)"
-                  strokeWidth="10"
-                  strokeLinecap="round"
-                />
-                <path
-                  d="M 12 50 A 38 38 0 0 1 88 50"
-                  fill="none"
-                  stroke="var(--accent-teal)"
-                  strokeWidth="10"
-                  strokeLinecap="round"
-                  strokeDasharray="120"
-                  strokeDashoffset={120 - (120 * healthPct) / 100}
-                />
-              </svg>
-              <div className="ops-gauge-center">
-                <strong>{healthPct}%</strong>
-                <span>Optimal</span>
-              </div>
-            </div>
-          </article>
-        </section>
-      )}
-
-      {/* TIER 2: Primary Command Split (Warehouse Zone Heatmap + Real-Time Stock & Ledger Status) */}
-      <div className="ops-command-grid">
-        {/* Left Panel: Warehouse Zone Capacity Heatmap */}
-        <section className="card ops-heatmap-card" aria-labelledby="heatmap-heading">
-          <div className="section-head">
-            <h2 id="heatmap-heading" className="ops-panel-title">WAREHOUSE ZONE CAPACITY (HEATMAP)</h2>
-            {selectedZone && (
-              <button type="button" className="btn btn-outline btn-sm" onClick={() => setSelectedZone(null)}>
-                Clear ({selectedZone})
-              </button>
-            )}
-          </div>
-          <p className="muted" style={{ marginBottom: '.75rem', fontSize: '.84rem' }}>
-            Click or press Enter on any zone tile to inspect bin stock or trigger a Quick Transfer.
-          </p>
-
-          <div className="heatmap-layout">
-            <div className="heatmap-col-headers">
-              <span className="zone-corner">Zone</span>
-              {ZONE_COLS.map((c) => (
-                <span key={c} className="zone-col-label">{c}</span>
-              ))}
-            </div>
-            {ZONE_ROWS.map((r) => (
-              <div key={r} className="heatmap-row">
-                <span className="zone-row-label">{r}</span>
-                {ZONE_COLS.map((c) => {
-                  const code = `${r}${c}`;
-                  const cell = zoneCells.find((z) => z.code === code)!;
-                  const isSelected = selectedZone === code;
-                  return (
-                    <button
-                      key={code}
-                      type="button"
-                      className={`zone-tile tier-${cell.tier}${isSelected ? ' is-selected' : ''}`}
-                      onClick={() => setSelectedZone(isSelected ? null : code)}
-                      title={
-                        cell.balance
-                          ? `Zone ${code}: ${cell.balance.productName} (${cell.balance.quantity} ${cell.balance.unit} in ${cell.balance.warehouseName})`
-                          : `Zone ${code} (${cell.pct}%)`
-                      }
-                    >
-                      <strong>{code}</strong>
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-
-          <div className="heatmap-legend">
-            <span><i className="leg-dot low" /> 0–30%</span>
-            <span><i className="leg-dot mid" /> 30–70%</span>
-            <span><i className="leg-dot high" /> 70–100%</span>
-          </div>
-        </section>
-
-        {/* Right Panel: Real-Time Stock & Scanner/Ledger Status */}
-        <section className="card ops-live-card" aria-labelledby="live-status-heading">
-          <div className="section-head">
-            <div className="ops-live-title-group">
-              <h2 id="live-status-heading" className="ops-panel-title">
-                {rightTab === 'stock' ? 'REAL-TIME STOCK & ZONE STATUS' : 'REAL-TIME LEDGER ACTIVITY'}
-              </h2>
-              <div className="mini-pill-tabs" role="tablist" aria-label="Right panel view">
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={rightTab === 'stock'}
-                  className={`mini-tab${rightTab === 'stock' ? ' active' : ''}`}
-                  onClick={() => setRightTab('stock')}
-                >
-                  Stock Status
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={rightTab === 'activity'}
-                  className={`mini-tab${rightTab === 'activity' ? ' active' : ''}`}
-                  onClick={() => setRightTab('activity')}
-                >
-                  Activity Feed
-                </button>
-              </div>
-            </div>
-            <span className="live-feed-badge">● LIVE feed</span>
-          </div>
-
-          {rightTab === 'stock' ? (
-            <div className="table-wrap">
-              <table className="data-table ops-status-table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>SKU</th>
-                    <th>Warehouse / Bin</th>
-                    <th>Stock Level</th>
-                    <th>Status</th>
-                    <th className="num">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {balances.map((b, idx) => {
-                    const zoneCode = `${ZONE_ROWS[idx % 4]}${ZONE_COLS[idx % 4]}-${idx + 1}`;
-                    const ratio = b.reorderLevel > 0 ? Math.min(100, Math.round((b.quantity / (b.reorderLevel * 2)) * 100)) : 80;
-                    const statusClass = b.quantity <= 0 ? 'out' : b.lowStock ? 'low' : 'optimal';
-                    const statusLabel = b.quantity <= 0 ? 'Out of Stock' : b.lowStock ? 'Low Stock' : 'In Stock';
-                    return (
-                      <tr key={`${b.productId}-${b.warehouseId}`}>
-                        <td><strong>{b.productName}</strong></td>
-                        <td><code>{b.sku}</code></td>
-                        <td>
-                          <span className="bin-tag">{zoneCode}</span>{' '}
-                          <span className="muted" style={{ fontSize: '.82rem' }}>{b.warehouseName}</span>
-                        </td>
-                        <td style={{ minWidth: '150px' }}>
-                          <div className="stock-level-cell">
-                            <div className="stock-bar-track">
-                              <div className={`stock-bar-fill ${statusClass}`} style={{ width: `${Math.max(8, ratio)}%` }} />
-                            </div>
-                            <span className="stock-level-num">{b.quantity} {b.unit}</span>
-                          </div>
-                        </td>
-                        <td>
-                          <span className={`status-pill ${statusClass}`}>{statusLabel}</span>
-                        </td>
-                        <td className="num">
-                          <button
-                            type="button"
-                            className="btn btn-outline btn-sm"
-                            onClick={() => setTransferTarget({ productId: b.productId, warehouseId: b.warehouseId })}
-                            title={`Quick transfer ${b.productName}`}
-                          >
-                            ⇄ Transfer
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {balances.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="muted">
-                        No warehouse balances loaded yet. <Link to={`${basePath}/products`}>View Products</Link>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="activity-feed-list" role="log" aria-label="Recent ledger movements">
-              {(data?.recentMovements ?? []).map((m) => (
-                <div key={m.id} className="activity-feed-row">
-                  <span className="feed-time">[{m.createdAt.slice(11, 19) || 'LIVE'}]</span>
-                  <span className="feed-doc">DOC #{m.documentId}</span>
-                  <span className="feed-arrow">→</span>
-                  <span className={`badge badge-${m.type}`}>{m.type.replace('_', ' ').toUpperCase()}</span>
-                  <span className="feed-sku">
-                    <code>{m.sku}</code> ({m.productName})
-                  </span>
-                  <span className="feed-wh">| {m.warehouseName}</span>
-                  <strong className={`feed-delta ${m.baseChange >= 0 ? 'pos' : 'neg'}`}>
-                    {m.baseChange > 0 ? `+${m.baseChange}` : m.baseChange} {m.unit}
-                  </strong>
+                <div className="ops-gauge-legend">
+                  <span className="warn">▲ {lowStockCount} Low Stock</span>
+                  <span className="opt">● {healthySkus} In Stock</span>
                 </div>
-              ))}
-            </div>
-          )}
-
-          {/* Bottom Live Scanner / Ledger Ticker Bar */}
-          <div className="ops-ticker-bar">
-            <span className="ticker-play" aria-hidden="true">▶</span>
-            <span className="ticker-text">
-              {latestMovement
-                ? `[${latestMovement.createdAt.slice(11, 19) || 'LIVE'}] DOC_${latestMovement.documentId} → ${latestMovement.sku} (${latestMovement.productName}) | ${latestMovement.warehouseName.toUpperCase()}`
-                : 'LEDGER_READY → ALL WAREHOUSE ZONES SYNCHRONISED'}
-            </span>
-            <Link to={`${basePath}/operations`} className="btn-ticker-plus" title="Record new stock movement">
-              +
-            </Link>
-          </div>
-        </section>
-      </div>
-
-      {/* TIER 3: Warehouse Summary & Quick Navigation Cards */}
-      {data?.warehouseSummary && (
-        <div className="dashboard-panels" style={{ marginTop: '1.25rem' }}>
-          <section className="card">
-            <div className="section-head">
-              <h2>Warehouses Overview</h2>
-              <Link to={`${basePath}/warehouses`}>Manage Warehouses &amp; Depts →</Link>
-            </div>
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Warehouse</th>
-                    <th>Branch</th>
-                    <th className="num">Base Units</th>
-                    <th className="num">Stock Value (USD)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.warehouseSummary.map((w) => (
-                    <tr key={w.warehouseId}>
-                      <td><strong>{w.warehouseName}</strong></td>
-                      <td>{w.branchName}</td>
-                      <td className="num">{w.totalUnits.toLocaleString()}</td>
-                      <td className="num">${w.stockValue.toFixed(2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+              </div>
+              <div className="ops-gauge-wrap" aria-hidden="true">
+                <svg viewBox="0 0 100 60" className="ops-gauge-svg">
+                  <path
+                    d="M 12 50 A 38 38 0 0 1 88 50"
+                    fill="none"
+                    stroke="var(--line)"
+                    strokeWidth="10"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d="M 12 50 A 38 38 0 0 1 88 50"
+                    fill="none"
+                    stroke="var(--zim-green-600)"
+                    strokeWidth="10"
+                    strokeLinecap="round"
+                    strokeDasharray="120"
+                    strokeDashoffset={120 - (120 * healthPct) / 100}
+                  />
+                </svg>
+                <div className="ops-gauge-center">
+                  <strong>{healthPct}%</strong>
+                  <span>Healthy</span>
+                </div>
+              </div>
+            </article>
           </section>
 
+          {/* 4 Oversized Step Buttons for Zero-Computer-Background Staff */}
           <section className="card">
             <div className="section-head">
-              <h2>Low-Stock Reorder Queue ({data.lowStockItems?.length ?? 0})</h2>
-              <Link to={`${basePath}/reports`}>Full Reports &amp; Alerts →</Link>
+              <div>
+                <h2>1-Tap Storefloor Step Buttons (Zero Typing Needed)</h2>
+                <span className="vernacular-sub">
+                  {subLabel(
+                    'Baya bhatani rimwe chete kuita basa rechitoro',
+                    'Cindezela inkinobho eyodwa ukwenza umsebenzi wesitolo',
+                    'Tap any large card below to start a guided task',
+                  )}
+                </span>
+              </div>
             </div>
-            {data.lowStockItems && data.lowStockItems.length > 0 ? (
+            <div className="big-step-grid">
+              <Link to={`${basePath}/procurement`} className="big-step-btn">
+                <span className="big-step-icon" aria-hidden="true">📥</span>
+                <div>
+                  <span className="big-step-title">Step 1: Receive Goods (GRN)</span>
+                  <span className="big-step-sub">Kugamuchira Zvinhu • Ukuthola Impahla</span>
+                  <span className="big-step-desc">Record supplier deliveries, cross-border runner stock, or crates into store.</span>
+                </div>
+              </Link>
+
+              <Link to={`${basePath}/products`} className="big-step-btn">
+                <span className="big-step-icon" aria-hidden="true">➕</span>
+                <div>
+                  <span className="big-step-title">Step 2: Quick +1 Add / -1 Issue</span>
+                  <span className="big-step-sub">Wedzera kana Kubvisa • Engeza kumbe Susa</span>
+                  <span className="big-step-desc">Open visual product cards with oversized +1, -1, and +Bulk buttons.</span>
+                </div>
+              </Link>
+
+              <button type="button" className="big-step-btn" onClick={() => setTransferTarget({})}>
+                <span className="big-step-icon" aria-hidden="true">⇄</span>
+                <div>
+                  <span className="big-step-title">Step 3: Move or Break Bulk</span>
+                  <span className="big-step-sub">Kufambisa Zvinhu • Ukuthutha Impahla</span>
+                  <span className="big-step-desc">Move stock between store zones, branches, or open a bulk crate onto shelves.</span>
+                </div>
+              </button>
+
+              <button type="button" className="big-step-btn" onClick={() => setWhatsappOpen(true)}>
+                <span className="big-step-icon" aria-hidden="true">📲</span>
+                <div>
+                  <span className="big-step-title">Step 4: WhatsApp Owner Summary</span>
+                  <span className="big-step-sub">Tumira paWhatsApp • Thumela kuWhatsApp</span>
+                  <span className="big-step-desc">Send today&apos;s stock balance and low-stock reorder list via WhatsApp.</span>
+                </div>
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* SUB-MENU 2: Visual Charts & Trends */}
+      {activeSubTab === 'charts' && (
+        <div id="dashboard-panel-charts" role="tabpanel" aria-labelledby="dashboard-tab-charts">
+          <div className="ops-command-grid">
+            <section className="card ops-heatmap-card" aria-labelledby="heatmap-heading">
+              <div className="section-head">
+                <div>
+                  <h2 id="heatmap-heading" className="ops-panel-title">STORE &amp; YARD ZONE HEATMAP</h2>
+                  <span className="vernacular-sub">
+                    {subLabel('Mamepu eMatura', 'Imephu Yezigaba Zesitolo')}
+                  </span>
+                </div>
+                {selectedZone && (
+                  <button type="button" className="btn btn-outline btn-sm" onClick={() => setSelectedZone(null)}>
+                    Clear ({selectedZone})
+                  </button>
+                )}
+              </div>
+              <p className="muted" style={{ marginBottom: '.75rem', fontSize: '.84rem' }}>
+                Click any zone tile to inspect bin stock or trigger a Quick Transfer.
+              </p>
+
+              <div className="heatmap-layout">
+                <div className="heatmap-col-headers">
+                  <span className="zone-corner">Zone</span>
+                  {ZONE_COLS.map((c) => (
+                    <span key={c} className="zone-col-label">{c}</span>
+                  ))}
+                </div>
+                {ZONE_ROWS.map((r) => (
+                  <div key={r} className="heatmap-row">
+                    <span className="zone-row-label">{r}</span>
+                    {ZONE_COLS.map((c) => {
+                      const code = `${r}${c}`;
+                      const cell = zoneCells.find((z) => z.code === code)!;
+                      const isSelected = selectedZone === code;
+                      return (
+                        <button
+                          key={code}
+                          type="button"
+                          className={`zone-tile tier-${cell.tier}${isSelected ? ' is-selected' : ''}`}
+                          onClick={() => setSelectedZone(isSelected ? null : code)}
+                          title={
+                            cell.balance
+                              ? `Zone ${code}: ${cell.balance.productName} (${cell.balance.quantity} ${cell.balance.unit} in ${cell.balance.warehouseName})`
+                              : `Zone ${code} (${cell.pct}%)`
+                          }
+                        >
+                          <strong>{code}</strong>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+
+              <div className="heatmap-legend">
+                <span><i className="leg-dot low" /> Low (0–30%)</span>
+                <span><i className="leg-dot mid" /> Medium (30–70%)</span>
+                <span><i className="leg-dot high" /> Full (70–100%)</span>
+              </div>
+            </section>
+
+            <section className="card">
+              <div className="section-head">
+                <div>
+                  <h2>Warehouse Valuation Breakdown ({currency})</h2>
+                  <span className="vernacular-sub">
+                    {subLabel('Hukoshi hweZvinhu muMatura', 'Inani Lempahla Ezigabeni')}
+                  </span>
+                </div>
+                <Link to={`${basePath}/warehouses`}>Open Departments →</Link>
+              </div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Warehouse / Store</th>
+                      <th>Branch</th>
+                      <th className="num">Base Units</th>
+                      <th className="num">Value ({currency})</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(data?.warehouseSummary ?? []).map((w) => (
+                      <tr key={w.warehouseId}>
+                        <td><strong>{w.warehouseName}</strong></td>
+                        <td>{w.branchName}</td>
+                        <td className="num">{w.totalUnits.toLocaleString()}</td>
+                        <td className="num"><strong>{formatMoney(w.stockValue)}</strong></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </div>
+      )}
+
+      {/* SUB-MENU 3: Reorder Alerts */}
+      {activeSubTab === 'reorder' && (
+        <div id="dashboard-panel-reorder" role="tabpanel" aria-labelledby="dashboard-tab-reorder">
+          <section className="card">
+            <div className="section-head">
+              <div>
+                <h2>Low-Stock Reorder Queue ({data?.lowStockItems?.length ?? 0})</h2>
+                <span className="vernacular-sub">
+                  {subLabel('Zvinhu Zvava Kupera Muchitoro', 'Impahla Esephela Esitolo')}
+                </span>
+              </div>
+              <div className="action-row">
+                <button type="button" className="btn btn-whatsapp btn-sm" onClick={() => setWhatsappOpen(true)}>
+                  📲 Send Reorder List on WhatsApp
+                </button>
+                <Link to={`${basePath}/reports`} className="btn btn-outline btn-sm">
+                  Full Reports →
+                </Link>
+              </div>
+            </div>
+
+            {data?.lowStockItems && data.lowStockItems.length > 0 ? (
               <div className="table-wrap">
                 <table className="data-table">
                   <thead>
                     <tr>
                       <th>SKU</th>
                       <th>Product</th>
-                      <th className="num">On Hand</th>
-                      <th className="num">Reorder At</th>
-                      <th className="num">Action</th>
+                      <th className="num">Left on Shelf</th>
+                      <th className="num">Reorder Level</th>
+                      <th>Status</th>
+                      <th className="num">1-Tap Action</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -446,9 +503,14 @@ export function Dashboard() {
                         <td><strong>{item.productName}</strong></td>
                         <td className="num badge-danger-text">{item.quantity} {item.unit}</td>
                         <td className="num">{item.reorderLevel} {item.unit}</td>
+                        <td>
+                          <span className={`status-pill ${item.quantity <= 0 ? 'out' : 'low'}`}>
+                            {item.quantity <= 0 ? 'Out of Stock' : 'Low Stock'}
+                          </span>
+                        </td>
                         <td className="num">
                           <Link to={`${basePath}/procurement?productId=${item.productId}`} className="btn btn-primary btn-sm">
-                            Order PO
+                            + Order from Supplier
                           </Link>
                         </td>
                       </tr>
@@ -457,9 +519,97 @@ export function Dashboard() {
                 </table>
               </div>
             ) : (
-              <p className="muted">All active products are above their reorder thresholds.</p>
+              <div className="empty-state-box">
+                <strong>All shelves are well stocked!</strong>
+                <span>Every active product is currently above its minimum reorder level.</span>
+              </div>
             )}
           </section>
+        </div>
+      )}
+
+      {/* SUB-MENU 4: Recent Floor Activity */}
+      {activeSubTab === 'activity' && (
+        <div id="dashboard-panel-activity" role="tabpanel" aria-labelledby="dashboard-tab-activity">
+          <section className="card">
+            <div className="section-head">
+              <div>
+                <h2>Recent Storefloor Ledger Activity</h2>
+                <span className="vernacular-sub">
+                  {subLabel('Zvichangobva Kuitika Muchitoro', 'Okusanda Kwenzakala Esitolo')}
+                </span>
+              </div>
+              <Link to={`${basePath}/operations`} className="btn btn-primary btn-sm">
+                + Record New Movement
+              </Link>
+            </div>
+
+            <div className="activity-feed-list" role="log" aria-label="Recent ledger movements">
+              {(data?.recentMovements ?? []).map((m) => (
+                <div key={m.id} className="activity-feed-row">
+                  <span className="feed-time">[{m.createdAt.slice(11, 19) || 'LIVE'}]</span>
+                  <span className="feed-doc">DOC #{m.documentId}</span>
+                  <span className="feed-arrow">→</span>
+                  <span className={`badge badge-${m.type}`}>{m.type.replace('_', ' ').toUpperCase()}</span>
+                  <span className="feed-sku">
+                    <code>{m.sku}</code> (<strong>{m.productName}</strong>)
+                  </span>
+                  <span className="feed-wh">| {m.warehouseName}</span>
+                  <strong className={`feed-delta ${m.baseChange >= 0 ? 'pos' : 'neg'}`}>
+                    {m.baseChange > 0 ? `+${m.baseChange}` : m.baseChange} {m.unit}
+                  </strong>
+                </div>
+              ))}
+              {(data?.recentMovements?.length ?? 0) === 0 && (
+                <div className="empty-state-box">No movements recorded yet today.</div>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* 1-Tap WhatsApp Daily Summary & Reorder List Modal */}
+      {whatsappOpen && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="whatsapp-modal-title">
+          <div className="modal-card">
+            <div className="modal-header-row">
+              <h3 id="whatsapp-modal-title">📲 WhatsApp Daily Summary &amp; Reorder List</h3>
+              <button type="button" className="btn-icon-close" aria-label="Close" onClick={() => setWhatsappOpen(false)}>
+                ✕
+              </button>
+            </div>
+            <p className="muted" style={{ fontSize: '0.84rem' }}>
+              Ready to share with the shop owner, partner, or wholesale supplier on WhatsApp:
+            </p>
+            <textarea
+              readOnly
+              rows={9}
+              value={whatsappText}
+              style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.82rem', marginBottom: '0.9rem' }}
+            />
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => {
+                  navigator.clipboard?.writeText(whatsappText).catch(() => {});
+                  setFlashMsg('WhatsApp summary copied to clipboard!');
+                  setWhatsappOpen(false);
+                }}
+              >
+                📋 Copy Text
+              </button>
+              <a
+                href={`https://wa.me/?text=${encodeURIComponent(whatsappText)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="btn btn-whatsapp"
+                onClick={() => setWhatsappOpen(false)}
+              >
+                📲 Open in WhatsApp
+              </a>
+            </div>
+          </div>
         </div>
       )}
 

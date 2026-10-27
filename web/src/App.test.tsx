@@ -140,14 +140,14 @@ describe('role-based routing', () => {
     mockFetch({ id: 1, name: 'Ina', role: 'inventory_manager', email: 'i@x.com', organisationId: 1, branchId: null });
     renderAt('/executive');
     expect((await screen.findAllByText('Inventory Portal')).length).toBeGreaterThan(0);
-    expect(await screen.findByText('3. Warehouses & Depts')).toBeTruthy();
+    expect(await screen.findByText('6. Departments & Credit')).toBeTruthy();
   });
 
   it('shows the executive portal to executives', async () => {
     mockFetch({ id: 2, name: 'Eli', role: 'executive_manager', email: 'e@x.com', organisationId: 1, branchId: null });
     renderAt('/');
     expect((await screen.findAllByText('Executive Portal')).length).toBeGreaterThan(0);
-    expect(await screen.findByText('7. Governance & System')).toBeTruthy();
+    expect(await screen.findByText('9. Settings & Governance')).toBeTruthy();
   });
 
   it('renders executive governance portal with approval queues, permissions, audit logs, and backups', async () => {
@@ -173,9 +173,21 @@ describe('role-based routing', () => {
     expect(await screen.findByText('Roil Cooking Oil 2L')).toBeTruthy();
     expect(await screen.findByText('Restock via PO')).toBeTruthy();
 
-    // Press ArrowRight on the tablist to switch to the Valuation tab via keyboard
+    // Press ArrowRight on the tablist to switch to the Multi-Currency Valuation tab via keyboard
     const tablist = screen.getByRole('tablist', { name: /Inventory report sections/i });
     fireEvent.keyDown(tablist, { key: 'ArrowRight' });
     expect(await screen.findByText('Stock Valuation by Category')).toBeTruthy();
+  });
+
+  it('supports topbar Multi-Currency (USD / ZiG / ZAR) switching and renders 3-Tier Sub-Navigation across new modules', async () => {
+    mockFetch({ id: 2, name: 'Eli', role: 'executive_manager', email: 'e@x.com', organisationId: 1, branchId: null });
+    renderAt('/executive');
+    expect(await screen.findByText('1. Overview & Quick Actions')).toBeTruthy();
+    expect(await screen.findByText('Step 1: Receive Goods (GRN)')).toBeTruthy();
+
+    // Switch currency from USD $ to ZiG in the top action bar
+    const zigBtn = screen.getByRole('button', { name: 'ZiG' });
+    fireEvent.click(zigBtn);
+    expect((await screen.findAllByText(/ZiG/i)).length).toBeGreaterThan(0);
   });
 });

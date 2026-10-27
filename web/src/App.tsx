@@ -12,7 +12,10 @@ import { Organisation } from './pages/Organisation';
 import { Procurement } from './pages/Procurement';
 import { Products } from './pages/Products';
 import { Reports } from './pages/Reports';
+import { Transfers } from './pages/Transfers';
+import { Users } from './pages/Users';
 import { Warehouses } from './pages/Warehouses';
+import { ZimProvider } from './zimContext';
 
 /** Client-side route guard. The server enforces the same rules; this only provides sensible navigation. */
 export function RequireRole({ roles, children }: { roles: User['role'][]; children?: ReactNode }) {
@@ -31,31 +34,38 @@ function Home() {
 
 export function App() {
   return (
-    <Routes>
-      <Route path="/" element={<Home />} />
-      <Route path="/login" element={<Login />} />
-      <Route element={<RequireRole roles={['executive_manager']} />}>
-        <Route path="/executive" element={<Shell portal="executive" />}>
-          <Route index element={<Dashboard />} />
-          <Route path="products" element={<Products />} />
-          <Route path="warehouses" element={<Warehouses />} />
-          <Route path="procurement" element={<Procurement />} />
-          <Route path="operations" element={<Operations />} />
-          <Route path="reports" element={<Reports />} />
-          <Route path="organisation" element={<Organisation />} />
+    <ZimProvider>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/login" element={<Login />} />
+        <Route element={<RequireRole roles={['executive_manager']} />}>
+          <Route path="/executive" element={<Shell portal="executive" />}>
+            <Route index element={<Dashboard />} />
+            <Route path="products" element={<Products />} />
+            <Route path="operations" element={<Operations />} />
+            <Route path="procurement" element={<Procurement />} />
+            <Route path="transfers" element={<Transfers />} />
+            <Route path="warehouses" element={<Warehouses />} />
+            <Route path="reports" element={<Reports />} />
+            <Route path="users" element={<Users />} />
+            <Route path="organisation" element={<Organisation />} />
+          </Route>
         </Route>
-      </Route>
-      <Route element={<RequireRole roles={['inventory_manager']} />}>
-        <Route path="/inventory" element={<Shell portal="inventory" />}>
-          <Route index element={<Dashboard />} />
-          <Route path="products" element={<Products />} />
-          <Route path="warehouses" element={<Warehouses />} />
-          <Route path="procurement" element={<Procurement />} />
-          <Route path="operations" element={<Operations />} />
-          <Route path="reports" element={<Reports />} />
+        <Route element={<RequireRole roles={['inventory_manager']} />}>
+          <Route path="/inventory" element={<Shell portal="inventory" />}>
+            <Route index element={<Dashboard />} />
+            <Route path="products" element={<Products />} />
+            <Route path="operations" element={<Operations />} />
+            <Route path="procurement" element={<Procurement />} />
+            <Route path="transfers" element={<Transfers />} />
+            <Route path="warehouses" element={<Warehouses />} />
+            <Route path="reports" element={<Reports />} />
+            <Route path="users" element={<Users />} />
+            <Route path="organisation" element={<Organisation />} />
+          </Route>
         </Route>
-      </Route>
-      <Route path="*" element={<NotFound />} />
-    </Routes>
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </ZimProvider>
   );
 }
