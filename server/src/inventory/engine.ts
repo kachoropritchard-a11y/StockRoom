@@ -82,6 +82,10 @@ export interface LineInput {
   toWarehouseId?: number; // transfers only
   /** Optional unit cost in cents for the entered unit (on receipts). Defaults to the product's base unit cost. */
   unitCostCents?: number | null;
+  /** Optional unit selling price in cents for the entered unit (on issues/sales). Defaults to the product's retail selling price. */
+  unitSellingPriceCents?: number | null;
+  /** Payment tender type for counter issues/sales (e.g. USD_CASH, ZIG_CASH, ZAR_CASH, ECOCASH_USD, INNBUCKS, ONEMONEY_ZIG, CREDIT). */
+  tenderType?: string | null;
   batchNumber?: string | null;
   expiryDate?: string | null;
 }
@@ -173,8 +177,10 @@ export function canAccessWarehouse(actor: AuthUser, warehouseBranchId: number): 
 }
 
 function loadProduct(db: Db, orgId: number, id: number) {
-  const p = db.prepare('SELECT id, base_unit_id, unit_cost_cents, active FROM products WHERE id = ? AND organisation_id = ?').get(id, orgId) as
-    | { id: number; base_unit_id: number; unit_cost_cents: number; active: number }
+  const p = db
+    .prepare('SELECT id, base_unit_id, unit_cost_cents, selling_price_cents, active FROM products WHERE id = ? AND organisation_id = ?')
+    .get(id, orgId) as
+    | { id: number; base_unit_id: number; unit_cost_cents: number; selling_price_cents: number; active: number }
     | undefined;
   if (!p) throw new AppError(400, 'product_not_found', { productId: id });
   if (!p.active) throw new AppError(400, 'product_inactive', { productId: id });
@@ -201,6 +207,8 @@ interface Row {
   factorMilli: number;
   deltaMilli: number;
   unitCostCents: number;
+  unitSellingPriceCents: number;
+  tenderType: string;
   batchNumber: string | null;
   expiryDate: string | null;
 }
@@ -219,10 +227,24 @@ function findReplay(db: Db, orgId: number, key: string, hash: string): PostResul
 const insertRow = (db: Db, documentId: number, orgId: number, r: Row) =>
   db
     .prepare(
-      `INSERT INTO stock_movements (document_id, organisation_id, product_id, warehouse_id, unit_id, quantity_milli, factor_milli, base_delta_milli, unit_cost_cents, batch_number, expiry_date)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO stock_movements (document_id, organisation_id, product_id, warehouse_id, unit_id, quantity_milli, factor_milli, base_delta_milli, unit_cost_cents, unit_selling_price_cents, tender_type, batch_number, expiry_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(documentId, orgId, r.productId, r.warehouseId, r.unitId, r.quantityMilli, r.factorMilli, r.deltaMilli, r.unitCostCents, r.batchNumber, r.expiryDate);
+    .run(
+      documentId,
+      orgId,
+      r.productId,
+      r.warehouseId,
+      r.unitId,
+      r.quantityMilli,
+      r.factorMilli,
+      r.deltaMilli,
+      r.unitCostCents,
+      r.unitSellingPriceCents,
+      r.tenderType,
+      r.batchNumber,
+      r.expiryDate,
+    );
 
 /** After posting, no touched product/warehouse may be below zero (unless the organisation allows it). */
 function assertNonNegative(db: Db, orgId: number, pairs: Iterable<string>) {
@@ -300,6 +322,15 @@ export function postDocument(db: Db, actor: AuthUser, input: PostInput): PostRes
         }
       }
 
+      // Selling price per base unit in cents (for issues/sales). Defaults to product's retail selling price, or 130% of cost if unset.
+      const defaultSellCents = product.selling_price_cents > 0 ? product.selling_price_cents : Math.round(baseUnitCostCents * 1.3);
+      let baseSellingPriceCents = type === 'issue' ? defaultSellCents : 0;
+      if (line.unitSellingPriceCents !== undefined && line.unitSellingPriceCents !== null) {
+        if (line.unitSellingPriceCents < 0) throw new AppError(400, 'invalid_unit_cost');
+        baseSellingPriceCents = Math.round((line.unitSellingPriceCents * 1000) / factor);
+      }
+      const tenderType = line.tenderType?.trim() || 'USD_CASH';
+
       const row = (warehouseId: number, deltaMilli: number): Row => ({
         warehouseId,
         productId: line.productId,
@@ -308,6 +339,8 @@ export function postDocument(db: Db, actor: AuthUser, input: PostInput): PostRes
         factorMilli: factor,
         deltaMilli,
         unitCostCents: baseUnitCostCents,
+        unitSellingPriceCents: baseSellingPriceCents,
+        tenderType,
         batchNumber,
         expiryDate,
       });
@@ -389,8 +422,8 @@ export function reverseDocument(db: Db, actor: AuthUser, originalId: number, rea
       .run(orgId, reason, originalId, idempotencyKey, hash, actor.id);
     const documentId = Number(doc.lastInsertRowid);
     db.prepare(
-      `INSERT INTO stock_movements (document_id, organisation_id, product_id, warehouse_id, unit_id, quantity_milli, factor_milli, base_delta_milli, unit_cost_cents, batch_number, expiry_date)
-       SELECT ?, organisation_id, product_id, warehouse_id, unit_id, quantity_milli, factor_milli, -base_delta_milli, unit_cost_cents, batch_number, expiry_date
+      `INSERT INTO stock_movements (document_id, organisation_id, product_id, warehouse_id, unit_id, quantity_milli, factor_milli, base_delta_milli, unit_cost_cents, unit_selling_price_cents, tender_type, batch_number, expiry_date)
+       SELECT ?, organisation_id, product_id, warehouse_id, unit_id, quantity_milli, factor_milli, -base_delta_milli, unit_cost_cents, unit_selling_price_cents, tender_type, batch_number, expiry_date
          FROM stock_movements WHERE document_id = ?`,
     ).run(documentId, originalId);
     const touched = db.prepare('SELECT DISTINCT product_id, warehouse_id FROM stock_movements WHERE document_id = ?').all(documentId) as { product_id: number; warehouse_id: number }[];
@@ -1135,10 +1168,23 @@ export function getDocument(db: Db, orgId: number, id: number) {
   const lines = (db
     .prepare(
       `SELECT id, product_id AS productId, warehouse_id AS warehouseId, unit_id AS unitId,
-              quantity_milli, factor_milli, base_delta_milli, unit_cost_cents, batch_number AS batchNumber, expiry_date AS expiryDate
+              quantity_milli, factor_milli, base_delta_milli, unit_cost_cents, unit_selling_price_cents, tender_type AS tenderType, batch_number AS batchNumber, expiry_date AS expiryDate
          FROM stock_movements WHERE document_id = ? ORDER BY id`,
     )
-    .all(id) as { id: number; productId: number; warehouseId: number; unitId: number; quantity_milli: number; factor_milli: number; base_delta_milli: number; unit_cost_cents: number; batchNumber: string | null; expiryDate: string | null }[]).map((l) => ({
+    .all(id) as {
+    id: number;
+    productId: number;
+    warehouseId: number;
+    unitId: number;
+    quantity_milli: number;
+    factor_milli: number;
+    base_delta_milli: number;
+    unit_cost_cents: number;
+    unit_selling_price_cents: number;
+    tenderType: string;
+    batchNumber: string | null;
+    expiryDate: string | null;
+  }[]).map((l) => ({
     id: l.id,
     productId: l.productId,
     warehouseId: l.warehouseId,
@@ -1147,6 +1193,8 @@ export function getDocument(db: Db, orgId: number, id: number) {
     factor: fromMilli(l.factor_milli),
     baseChange: fromMilli(l.base_delta_milli),
     unitCost: fromCents(l.unit_cost_cents),
+    unitSellingPrice: fromCents(l.unit_selling_price_cents),
+    tenderType: l.tenderType,
     batchNumber: l.batchNumber,
     expiryDate: l.expiryDate,
   }));

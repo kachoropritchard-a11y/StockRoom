@@ -42,6 +42,8 @@ export interface MovementItem {
   factor?: number;
   baseChange: number;
   unitCost: number;
+  unitSellingPrice?: number;
+  tenderType?: string;
   batchNumber?: string | null;
   expiryDate?: string | null;
 }
@@ -199,9 +201,14 @@ export interface ProductItem {
   description: string | null;
   categoryId: number | null;
   categoryName?: string | null;
+  departmentId?: number | null;
+  departmentName?: string | null;
   baseUnitId: number;
   baseUnit: string;
   unitCost: number;
+  sellingPrice?: number;
+  wholesalePrice?: number;
+  vatCategory?: 'standard_15' | 'zero_rated' | 'exempt';
   reorderLevel: number;
   totalStock: number;
   active: number | boolean;
@@ -319,12 +326,55 @@ export interface RequisitionDetail extends Omit<RequisitionSummary, 'lineCount'>
   }[];
 }
 
+export interface OwnerStockFlowRow {
+  productId: number;
+  sku: string;
+  productName: string;
+  categoryName: string;
+  departmentId: number | null;
+  departmentName: string;
+  vatCategory: string;
+  unit: string;
+  unitCost: number;
+  sellingPrice: number;
+  openingUnits: number;
+  boughtUnits: number;
+  boughtCost: number;
+  soldUnits: number;
+  revenue: number;
+  cogs: number;
+  grossProfit: number;
+  damagedUnits: number;
+  damagedCost: number;
+  closingUnits: number;
+  stockAtHandCostValue: number;
+  stockAtHandRetailValue: number;
+}
+
+export interface OwnerDepartmentSummary {
+  departmentName: string;
+  skuCount: number;
+  openingUnits: number;
+  boughtUnits: number;
+  boughtCost: number;
+  soldUnits: number;
+  revenue: number;
+  cogs: number;
+  grossProfit: number;
+  damagedUnits: number;
+  damagedCost: number;
+  closingUnits: number;
+  stockAtHandCostValue: number;
+  stockAtHandRetailValue: number;
+}
+
 export interface InventoryReports {
   lowStockAlerts: {
     productId: number;
     sku: string;
     productName: string;
     categoryName: string;
+    departmentName?: string;
     unit: string;
     currentStock: number;
     reorderLevel: number;
@@ -360,6 +410,134 @@ export interface InventoryReports {
     documentCount: number;
     lineCount: number;
     netBaseChange: number;
+  }[];
+  ownerSummary?: {
+    period: 'today' | 'week' | 'month' | 'all';
+    totalBoughtUnits: number;
+    totalBoughtCost: number;
+    totalSoldUnits: number;
+    totalRevenue: number;
+    totalCogs: number;
+    grossProfit: number;
+    netProfitAfterShrinkage: number;
+    vat15Payable: number;
+    totalDamagedUnits: number;
+    totalDamagedCost: number;
+    totalClosingUnits: number;
+    stockAtHandCostValue: number;
+    stockAtHandRetailValue: number;
+    tenderBreakdown: Record<string, number>;
+    byDepartment: OwnerDepartmentSummary[];
+    productStockFlow: OwnerStockFlowRow[];
+  };
+}
+
+export interface SmeOverview {
+  debtors: {
+    id: number;
+    customerName: string;
+    phone: string;
+    departmentName: string;
+    creditLimit: number;
+    balance: number;
+    dueDate: string;
+    itemsSummary: string;
+    status: 'CURRENT' | 'DUE_SOON' | 'OVERDUE' | 'CLEARED';
+    updatedAt: string;
+  }[];
+  creditors: {
+    id: number;
+    supplierId: number | null;
+    supplierName: string;
+    invoiceRef: string;
+    departmentName: string;
+    totalAmount: number;
+    paidAmount: number;
+    balanceOwed: number;
+    currencyCode: string;
+    dueDate: string;
+    notes: string | null;
+    status: 'OWED' | 'PARTIAL' | 'SETTLED';
+    updatedAt: string;
+  }[];
+  laybys: {
+    id: number;
+    receiptRef: string;
+    customerName: string;
+    customerPhone: string;
+    productId: number | null;
+    productName: string;
+    departmentName: string;
+    warehouseName: string;
+    orderedQty: number;
+    collectedQty: number;
+    remainingQty: number;
+    unit: string;
+    totalPaid: number;
+    status: 'AWAITING_COLLECTION' | 'PARTIAL_COLLECTED' | 'COMPLETED';
+    createdAt: string;
+  }[];
+  tillShifts: {
+    id: number;
+    shiftRef: string;
+    cashierName: string;
+    departmentName: string;
+    expectedUsd: number;
+    countedUsd: number;
+    expectedZig: number;
+    countedZig: number;
+    expectedZar: number;
+    countedZar: number;
+    ecocashUsd: number;
+    ecocashZig: number;
+    innbucksUsd: number;
+    onemoneyZig: number;
+    changeVouchersIssued: number;
+    varianceUsd: number;
+    status: 'OPEN' | 'BALANCED' | 'SHORTAGE' | 'SURPLUS';
+    notes: string | null;
+    closedAt: string;
+  }[];
+  changeVouchers: {
+    id: number;
+    voucherCode: string;
+    customerName: string;
+    customerPhone: string | null;
+    amountUsd: number;
+    departmentName: string;
+    status: 'UNREDEEMED' | 'REDEEMED';
+    createdByName: string;
+    createdAt: string;
+    redeemedAt: string | null;
+  }[];
+  yieldBatches: {
+    id: number;
+    batchRef: string;
+    kind: 'BREAK_BULK' | 'RECIPE_YIELD';
+    departmentName: string;
+    sourceName: string;
+    inputQty: number;
+    inputUnit: string;
+    outputName: string;
+    expectedOutputQty: number;
+    actualOutputQty: number;
+    outputUnit: string;
+    wasteQty: number;
+    yieldPct: number;
+    documentId: number | null;
+    createdByName: string;
+    createdAt: string;
+  }[];
+  staffPins: {
+    id: number;
+    userId: number | null;
+    staffName: string;
+    roleTitle: string;
+    pinCode: string;
+    departmentScope: string;
+    canViewCost: boolean;
+    canWriteOff: boolean;
+    active: boolean;
   }[];
 }
 
@@ -437,6 +615,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   login: (email: string, password: string) =>
     request<{ user: User }>('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  pinLogin: (pin: string) =>
+    request<{ user: User; staffName?: string; roleTitle?: string }>('/api/auth/pin-login', {
+      method: 'POST',
+      body: JSON.stringify({ pin }),
+    }),
   logout: () => request<{ ok: true }>('/api/auth/logout', { method: 'POST' }),
   me: () => request<{ user: User }>('/api/auth/me'),
   forgotPassword: (email: string) =>
@@ -496,19 +679,44 @@ export const api = {
   updateSupplier: (id: number, body: { name?: string; email?: string | null; phone?: string | null; active?: boolean }) =>
     request<{ ok: true }>(`/api/suppliers/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
-  products: (q = '', opts?: { categoryId?: number; limit?: number; offset?: number }) => {
+  products: (q = '', opts?: { categoryId?: number; departmentId?: number; limit?: number; offset?: number }) => {
     const params = new URLSearchParams();
     if (q) params.set('q', q);
     if (opts?.categoryId) params.set('categoryId', String(opts.categoryId));
+    if (opts?.departmentId) params.set('departmentId', String(opts.departmentId));
     if (opts?.limit !== undefined) params.set('limit', String(opts.limit));
     if (opts?.offset !== undefined) params.set('offset', String(opts.offset));
     const qs = params.toString();
     return request<{ items: ProductItem[]; total: number }>(`/api/products${qs ? `?${qs}` : ''}`);
   },
-  createProduct: (body: { sku: string; name: string; description?: string; categoryId?: number | null; baseUnitId: number; unitCost: number; reorderLevel: number }) =>
-    request<{ id: number }>('/api/products', { method: 'POST', body: JSON.stringify(body) }),
-  updateProduct: (id: number, body: { name?: string; description?: string | null; categoryId?: number | null; unitCost?: number; reorderLevel?: number; active?: boolean }) =>
-    request<{ ok: true }>(`/api/products/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  createProduct: (body: {
+    sku: string;
+    name: string;
+    description?: string;
+    categoryId?: number | null;
+    departmentId?: number | null;
+    baseUnitId: number;
+    unitCost: number;
+    sellingPrice?: number;
+    wholesalePrice?: number;
+    vatCategory?: 'standard_15' | 'zero_rated' | 'exempt';
+    reorderLevel: number;
+  }) => request<{ id: number }>('/api/products', { method: 'POST', body: JSON.stringify(body) }),
+  updateProduct: (
+    id: number,
+    body: {
+      name?: string;
+      description?: string | null;
+      categoryId?: number | null;
+      departmentId?: number | null;
+      unitCost?: number;
+      sellingPrice?: number;
+      wholesalePrice?: number;
+      vatCategory?: 'standard_15' | 'zero_rated' | 'exempt';
+      reorderLevel?: number;
+      active?: boolean;
+    },
+  ) => request<{ ok: true }>(`/api/products/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   addPackaging: (productId: number, body: { unitId: number; factor: number }) =>
     request<{ id: number }>(`/api/products/${productId}/packagings`, { method: 'POST', body: JSON.stringify(body) }),
 
@@ -630,7 +838,130 @@ export const api = {
     contentBase64: string;
   }) => request<DocumentAttachmentItem>('/api/attachments', { method: 'POST', body: JSON.stringify(body) }),
 
-  inventoryReports: () => request<InventoryReports>('/api/reports/inventory'),
+  inventoryReports: (opts?: { period?: 'today' | 'week' | 'month' | 'all'; departmentId?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.period) params.set('period', opts.period);
+    if (opts?.departmentId) params.set('departmentId', String(opts.departmentId));
+    const qs = params.toString();
+    return request<InventoryReports>(`/api/reports/inventory${qs ? `?${qs}` : ''}`);
+  },
+
+  smeOverview: () => request<SmeOverview>('/api/sme/overview'),
+  counterSale: (
+    body: {
+      warehouseId: number;
+      departmentId?: number | null;
+      departmentName?: string;
+      tenderType: 'USD_CASH' | 'ZIG_CASH' | 'ZAR_CASH' | 'ECOCASH_USD' | 'ECOCASH_ZIG' | 'INNBUCKS' | 'ONEMONEY_ZIG' | 'CREDIT';
+      reference?: string;
+      customerName?: string;
+      customerPhone?: string;
+      holdForLaterCollection?: boolean;
+      changeVoucherAmountUsd?: number;
+      lines: { productId: number; unitId: number; quantity: number; unitSellingPrice?: number }[];
+    },
+    key = newIdempotencyKey(),
+  ) =>
+    request<{ replayed: boolean; document: { id: number }; totalSaleUsd: number; issuedVoucherCode: string | null }>(
+      '/api/sme/counter-sale',
+      {
+        method: 'POST',
+        headers: { 'Idempotency-Key': key },
+        body: JSON.stringify(body),
+      },
+    ),
+  createDebtor: (body: {
+    customerName: string;
+    phone: string;
+    departmentName?: string;
+    creditLimit?: number;
+    balance: number;
+    dueDate: string;
+    itemsSummary?: string;
+  }) => request<{ id: number }>('/api/sme/debtors', { method: 'POST', body: JSON.stringify(body) }),
+  repayDebtor: (id: number, amount: number) =>
+    request<{ ok: true; balance: number; status: string }>(`/api/sme/debtors/${id}/repay`, {
+      method: 'POST',
+      body: JSON.stringify({ amount }),
+    }),
+  createCreditor: (body: {
+    supplierName: string;
+    invoiceRef: string;
+    departmentName?: string;
+    totalAmount: number;
+    paidAmount?: number;
+    currencyCode?: string;
+    dueDate: string;
+    notes?: string;
+  }) => request<{ id: number }>('/api/sme/creditors', { method: 'POST', body: JSON.stringify(body) }),
+  payCreditor: (id: number, amount: number) =>
+    request<{ ok: true; paidAmount: number; balanceOwed: number; status: string }>(`/api/sme/creditors/${id}/pay`, {
+      method: 'POST',
+      body: JSON.stringify({ amount }),
+    }),
+  createLayby: (body: {
+    receiptRef: string;
+    customerName: string;
+    customerPhone: string;
+    productName: string;
+    departmentName?: string;
+    warehouseName?: string;
+    orderedQty: number;
+    collectedQty?: number;
+    unit?: string;
+    totalPaid: number;
+  }) => request<{ id: number }>('/api/sme/layby', { method: 'POST', body: JSON.stringify(body) }),
+  collectLayby: (id: number, collectQty: number) =>
+    request<{ ok: true; collectedQty: number; remainingQty: number; status: string }>(`/api/sme/layby/${id}/collect`, {
+      method: 'POST',
+      body: JSON.stringify({ collectQty }),
+    }),
+  createTillShift: (body: {
+    shiftRef: string;
+    cashierName: string;
+    departmentName?: string;
+    expectedUsd: number;
+    countedUsd: number;
+    expectedZig: number;
+    countedZig: number;
+    expectedZar: number;
+    countedZar: number;
+    ecocashUsd: number;
+    ecocashZig?: number;
+    innbucksUsd: number;
+    onemoneyZig: number;
+    changeVouchersIssued?: number;
+    notes?: string;
+  }) => request<{ id: number; status: string; varianceUsd: number }>('/api/sme/till-shifts', { method: 'POST', body: JSON.stringify(body) }),
+  createChangeVoucher: (body: { customerName?: string; customerPhone?: string; amountUsd: number; departmentName?: string }) =>
+    request<{ id: number; voucherCode: string }>('/api/sme/change-vouchers', { method: 'POST', body: JSON.stringify(body) }),
+  redeemChangeVoucher: (id: number) =>
+    request<{ ok: true }>(`/api/sme/change-vouchers/${id}/redeem`, { method: 'POST', body: JSON.stringify({}) }),
+  createYieldBatch: (body: {
+    kind?: 'BREAK_BULK' | 'RECIPE_YIELD';
+    departmentName?: string;
+    sourceName: string;
+    inputQty: number;
+    inputUnit: string;
+    outputName: string;
+    expectedOutputQty: number;
+    actualOutputQty: number;
+    outputUnit: string;
+    productId?: number | null;
+    warehouseId?: number | null;
+    unitId?: number | null;
+    deltaBaseQty?: number;
+  }) => request<{ id: number; batchRef: string; documentId: number | null; yieldPct: number }>('/api/sme/yield-batches', { method: 'POST', body: JSON.stringify(body) }),
+  createStaffPin: (body: {
+    staffName: string;
+    roleTitle?: string;
+    pinCode: string;
+    departmentScope?: string;
+    canViewCost?: boolean;
+    canWriteOff?: boolean;
+  }) => request<{ id: number }>('/api/sme/staff-pins', { method: 'POST', body: JSON.stringify(body) }),
+  updateStaffPin: (id: number, body: { active?: boolean; canViewCost?: boolean; canWriteOff?: boolean; pinCode?: string }) =>
+    request<{ ok: true }>(`/api/sme/staff-pins/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
   permissions: () => request<{ role: string; permissions: GranularPermissionItem[] }>('/api/executive/permissions'),
   updatePermissions: (permissions: Partial<Record<GranularPermissionItem['key'], boolean>>) =>

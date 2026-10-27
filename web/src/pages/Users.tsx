@@ -83,9 +83,26 @@ export function Users() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const bRes = await api.branches().catch(() => []);
+      const [bRes, smeRes] = await Promise.all([
+        api.branches().catch(() => []),
+        api.smeOverview().catch(() => null),
+      ]);
       setBranches(bRes);
       if (bRes[0]) setUBranchId((prev) => prev || String(bRes[0].id));
+      if (smeRes && smeRes.staffPins.length > 0) {
+        setPinStaff(
+          smeRes.staffPins.map((p) => ({
+            id: String(p.id),
+            name: p.staffName,
+            station: `${p.roleTitle} (${p.departmentScope})`,
+            fastPin: p.pinCode,
+            phone: p.departmentScope,
+            hideCostPrices: !p.canViewCost,
+            restrictWriteOffs: !p.canWriteOff,
+            active: p.active,
+          })),
+        );
+      }
 
       if (isExec) {
         const [uRes, pRes] = await Promise.all([api.users(), api.permissions()]);
@@ -197,25 +214,24 @@ export function Users() {
               <form
                 className="form-grid subcard"
                 style={{ marginBottom: '1.25rem' }}
-                onSubmit={(e) => {
+                onSubmit={async (e) => {
                   e.preventDefault();
                   if (!staffName.trim()) return;
-                  setPinStaff((prev) => [
-                    {
-                      id: `ST-${prev.length + 1}`,
-                      name: staffName.trim(),
-                      station: staffStation,
-                      fastPin: staffPin.trim().slice(0, 4).padStart(4, '0'),
-                      phone: staffPhone.trim() || '+263 77 000 0000',
-                      hideCostPrices: true,
-                      restrictWriteOffs: true,
-                      active: true,
-                    },
-                    ...prev,
-                  ]);
+                  const cleanPin = staffPin.trim().slice(0, 4).padStart(4, '0');
+                  await api
+                    .createStaffPin({
+                      staffName: staffName.trim(),
+                      roleTitle: staffStation,
+                      pinCode: cleanPin,
+                      departmentScope: staffPhone.trim() || 'Groceries & Hardware',
+                      canViewCost: false,
+                      canWriteOff: false,
+                    })
+                    .catch(() => null);
                   setStaffName('');
                   setStaffPhone('');
-                  setMsg(`Issued 4-Digit Fast PIN (${staffPin}) for ${staffName}.`);
+                  setMsg(`Issued 4-Digit Fast PIN (${cleanPin}) for ${staffName}. They can now sign in on the Login screen!`);
+                  await load();
                 }}
               >
                 <label>
@@ -291,10 +307,18 @@ export function Users() {
                           <button
                             type="button"
                             className="btn btn-outline btn-sm"
-                            onClick={() => {
+                            onClick={async () => {
+                              const nextHide = !s.hideCostPrices;
                               setPinStaff((prev) =>
-                                prev.map((x) => (x.id === s.id ? { ...x, hideCostPrices: !x.hideCostPrices } : x)),
+                                prev.map((x) => (x.id === s.id ? { ...x, hideCostPrices: nextHide } : x)),
                               );
+                              if (typeof s.id === 'number') {
+                                try {
+                                  await api.updateStaffPin(s.id, { canViewCost: !nextHide });
+                                } catch {
+                                  /* keep optimistic update if offline */
+                                }
+                              }
                             }}
                           >
                             {s.hideCostPrices ? 'Show Costs' : 'Hide Costs'}

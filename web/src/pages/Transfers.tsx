@@ -116,16 +116,49 @@ export function Transfers() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [pRes, wRes, dRes, rRes] = await Promise.all([
+      const [pRes, wRes, dRes, rRes, smeRes] = await Promise.all([
         api.products('', { limit: 200 }),
         api.warehouses(),
         api.departments(),
         api.requisitions(),
+        api.smeOverview().catch(() => null),
       ]);
       setProducts(pRes.items);
       setWarehouses(wRes);
       setDepartments(dRes);
       setRequisitions(rRes.items);
+      if (smeRes && smeRes.yieldBatches.length > 0) {
+        const breaks = smeRes.yieldBatches.filter((y) => y.kind === 'BREAK_BULK');
+        const yields = smeRes.yieldBatches.filter((y) => y.kind === 'RECIPE_YIELD');
+        if (breaks.length > 0) {
+          setBreakLogs(
+            breaks.map((b) => ({
+              id: b.batchRef,
+              productName: b.outputName,
+              bulkType: b.sourceName,
+              bulkQtyOpened: b.inputQty,
+              shelfUnitsCreated: b.actualOutputQty,
+              warehouseName: b.departmentName,
+              createdAt: b.createdAt.slice(0, 16),
+            })),
+          );
+        }
+        if (yields.length > 0) {
+          setYieldBatches(
+            yields.map((y) => ({
+              id: y.batchRef,
+              department: (y.departmentName as 'Butchery' | 'Bakery' | 'Kitchen') || 'Butchery',
+              rawInputDesc: y.sourceName,
+              rawInputWeightKg: y.inputQty,
+              finishedOutputDesc: y.outputName,
+              finishedUnits: y.actualOutputQty,
+              wasteOrBoneKg: y.wasteQty,
+              yieldPct: y.yieldPct,
+              createdAt: y.createdAt.slice(0, 16),
+            })),
+          );
+        }
+      }
       if (pRes.items[0]) {
         const first = pRes.items[0];
         setProdId((prev) => {
@@ -383,13 +416,30 @@ export function Transfers() {
             <form
               className="form-grid subcard"
               style={{ marginBottom: '1.25rem' }}
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
                 const prod = products.find((p) => String(p.id) === bbProdId) ?? products[0];
                 const wh = warehouses.find((w) => String(w.id) === bbWhId) ?? warehouses[0];
                 const opened = Math.max(1, Number(bbCasesOpened) || 1);
                 const factor = Math.max(1, Number(bbUnitsPerCase) || 1);
                 const createdSingles = opened * factor;
+                await api
+                  .createYieldBatch({
+                    kind: 'BREAK_BULK',
+                    departmentName: wh?.name ?? 'Main Store',
+                    sourceName: `${bbBulkLabel} (× ${factor} units)`,
+                    inputQty: opened,
+                    inputUnit: 'bulk',
+                    outputName: prod?.name ?? 'Selected Product',
+                    expectedOutputQty: createdSingles,
+                    actualOutputQty: createdSingles,
+                    outputUnit: prod?.baseUnit ?? 'each',
+                    productId: prod?.id ?? null,
+                    warehouseId: wh?.id ?? null,
+                    unitId: prod?.baseUnitId ?? null,
+                    deltaBaseQty: createdSingles,
+                  })
+                  .catch(() => null);
                 setBreakLogs((prev) => [
                   {
                     id: `BB-${100 + prev.length + 1}`,
@@ -402,7 +452,8 @@ export function Transfers() {
                   },
                   ...prev,
                 ]);
-                setMsg(`Opened ${opened} × ${bbBulkLabel} of ${prod?.name ?? 'product'} → +${createdSingles} single shelf units ready for sale!`);
+                setMsg(`Opened ${opened} × ${bbBulkLabel} of ${prod?.name ?? 'product'} → +${createdSingles} single shelf units added to ${wh?.name ?? 'Main Store'}!`);
+                await load();
               }}
             >
               <label>
@@ -487,11 +538,24 @@ export function Transfers() {
             <form
               className="form-grid subcard"
               style={{ marginBottom: '1.25rem' }}
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
                 const inKg = Math.max(0.1, Number(ydRawKg) || 1);
                 const waste = Math.max(0, Number(ydWasteKg) || 0);
                 const pct = Math.max(0, Math.min(100, Number((((inKg - waste) / inKg) * 100).toFixed(1))));
+                await api
+                  .createYieldBatch({
+                    kind: 'RECIPE_YIELD',
+                    departmentName: ydDept,
+                    sourceName: ydRawDesc,
+                    inputQty: inKg,
+                    inputUnit: 'kg',
+                    outputName: ydOutDesc,
+                    expectedOutputQty: inKg,
+                    actualOutputQty: Number(ydOutUnits) || 1,
+                    outputUnit: 'units',
+                  })
+                  .catch(() => null);
                 setYieldBatches((prev) => [
                   {
                     id: `YD-${300 + prev.length + 1}`,
@@ -507,6 +571,7 @@ export function Transfers() {
                   ...prev,
                 ]);
                 setMsg(`Recorded ${ydDept} yield transformation (${pct}% recovery yield).`);
+                await load();
               }}
             >
               <label>

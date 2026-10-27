@@ -3,7 +3,7 @@
 ## Architecture
 - **Monorepo** (npm workspaces): `server/` (API) and `web/` (PWA frontend). Environment: Node 24, Python 3.12, Git 2.56 (`C:\Program Files\Git\cmd\git.exe`, added to User PATH and initialised in `.git`).
 - **Backend:** Node 24 running TypeScript natively (type-stripping, no build step), Fastify (`bodyLimit: 4MB`, logger secret redaction), Zod strict validation, helmet security headers, CORS allow-list, rate-limited authentication & uploads, CSRF header (`X-Requested-With: stockroom`) + Origin check.
-- **Database:** SQLite via built-in `node:sqlite` (`PRAGMA foreign_keys = ON`, `PRAGMA busy_timeout = 5000`, `PRAGMA journal_mode = WAL`), plain `.sql` migrations in `server/migrations` (`001_init.sql` .. `007_security_hardening.sql`), applied by `server/src/migrate.ts`.
+- **Database:** SQLite via built-in `node:sqlite` (`PRAGMA foreign_keys = ON`, `PRAGMA busy_timeout = 5000`, `PRAGMA journal_mode = WAL`), plain `.sql` migrations in `server/migrations` (`001_init.sql` .. `008_zimbabwe_sme_trading.sql`), applied by `server/src/migrate.ts`.
 - **Authoritative Stock Engine:** `server/src/inventory/engine.ts` is the sole writer to `stock_movements`. `stock_balances` is a SQL view (`SUM(base_delta_milli)` per organisation, product, and warehouse). Every write executes inside a `BEGIN IMMEDIATE` transaction (`tx()`), serializing concurrent writers and preventing overselling (`409 insufficient_stock`).
 - **Auth, Governance & Security:**
   - **Password Hashing & Lockout:** `bcryptjs` (configurable cost, default 12) + constant-time `DUMMY_HASH` comparison on unknown emails + 5-attempt account lockout (`423 account_locked`).
@@ -22,7 +22,7 @@ npm run migrate
 npm run seed          # seeds demo org, users, Zimbabwean inventory, POs, and requisitions (idempotent)
 npm run dev:server    # http://127.0.0.1:4000 (running in background)
 npm run dev:web       # http://localhost:5173 (running in background)
-npm test              # 39 server tests (all passing)
+npm test              # 40 server tests (all passing)
 npm test -w web       # 6 frontend routing, keyboard accessibility, multi-currency & 3-tier sub-nav tests (all passing)
 npm run verify-ledger # audits ledger invariants (Ledger OK.)
 ```
@@ -56,9 +56,15 @@ npm run verify-ledger # audits ledger invariants (Ledger OK.)
      - **7. Reports (`Reports.tsx`):** `1. ZIMRA FDMS & 15% VAT Compliance` | `2. Multi-Currency Valuation (USD/ZiG/ZAR)` | `3. Item Profit & Fast Movers`.
      - **8. Users (`Users.tsx`):** `1. Staff 4-Digit Fast PIN Directory` | `2. Role Permissions & Anti-Fraud Locks`.
      - **9. Settings (`Organisation.tsx`):** `1. Daily Exchange Rates (1 USD to ZiG & ZAR)` | `2. ZIMRA FDMS Virtual Device Config` | `3. Offline Sync & Vernacular Preferences`.
+- **Stage 7 (Zimbabwean Dual-Department Grocery + Hardware SME Trading & Owner Stock-Flow Reconciliation — `008_zimbabwe_sme_trading.sql`):**
+  1. **Retail & Wholesale Pricing + Department & ZIMRA VAT Tagging on Products:** Added `selling_price_cents`, `wholesale_price_cents`, `vat_category` (`standard_15` | `zero_rated` | `exempt`), and `department_id` to `products`, plus `unit_selling_price_cents` and `tender_type` to `stock_movements`.
+  2. **Dual-Department Seed Data (`Groceries & Staples` + `Hardware & Building`):** Added `ensureDualDepartmentDemoData(db)` in `server/src/seed.ts` and `server/src/server.ts`, seeding realistic grocery staples alongside hardware yard stock (`PPC Surebuild Cement 50kg`, `IBR Chromadek Roofing Sheet 3.6m`, `3-Inch Wire Nails`).
+  3. **Authoritative Counter Sale & Multi-Tender Dispatch (`POST /api/sme/counter-sale`, `Operations.tsx`):** Records real stock issues with actual retail/wholesale selling prices and tender types (`USD_CASH`, `ZIG_CASH`, `ZAR_CASH`, `ECOCASH_USD`, `ECOCASH_ZIG`, `INNBUCKS`, `ONEMONEY_ZIG`, `CREDIT`), while automatically updating the Chikwereti Debtors Book (`customer_credit_accounts`), Hardware Yard "Collect Later" Lay-By (`paid_uncollected_items`), and USD Small-Change Vouchers (`change_vouchers`).
+  4. **Owner Stock-Flow & Earnings Reconciliation Report (`GET /api/reports/inventory?period=today|week|month|all`, `Reports.tsx`):** Computes exact `Opening -> Bought -> Sold -> Damaged -> Stock at Hand` and `Revenue vs COGS vs Gross Profit vs Net Profit After Shrinkage` split by `Groceries & Staples` vs `Hardware & Building`.
+  5. **Multi-Line Purchase Order Basket (`Procurement.tsx`), Persistent Break-Bulk / Yield Batches (`Transfers.tsx`), and 4-Digit Fast PIN Login (`POST /api/auth/pin-login`, `Login.tsx`):** Persists all SME sub-ledgers in SQLite (`staff_pins`, `customer_credit_accounts`, `supplier_credit_ledgers`, `paid_uncollected_items`, `till_shifts`, `change_vouchers`, `yield_batches`).
 
 ## Actual Test Results
-- **Backend Automated Tests (`npm test`):** **39 / 39 passing** (`0` failures) across `server/test/app.test.ts` (10 auth, session, CSRF, lockout, and role-guard tests) and `server/test/inventory.test.ts` (29 ledger, packaging, negative-stock, idempotency, reversal, immutability, randomized property, PO, requisition, governance, approvals queue, backup/restore, concurrency, approval auditability, branch isolation, and safe file upload tests).
+- **Backend Automated Tests (`npm test`):** **40 / 40 passing** (`0` failures) across `server/test/app.test.ts` (10 auth, session, CSRF, lockout, and role-guard tests) and `server/test/inventory.test.ts` (30 ledger, packaging, negative-stock, idempotency, reversal, immutability, randomized property, PO, requisition, governance, approvals queue, backup/restore, concurrency, approval auditability, branch isolation, safe file upload, and Stage 7 Zimbabwean dual-department SME trading & stock-flow reconciliation tests).
 - **Frontend Automated Tests (`npm test -w web`):** **6 / 6 passing** (`0` failures) in `web/src/App.test.tsx`.
 - **Production Frontend Build (`npm run build -w web`):** **Passing** (`tsc --noEmit && vite build`).
 - **Ledger Invariant Verification (`npm run verify-ledger`):** **`Ledger OK.`** (`0` discrepancies).

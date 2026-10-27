@@ -33,7 +33,7 @@ function mockFetch(user: unknown) {
         );
       }
       if (url === '/api/notifications') return new Response(JSON.stringify({ items: [], unreadCount: 0 }), { status: 200 });
-      if (url === '/api/reports/inventory') {
+      if (url.startsWith('/api/reports/inventory')) {
         return new Response(
           JSON.stringify({
             lowStockAlerts: [{ productId: 1, sku: 'OIL-RG2L', productName: 'Roil Cooking Oil 2L', categoryName: 'Oils', unit: 'each', currentStock: 24, reorderLevel: 45, shortfall: 21, unitCost: 3.6, estimatedRestockCost: 162 }],

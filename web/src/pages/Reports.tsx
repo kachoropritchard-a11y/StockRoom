@@ -14,6 +14,7 @@ export function Reports() {
   const base = user ? portalPath(user.role) : '/inventory';
 
   const [activeTab, setActiveTab] = useState<ReportSubTab>('zimra');
+  const [period, setPeriod] = useState<'today' | 'week' | 'month' | 'all'>('all');
   const [reports, setReports] = useState<InventoryReports | null>(null);
   const [exportSection, setExportSection] = useState<'valuation' | 'low_stock' | 'movements' | 'audit_logs'>('valuation');
   const [loading, setLoading] = useState(true);
@@ -23,13 +24,13 @@ export function Reports() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setReports(await api.inventoryReports());
+      setReports(await api.inventoryReports({ period }));
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [period]);
 
   useEffect(() => {
     load();
@@ -69,6 +70,7 @@ export function Reports() {
   if (loading && !reports) return <Spinner label="Generating inventory reports" />;
 
   const totalValuation = (reports?.valuationByCategory ?? []).reduce((acc, c) => acc + c.totalValue, 0);
+  const ownerSummary = reports?.ownerSummary;
 
   // Separate categories into ZIMRA 15% Standard-Rated vs 0% Zero-Rated / Exempt basic staples
   const categoriesWithTax = (reports?.valuationByCategory ?? []).map((c) => {
@@ -105,7 +107,8 @@ export function Reports() {
     {
       key: 'profit',
       label: '3. Item Profit & Fast Movers',
-      purpose: 'Inspect department consumption, fast-moving lines, estimated gross margins, and ledger document activity.',
+      purpose:
+        'Full Owner Stock-Flow & Earnings Reconciliation (Opening -> Bought -> Sold -> Damaged -> Stock at Hand + Actual Revenue, Cost & Gross Profit by Groceries vs Hardware).',
     },
   ];
 
@@ -116,8 +119,8 @@ export function Reports() {
           <h1>Low-Stock Alerts &amp; Inventory Reports</h1>
           <span className="vernacular-sub">
             {subLabel(
-              'Magwaro eZIMRA FDMS (15% VAT) • Hukoshi muUSD, ZiG neZAR • Zvinhu Zvinofamba',
-              'Imibiko yeZIMRA FDMS (15% VAT) • Inani Lempahla (USD/ZiG/ZAR)',
+              'Magwaro eZIMRA FDMS (15% VAT) • Hukoshi muUSD, ZiG neZAR • Zvakatengwa, Zvakatengeswa nePurofiti',
+              'Imibiko yeZIMRA FDMS (15% VAT) • Inani Lempahla • Okuthengiweyo, Okuthengisiweyo leNzuzo',
             )}
           </span>
         </div>
@@ -211,7 +214,7 @@ export function Reports() {
                   <tr>
                     <th>SKU</th>
                     <th>Product</th>
-                    <th>Category</th>
+                    <th>Department / Category</th>
                     <th>Stock vs Reorder Threshold</th>
                     <th className="num">Shortfall</th>
                     <th className="num">Unit Cost</th>
@@ -226,7 +229,7 @@ export function Reports() {
                       <tr key={a.productId}>
                         <td><code>{a.sku}</code></td>
                         <td><strong>{a.productName}</strong></td>
-                        <td>{a.categoryName}</td>
+                        <td>{a.departmentName ?? a.categoryName}</td>
                         <td style={{ minWidth: '170px' }}>
                           <div className="stock-level-cell">
                             <div className="stock-bar-track">
@@ -342,12 +345,155 @@ export function Reports() {
           </div>
         )}
 
-        {/* SUB-MENU 3: Item Profit & Fast Movers */}
+        {/* SUB-MENU 3: Item Profit, Fast Movers & Owner Stock-Flow Reconciliation (Bought -> Sold -> Earned -> Stock at Hand) */}
         {activeTab === 'profit' && (
           <div id="reports-panel-profit" role="tabpanel" aria-labelledby="reports-tab-profit">
+            <div className="section-head">
+              <div>
+                <h2>Owner Stock-Flow &amp; Earnings Report (Bought → Sold → Earned → Stock at Hand)</h2>
+                <span className="vernacular-sub">
+                  {subLabel(
+                    'Zvakatengwa → Zvakatengeswa → Purofiti Yawanikwa → Zvinhu Zvasara Muchitoro (Groceries vs Hardware)',
+                    'Okuthengiweyo → Okuthengisiweyo → Inzuzo → Impahla Eseleyo Esitolo',
+                  )}
+                </span>
+              </div>
+              <div className="topbar-seg-group" role="group" aria-label="Time period filter">
+                {(['today', 'week', 'month', 'all'] as const).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    className={`topbar-seg-btn ${period === p ? 'active' : ''}`}
+                    onClick={() => setPeriod(p)}
+                  >
+                    {p === 'today' ? 'Today' : p === 'week' ? 'Last 7 Days' : p === 'month' ? 'Last 30 Days' : 'All Time'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {ownerSummary && (
+              <>
+                <div className="ops-kpi-row" style={{ gridTemplateColumns: 'repeat(4, 1fr)', marginBottom: '1rem' }}>
+                  <div className="kpi-card">
+                    <span className="kpi-label">1. Stock Bought (Cost)</span>
+                    <strong className="kpi-value">{formatMoney(ownerSummary.totalBoughtCost)}</strong>
+                    <span className="kpi-hint">{ownerSummary.totalBoughtUnits.toLocaleString()} units received via GRN</span>
+                  </div>
+                  <div className="kpi-card">
+                    <span className="kpi-label">2. Total Sales Revenue</span>
+                    <strong className="kpi-value" style={{ color: 'var(--zim-green-700)' }}>
+                      {formatMoney(ownerSummary.totalRevenue)}
+                    </strong>
+                    <span className="kpi-hint">
+                      {ownerSummary.totalSoldUnits.toLocaleString()} units sold (COGS: {formatMoney(ownerSummary.totalCogs)})
+                    </span>
+                  </div>
+                  <div className="kpi-card">
+                    <span className="kpi-label">3. Gross Profit Earned</span>
+                    <strong className="kpi-value pos">{formatMoney(ownerSummary.grossProfit)}</strong>
+                    <span className="kpi-hint">
+                      Net after shrinkage: {formatMoney(ownerSummary.netProfitAfterShrinkage)} · VAT: {formatMoney(ownerSummary.vat15Payable)}
+                    </span>
+                  </div>
+                  <div className="kpi-card">
+                    <span className="kpi-label">4. Stock at Hand Now</span>
+                    <strong className="kpi-value">{formatMoney(ownerSummary.stockAtHandCostValue)}</strong>
+                    <span className="kpi-hint">
+                      {ownerSummary.totalClosingUnits.toLocaleString()} units (Retail value: {formatMoney(ownerSummary.stockAtHandRetailValue)})
+                    </span>
+                  </div>
+                </div>
+
+                {/* Department Split: Groceries vs Hardware */}
+                <div className="subcard" style={{ marginBottom: '1.2rem', borderLeft: '4px solid var(--zim-gold-500)' }}>
+                  <h3>Department Performance Split (Groceries Dept vs Hardware Dept)</h3>
+                  <div className="table-wrap">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Shop Department</th>
+                          <th className="num">SKUs</th>
+                          <th className="num">Opening Qty</th>
+                          <th className="num">+ Bought (GRN)</th>
+                          <th className="num">− Sold / Issued</th>
+                          <th className="num">− Damaged</th>
+                          <th className="num">= Stock at Hand</th>
+                          <th className="num">Sales Revenue</th>
+                          <th className="num">Cost of Sales</th>
+                          <th className="num">Gross Profit Earned</th>
+                          <th className="num">Closing Stock Value</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ownerSummary.byDepartment.map((d) => (
+                          <tr key={d.departmentName}>
+                            <td><strong>{d.departmentName}</strong></td>
+                            <td className="num">{d.skuCount}</td>
+                            <td className="num">{d.openingUnits.toLocaleString()}</td>
+                            <td className="num pos">+{d.boughtUnits.toLocaleString()}</td>
+                            <td className="num">−{d.soldUnits.toLocaleString()}</td>
+                            <td className="num neg">{d.damagedUnits > 0 ? `−${d.damagedUnits}` : '0'}</td>
+                            <td className="num"><strong>{d.closingUnits.toLocaleString()}</strong></td>
+                            <td className="num"><strong>{formatMoney(d.revenue)}</strong></td>
+                            <td className="num">{formatMoney(d.cogs)}</td>
+                            <td className="num pos"><strong>{formatMoney(d.grossProfit)}</strong></td>
+                            <td className="num">{formatMoney(d.stockAtHandCostValue)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Item-by-Item Stock Flow & Profit Table */}
+                <div className="subcard" style={{ marginBottom: '1.2rem' }}>
+                  <h3>Item-by-Item Stock Reconciliation (Bought → Sold → Earned → Stock at Hand)</h3>
+                  <div className="table-wrap">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>SKU &amp; Product</th>
+                          <th>Department</th>
+                          <th className="num">Buy Cost</th>
+                          <th className="num">Sell Price</th>
+                          <th className="num">Opening</th>
+                          <th className="num">+ Bought</th>
+                          <th className="num">− Sold</th>
+                          <th className="num">− Damaged</th>
+                          <th className="num">= At Hand</th>
+                          <th className="num">Revenue</th>
+                          <th className="num">Profit Earned</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ownerSummary.productStockFlow.map((row) => (
+                          <tr key={row.productId}>
+                            <td>
+                              <strong>{row.productName}</strong> <code>({row.sku})</code>
+                            </td>
+                            <td>{row.departmentName}</td>
+                            <td className="num">{formatMoney(row.unitCost)}</td>
+                            <td className="num">{formatMoney(row.sellingPrice)}</td>
+                            <td className="num">{row.openingUnits} {row.unit}</td>
+                            <td className="num pos">+{row.boughtUnits}</td>
+                            <td className="num">{row.soldUnits}</td>
+                            <td className="num neg">{row.damagedUnits > 0 ? `−${row.damagedUnits}` : '0'}</td>
+                            <td className="num"><strong>{row.closingUnits} {row.unit}</strong></td>
+                            <td className="num">{formatMoney(row.revenue)}</td>
+                            <td className="num pos"><strong>{formatMoney(row.grossProfit)}</strong></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            )}
+
             <div className="dashboard-panels">
               <div className="subcard">
-                <h3>Department Consumption, Fast Movers &amp; Est. Gross Margin</h3>
+                <h3>Department Consumption &amp; Issue Summary</h3>
                 <div className="table-wrap">
                   <table className="data-table">
                     <thead>
@@ -357,7 +503,6 @@ export function Reports() {
                         <th className="num">Issues</th>
                         <th className="num">Units Moved</th>
                         <th className="num">Cost Value</th>
-                        <th className="num">Est. Retail (28% Margin)</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -368,7 +513,6 @@ export function Reports() {
                           <td className="num">{d.issueCount}</td>
                           <td className="num">{d.consumedQuantity.toLocaleString()}</td>
                           <td className="num">{formatMoney(d.consumedValue)}</td>
-                          <td className="num pos"><strong>{formatMoney(d.consumedValue * 1.28)}</strong></td>
                         </tr>
                       ))}
                     </tbody>

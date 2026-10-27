@@ -144,6 +144,7 @@ export function seedDemoInventory(db: Db): boolean {
   });
 
   seedDemoProcurementAndRequisitions(db);
+  ensureDualDepartmentDemoData(db);
   return true;
 }
 
@@ -206,6 +207,146 @@ export function seedDemoProcurementAndRequisitions(db: Db): boolean {
   return true;
 }
 
+/** Ensures realistic Zimbabwean dual-department (Groceries + Hardware) products, departments, and initial counter sales exist. */
+export function ensureDualDepartmentDemoData(db: Db): boolean {
+  const org = (db.prepare('SELECT id FROM organisations ORDER BY id LIMIT 1').get() as { id: number } | undefined)?.id;
+  if (!org) return false;
+  const hreBranch = (db.prepare('SELECT id FROM branches WHERE organisation_id = ? ORDER BY id LIMIT 1').get(org) as { id: number } | undefined)?.id;
+  if (!hreBranch) return false;
+
+  db.prepare('INSERT OR IGNORE INTO departments (branch_id, name) VALUES (?, ?)').run(hreBranch, 'Groceries & Staples');
+  db.prepare('INSERT OR IGNORE INTO departments (branch_id, name) VALUES (?, ?)').run(hreBranch, 'Hardware & Building');
+  const grocDept = (db.prepare("SELECT id FROM departments WHERE branch_id = ? AND name = 'Groceries & Staples'").get(hreBranch) as { id: number } | undefined)?.id;
+  const hwDept = (db.prepare("SELECT id FROM departments WHERE branch_id = ? AND name = 'Hardware & Building'").get(hreBranch) as { id: number } | undefined)?.id;
+
+  // Assign existing grocery products to Groceries & Staples with realistic Zimbabwean retail prices & VAT categories
+  if (grocDept) {
+    db.prepare(
+      "UPDATE products SET department_id = ?, selling_price_cents = 850, wholesale_price_cents = 780, vat_category = 'zero_rated' WHERE organisation_id = ? AND sku = 'GRN-PM10'",
+    ).run(grocDept, org);
+    db.prepare(
+      "UPDATE products SET department_id = ?, selling_price_cents = 380, wholesale_price_cents = 340, vat_category = 'zero_rated' WHERE organisation_id = ? AND sku = 'GRN-MR02'",
+    ).run(grocDept, org);
+    db.prepare(
+      "UPDATE products SET department_id = ?, selling_price_cents = 450, wholesale_price_cents = 400, vat_category = 'standard_15' WHERE organisation_id = ? AND sku = 'BEV-MZ2L'",
+    ).run(grocDept, org);
+    db.prepare(
+      "UPDATE products SET department_id = ?, selling_price_cents = 480, wholesale_price_cents = 430, vat_category = 'standard_15' WHERE organisation_id = ? AND sku = 'OIL-RG2L'",
+    ).run(grocDept, org);
+  }
+
+  // Check if Hardware products already exist
+  const hwExists = db.prepare("SELECT id FROM products WHERE organisation_id = ? AND sku = 'HW-PPC50'").get(org);
+  if (hwExists) return false;
+
+  db.prepare('INSERT OR IGNORE INTO categories (organisation_id, name) VALUES (?, ?)').run(org, 'Hardware & Building Materials');
+  const catHw = (db.prepare("SELECT id FROM categories WHERE organisation_id = ? AND name = 'Hardware & Building Materials'").get(org) as { id: number }).id;
+
+  db.prepare('INSERT OR IGNORE INTO suppliers (organisation_id, name, email, phone) VALUES (?, ?, ?, ?)').run(
+    org,
+    'PPC Zimbabwe Cement',
+    'sales@ppc.co.zw',
+    '+263 242 486201',
+  );
+  const supPpc = (db.prepare("SELECT id FROM suppliers WHERE organisation_id = ? AND name = 'PPC Zimbabwe Cement'").get(org) as { id: number }).id;
+
+  const eachUnit = (db.prepare("SELECT id FROM units_of_measure WHERE organisation_id = ? AND code = 'each'").get(org) as { id: number }).id;
+  const kgUnit = (db.prepare("SELECT id FROM units_of_measure WHERE organisation_id = ? AND code = 'kg'").get(org) as { id: number } | undefined)?.id ?? eachUnit;
+  const mainWh = (db.prepare('SELECT id FROM warehouses WHERE branch_id = ? ORDER BY id LIMIT 1').get(hreBranch) as { id: number }).id;
+
+  const addHwProd = db.prepare(
+    `INSERT INTO products (organisation_id, sku, name, description, category_id, department_id, base_unit_id, unit_cost_cents, selling_price_cents, wholesale_price_cents, vat_category, reorder_level_milli)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'standard_15', ?)`,
+  );
+  const pCement = Number(
+    addHwProd.run(
+      org,
+      'HW-PPC50',
+      'PPC Surebuild Cement 50kg',
+      '32.5N All-purpose building cement 50kg bag',
+      catHw,
+      hwDept ?? null,
+      eachUnit,
+      toCents(10.2),
+      toCents(12.5),
+      toCents(11.8),
+      toMilli(30),
+    ).lastInsertRowid,
+  );
+  const pIbr = Number(
+    addHwProd.run(
+      org,
+      'HW-IBR36',
+      'IBR Chromadek Roofing Sheet 3.6m',
+      '0.4mm Charcoal Chromadek IBR roof sheet 3.6m',
+      catHw,
+      hwDept ?? null,
+      eachUnit,
+      toCents(17.5),
+      toCents(22.0),
+      toCents(20.5),
+      toMilli(20),
+    ).lastInsertRowid,
+  );
+  const pNails = Number(
+    addHwProd.run(
+      org,
+      'HW-NAIL3',
+      'Wire Nails 3-Inch (75mm) Bulk',
+      'High-tensile carpentry wire nails sold per kg',
+      catHw,
+      hwDept ?? null,
+      kgUnit,
+      toCents(1.8),
+      toCents(2.5),
+      toCents(2.2),
+      toMilli(25),
+    ).lastInsertRowid,
+  );
+
+  const execUser = db.prepare("SELECT id, organisation_id, branch_id, email, name, role FROM users WHERE organisation_id = ? AND role = 'executive_manager' LIMIT 1").get(org) as
+    | { id: number; organisation_id: number; branch_id: number | null; email: string; name: string; role: 'executive_manager' }
+    | undefined;
+  if (!execUser) return true;
+  const actor: AuthUser = {
+    id: execUser.id,
+    organisationId: execUser.organisation_id,
+    branchId: execUser.branch_id,
+    email: execUser.email,
+    name: execUser.name,
+    role: execUser.role,
+  };
+
+  // Receive Hardware stock into Main Warehouse
+  postDocument(db, actor, {
+    type: 'receipt',
+    supplierId: supPpc,
+    reference: 'GRN-HW-2026-01',
+    idempotencyKey: 'seed-grn-hw-2026-01',
+    lines: [
+      { productId: pCement, warehouseId: mainWh, unitId: eachUnit, quantityMilli: toMilli(140), unitCostCents: toCents(10.2), batchNumber: 'PPC-OCT-88' },
+      { productId: pIbr, warehouseId: mainWh, unitId: eachUnit, quantityMilli: toMilli(60), unitCostCents: toCents(17.5), batchNumber: 'IBR-36-09' },
+      { productId: pNails, warehouseId: mainWh, unitId: kgUnit, quantityMilli: toMilli(100), unitCostCents: toCents(1.8), batchNumber: 'NAIL-75-02' },
+    ],
+  });
+
+  // Record a Hardware counter sale (25 bags Cement + 12 IBR sheets + 10kg Nails)
+  postDocument(db, actor, {
+    type: 'issue',
+    departmentId: hwDept ?? null,
+    reference: 'SALE-HW-001',
+    reason: 'Counter sale (USD_CASH) - Ruwa Builders',
+    idempotencyKey: 'seed-sale-hw-001',
+    lines: [
+      { productId: pCement, warehouseId: mainWh, unitId: eachUnit, quantityMilli: toMilli(25), unitSellingPriceCents: toCents(12.5), tenderType: 'USD_CASH' },
+      { productId: pIbr, warehouseId: mainWh, unitId: eachUnit, quantityMilli: toMilli(12), unitSellingPriceCents: toCents(22.0), tenderType: 'ECOCASH_USD' },
+      { productId: pNails, warehouseId: mainWh, unitId: kgUnit, quantityMilli: toMilli(10), unitSellingPriceCents: toCents(2.5), tenderType: 'USD_CASH' },
+    ],
+  });
+
+  return true;
+}
+
 if (process.argv[1] && import.meta.filename === process.argv[1]) {
   const config = loadConfig();
   if (config.NODE_ENV === 'production') throw new Error('Refusing to run demo seed in production.');
@@ -218,12 +359,13 @@ if (process.argv[1] && import.meta.filename === process.argv[1]) {
   const seededOrg = seed(db, pw);
   const seededInv = seedDemoInventory(db);
   const seededProc = seedDemoProcurementAndRequisitions(db);
+  const seededDual = ensureDualDepartmentDemoData(db);
   if (seededOrg) {
     console.log('Seeded organisation and users. Credentials (shown once):');
     console.log(`  executive@example.com / ${pw.executive}`);
     console.log(`  inventory@example.com / ${pw.inventory}`);
   }
-  if (seededInv || seededProc) {
+  if (seededInv || seededProc || seededDual) {
     console.log('Seeded demo inventory, purchase orders, and requisitions.');
   } else if (!seededOrg) {
     console.log('Organisation and demo inventory already exist; seed skipped.');

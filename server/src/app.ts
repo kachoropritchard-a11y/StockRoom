@@ -190,6 +190,78 @@ export function buildApp(db: Db, config: Config) {
     return { user, token };
   });
 
+  // 4-Digit Fast PIN Login for Zimbabwean SME Storefloor & Hardware Yard Staff
+  app.post('/api/auth/pin-login', { config: { rateLimit: { max: 15, timeWindow: '1 minute' } } }, async (req, reply) => {
+    const body = z
+      .object({
+        pin: z.string().trim().regex(/^\d{4}$/, 'Enter a 4-digit PIN'),
+      })
+      .parse(req.body);
+
+    const orgRow = db.prepare('SELECT id FROM organisations ORDER BY id LIMIT 1').get() as { id: number } | undefined;
+    if (!orgRow) return reply.code(401).send({ error: 'invalid_credentials' });
+
+    // Ensure default PINs exist if none have been seeded yet
+    const pinCount = (db.prepare('SELECT COUNT(*) n FROM staff_pins WHERE organisation_id = ?').get(orgRow.id) as { n: number }).n;
+    if (pinCount === 0) {
+      const execU = db.prepare("SELECT id FROM users WHERE organisation_id = ? AND role = 'executive_manager' LIMIT 1").get(orgRow.id) as { id: number } | undefined;
+      const invU = db.prepare("SELECT id FROM users WHERE organisation_id = ? AND role = 'inventory_manager' LIMIT 1").get(orgRow.id) as { id: number } | undefined;
+      const insPin = db.prepare(
+        `INSERT OR IGNORE INTO staff_pins (organisation_id, user_id, staff_name, role_title, pin_code, department_scope, can_view_cost, can_write_off, active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      );
+      insPin.run(orgRow.id, execU?.id ?? null, 'Tendai Moyo (Owner)', 'Owner / Executive Manager', '1980', 'Groceries & Hardware', 1, 1);
+      insPin.run(orgRow.id, invU?.id ?? null, 'Rudo Chikwanda', 'Senior Storekeeper', '2468', 'Groceries & Hardware', 1, 1);
+      insPin.run(orgRow.id, invU?.id ?? null, 'Blessing Ndlovu', 'Hardware Yard Dispatch', '1357', 'Hardware & Building', 0, 0);
+      insPin.run(orgRow.id, invU?.id ?? null, 'Nyasha Mutasa', 'Grocery Till Cashier #1', '4321', 'Groceries & Staples', 0, 0);
+    }
+
+    const pinRow = db
+      .prepare('SELECT id, user_id, staff_name, role_title, active FROM staff_pins WHERE organisation_id = ? AND pin_code = ? LIMIT 1')
+      .get(orgRow.id, body.pin) as { id: number; user_id: number | null; staff_name: string; role_title: string; active: number } | undefined;
+
+    if (!pinRow || !pinRow.active) {
+      return reply.code(401).send({ error: 'invalid_credentials' });
+    }
+
+    const targetRole: Role = /owner|executive/i.test(pinRow.role_title) ? 'executive_manager' : 'inventory_manager';
+    const userRow =
+      (pinRow.user_id
+        ? (db.prepare('SELECT id, organisation_id, branch_id, email, name, role, active FROM users WHERE id = ?').get(pinRow.user_id) as
+            | { id: number; organisation_id: number; branch_id: number | null; email: string; name: string; role: Role; active: number }
+            | undefined)
+        : undefined) ??
+      (db.prepare('SELECT id, organisation_id, branch_id, email, name, role, active FROM users WHERE organisation_id = ? AND role = ? LIMIT 1').get(orgRow.id, targetRole) as
+        | { id: number; organisation_id: number; branch_id: number | null; email: string; name: string; role: Role; active: number }
+        | undefined);
+
+    if (!userRow || !userRow.active) {
+      return reply.code(401).send({ error: 'invalid_credentials' });
+    }
+
+    const token = randomBytes(32).toString('base64url');
+    const expires = new Date(Date.now() + config.SESSION_TTL_HOURS * 3600_000);
+    db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').run(sha256(token), userRow.id, expires.toISOString());
+
+    reply.setCookie(COOKIE, token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: config.NODE_ENV === 'production',
+      path: '/',
+      expires,
+    });
+
+    const user: AuthUser = {
+      id: userRow.id,
+      organisationId: userRow.organisation_id,
+      branchId: userRow.branch_id,
+      email: userRow.email,
+      name: pinRow.staff_name || userRow.name,
+      role: userRow.role,
+    };
+    return { user, token, staffName: pinRow.staff_name, roleTitle: pinRow.role_title };
+  });
+
   app.post('/api/auth/logout', async (req, reply) => {
     const header = req.headers.authorization;
     const token = header?.startsWith('Bearer ') ? header.slice(7) : req.cookies[COOKIE];

@@ -70,13 +70,32 @@ const SHRINKAGE_REASONS = [
 
 export function Operations() {
   const { user } = useAuth();
-  const { subLabel, rates } = useZim();
+  const { subLabel, rates, formatMoney } = useZim();
   const isExec = user?.role === 'executive_manager';
 
   const [mainTab, setMainTab] = useState<MovementSubTab>('history');
   const [showPostDrawer, setShowPostDrawer] = useState(false);
+  const [showSaleDrawer, setShowSaleDrawer] = useState(false);
   const [showStocktakeDrawer, setShowStocktakeDrawer] = useState(false);
   const [mode, setMode] = useState<OpMode>('issues');
+
+  // Counter Sale / Dispatch state (Groceries & Hardware)
+  const [saleWhId, setSaleWhId] = useState('');
+  const [saleDeptId, setSaleDeptId] = useState('');
+  const [saleProdId, setSaleProdId] = useState('');
+  const [saleUnitId, setSaleUnitId] = useState('');
+  const [saleQty, setSaleQty] = useState('1');
+  const [saleUnitPrice, setSaleUnitPrice] = useState('4.50');
+  const [saleTender, setSaleTender] = useState<
+    'USD_CASH' | 'ZIG_CASH' | 'ZAR_CASH' | 'ECOCASH_USD' | 'ECOCASH_ZIG' | 'INNBUCKS' | 'ONEMONEY_ZIG' | 'CREDIT'
+  >('USD_CASH');
+  const [saleCustomer, setSaleCustomer] = useState('');
+  const [salePhone, setSalePhone] = useState('');
+  const [saleHoldLayby, setSaleHoldLayby] = useState(false);
+  const [saleChangeVoucherUsd, setSaleChangeVoucherUsd] = useState('0');
+  const [changeVouchers, setChangeVouchers] = useState<
+    { id: number; voucherCode: string; customerName: string; amountUsd: number; departmentName: string; status: string }[]
+  >([]);
 
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: number; name: string; branchId: number }[]>([]);
@@ -138,7 +157,7 @@ export function Operations() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [pRes, wRes, dRes, sRes, mRes, csRes] = await Promise.all([
+      const [pRes, wRes, dRes, sRes, mRes, csRes, smeRes] = await Promise.all([
         api.products('', { limit: 200 }),
         api.warehouses(),
         api.departments(),
@@ -149,6 +168,7 @@ export function Operations() {
           offset: ledgerPage * LEDGER_PAGE_SIZE,
         }),
         api.countSheets(),
+        api.smeOverview().catch(() => null),
       ]);
       setProducts(pRes.items);
       setWarehouses(wRes);
@@ -156,12 +176,38 @@ export function Operations() {
       setSuppliers(sRes);
       setMovements(mRes.items);
       setCountSheets(csRes.items);
+      if (smeRes) {
+        if (smeRes.tillShifts.length > 0) {
+          setShifts(
+            smeRes.tillShifts.map((s) => ({
+              id: String(s.id),
+              shiftLabel: `${s.shiftRef} (${s.departmentName})`,
+              cashier: s.cashierName,
+              usdCash: s.countedUsd,
+              zigCash: s.countedZig,
+              zarCash: s.countedZar,
+              ecocashUsd: s.ecocashUsd,
+              innbucksUsd: s.innbucksUsd,
+              onemoneyZig: s.onemoneyZig,
+              status: s.status === 'BALANCED' ? 'BALANCED' : 'VARIANCE_FLAGGED',
+              closedAt: s.closedAt.slice(0, 16),
+            })),
+          );
+        }
+        setChangeVouchers(smeRes.changeVouchers);
+      }
 
       if (pRes.items[0]) {
         const firstProd = pRes.items[0];
         setProductId((prev) => {
           if (prev) return prev;
           setUnitId(String(firstProd.baseUnitId));
+          return String(firstProd.id);
+        });
+        setSaleProdId((prev) => {
+          if (prev) return prev;
+          setSaleUnitId(String(firstProd.baseUnitId));
+          setSaleUnitPrice(String(firstProd.sellingPrice ?? Math.round(firstProd.unitCost * 1.3 * 100) / 100));
           return String(firstProd.id);
         });
         setCsProductId((prev) => {
@@ -173,6 +219,7 @@ export function Operations() {
       if (wRes[0]) {
         const defaultWh = String(wRes[0].id);
         setWarehouseId((prev) => prev || defaultWh);
+        setSaleWhId((prev) => prev || defaultWh);
         setCsWhId((prev) => prev || defaultWh);
       }
       if (wRes[1]) {
@@ -182,6 +229,7 @@ export function Operations() {
       if (dRes[0]) {
         const defaultDept = String(dRes[0].id);
         setDepartmentId((prev) => prev || defaultDept);
+        setSaleDeptId((prev) => prev || defaultDept);
       }
       if (sRes[0]) setSupplierId((prev) => prev || String(sRes[0].id));
     } catch (e) {
@@ -351,6 +399,9 @@ export function Operations() {
           </span>
         </div>
         <div className="quick-actions">
+          <button type="button" className="btn btn-gold" onClick={() => setShowSaleDrawer((s) => !s)}>
+            {showSaleDrawer ? '✕ Close Counter Sale' : '🛒 Counter Sale / Dispatch (Groceries & Hardware)'}
+          </button>
           <button type="button" className="btn btn-primary" onClick={() => setShowPostDrawer((s) => !s)}>
             {showPostDrawer ? '✕ Close Form' : '+ Record Stock Movement'}
           </button>
@@ -362,6 +413,172 @@ export function Operations() {
 
       {error && <p className="form-error" role="alert">{error}</p>}
       {msg && <p className="form-success" role="status">{msg}</p>}
+
+      {/* Counter Sale / Dispatch Drawer (Groceries & Hardware Multi-Tender + Credit + Lay-By + Change Voucher) */}
+      {showSaleDrawer && (
+        <section className="card" style={{ marginBottom: '1.2rem', borderTop: '4px solid var(--zim-green-700)' }}>
+          <div className="section-head">
+            <div>
+              <h3>Counter Sale &amp; Yard Dispatch • Kutengesa Pamuchina (Groceries &amp; Hardware)</h3>
+              <span className="vernacular-sub">
+                Deducts from stock ledger, records actual selling price &amp; profit, and supports Cash, EcoCash, InnBucks, Chikwereti Credit &amp; Hardware Lay-By
+              </span>
+            </div>
+            <button type="button" className="btn btn-outline btn-sm" onClick={() => setShowSaleDrawer(false)}>
+              Close
+            </button>
+          </div>
+          <form
+            className="form-grid"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setError('');
+              setMsg('');
+              try {
+                const deptObj = departments.find((d) => String(d.id) === saleDeptId);
+                const res = await api.counterSale({
+                  warehouseId: Number(saleWhId),
+                  departmentId: saleDeptId ? Number(saleDeptId) : null,
+                  departmentName: deptObj?.name ?? 'General Store',
+                  tenderType: saleTender,
+                  customerName: saleCustomer.trim() || undefined,
+                  customerPhone: salePhone.trim() || undefined,
+                  holdForLaterCollection: saleHoldLayby,
+                  changeVoucherAmountUsd: Number(saleChangeVoucherUsd) > 0 ? Number(saleChangeVoucherUsd) : undefined,
+                  lines: [
+                    {
+                      productId: Number(saleProdId),
+                      unitId: Number(saleUnitId),
+                      quantity: Number(saleQty),
+                      unitSellingPrice: Number(saleUnitPrice),
+                    },
+                  ],
+                });
+                const vText = res.issuedVoucherCode ? ` | Issued Change Voucher: ${res.issuedVoucherCode}` : '';
+                setMsg(`Counter Sale Document #${res.document.id} posted (${formatMoney(res.totalSaleUsd)} via ${saleTender})${vText}.`);
+                setSaleCustomer('');
+                setSalePhone('');
+                setSaleChangeVoucherUsd('0');
+                setSaleHoldLayby(false);
+                setShowSaleDrawer(false);
+                await load();
+              } catch (err) {
+                setError((err as Error).message);
+              }
+            }}
+          >
+            <label>
+              Department (Groceries vs Hardware)
+              <select value={saleDeptId} onChange={(e) => setSaleDeptId(e.target.value)}>
+                {departments.map((d) => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Dispatch Warehouse / Store
+              <select value={saleWhId} onChange={(e) => setSaleWhId(e.target.value)} required>
+                {warehouses.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Product Sold
+              <select
+                value={saleProdId}
+                onChange={(e) => {
+                  setSaleProdId(e.target.value);
+                  const found = products.find((p) => String(p.id) === e.target.value);
+                  if (found) {
+                    setSaleUnitId(String(found.baseUnitId));
+                    setSaleUnitPrice(String(found.sellingPrice ?? Math.round(found.unitCost * 1.3 * 100) / 100));
+                  }
+                }}
+                required
+              >
+                {products.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.sku}) — Shelf: {p.totalStock} {p.baseUnit} | Sell: {formatMoney(p.sellingPrice ?? p.unitCost * 1.3)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Unit
+              <select value={saleUnitId} onChange={(e) => setSaleUnitId(e.target.value)} required>
+                {unitsFor(saleProdId).map((u) => (
+                  <option key={u.id} value={u.id}>{u.label}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Quantity Sold
+              <input type="number" step="0.001" min="0.001" value={saleQty} onChange={(e) => setSaleQty(e.target.value)} required />
+            </label>
+            <label>
+              Unit Selling Price (USD $)
+              <input type="number" step="0.01" min="0" value={saleUnitPrice} onChange={(e) => setSaleUnitPrice(e.target.value)} required />
+            </label>
+            <label>
+              Payment Tender
+              <select
+                value={saleTender}
+                onChange={(e) =>
+                  setSaleTender(
+                    e.target.value as
+                      | 'USD_CASH'
+                      | 'ZIG_CASH'
+                      | 'ZAR_CASH'
+                      | 'ECOCASH_USD'
+                      | 'ECOCASH_ZIG'
+                      | 'INNBUCKS'
+                      | 'ONEMONEY_ZIG'
+                      | 'CREDIT',
+                  )
+                }
+              >
+                <option value="USD_CASH">USD Physical Cash ($)</option>
+                <option value="ZIG_CASH">ZiG Cash Notes</option>
+                <option value="ZAR_CASH">South African Rand (ZAR R)</option>
+                <option value="ECOCASH_USD">EcoCash Merchant (USD)</option>
+                <option value="INNBUCKS">InnBucks / Mukuru (USD)</option>
+                <option value="ONEMONEY_ZIG">OneMoney / ZIPIT (ZiG)</option>
+                <option value="CREDIT">Chikwereti (Customer Credit Book)</option>
+              </select>
+            </label>
+            <label>
+              Issue USD Small-Change Voucher ($0.00 if none)
+              <input
+                type="number"
+                step="0.05"
+                min="0"
+                max="20"
+                value={saleChangeVoucherUsd}
+                onChange={(e) => setSaleChangeVoucherUsd(e.target.value)}
+                placeholder="e.g. 0.50"
+              />
+            </label>
+            <label>
+              Customer Name (Required for Credit / Hardware Lay-By)
+              <input value={saleCustomer} onChange={(e) => setSaleCustomer(e.target.value)} placeholder="e.g. VaChigumba" />
+            </label>
+            <label>
+              Customer Phone
+              <input value={salePhone} onChange={(e) => setSalePhone(e.target.value)} placeholder="+263 77..." />
+            </label>
+            <label className="checkbox-row">
+              <input type="checkbox" checked={saleHoldLayby} onChange={(e) => setSaleHoldLayby(e.target.checked)} />
+              Hardware &quot;Collect Later&quot; (Customer paid now, collecting cement/sheets later)
+            </label>
+            <div className="form-actions">
+              <button type="submit" className="btn btn-primary">
+                ✓ Complete Counter Sale ({formatMoney(Number(saleQty) * Number(saleUnitPrice))})
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
 
       {/* Collapsible Stock Movement Drawer */}
       {showPostDrawer && (
@@ -682,12 +899,29 @@ export function Operations() {
             <form
               className="form-grid subcard"
               style={{ marginBottom: '1.2rem' }}
-              onSubmit={(e) => {
+              onSubmit={async (e) => {
                 e.preventDefault();
+                const shiftRef = `SH-${200 + shifts.length + 1}`;
+                await api
+                  .createTillShift({
+                    shiftRef,
+                    cashierName,
+                    departmentName: 'Groceries & Hardware',
+                    expectedUsd: Number(tillUsd) || 0,
+                    countedUsd: Number(tillUsd) || 0,
+                    expectedZig: Number(tillZig) || 0,
+                    countedZig: Number(tillZig) || 0,
+                    expectedZar: Number(tillZar) || 0,
+                    countedZar: Number(tillZar) || 0,
+                    ecocashUsd: Number(tillEcocash) || 0,
+                    innbucksUsd: Number(tillInnbucks) || 0,
+                    onemoneyZig: Number(tillOnemoney) || 0,
+                  })
+                  .catch(() => null);
                 setShifts((prev) => [
                   {
-                    id: `SH-${200 + prev.length + 1}`,
-                    shiftLabel: `Shift #${prev.length + 1} Cash-Up`,
+                    id: shiftRef,
+                    shiftLabel: `${shiftRef} Cash-Up`,
                     cashier: cashierName,
                     usdCash: Number(tillUsd) || 0,
                     zigCash: Number(tillZig) || 0,
@@ -700,7 +934,8 @@ export function Operations() {
                   },
                   ...prev,
                 ]);
-                setMsg(`Till shift for ${cashierName} reconciled across USD, ZiG, ZAR, EcoCash, InnBucks & OneMoney.`);
+                setMsg(`Till shift for ${cashierName} saved & reconciled across USD, ZiG, ZAR, EcoCash, InnBucks & OneMoney.`);
+                await load();
               }}
             >
               <label>
@@ -781,10 +1016,83 @@ export function Operations() {
                 </tbody>
               </table>
             </div>
+            {changeVouchers.length > 0 && (
+              <div className="subcard" style={{ marginTop: '1.25rem', borderLeft: '4px solid var(--zim-gold-500)' }}>
+                <div className="section-head">
+                  <div>
+                    <h3>USD Small-Change Vouchers / Customer Credit Tokens (Chitupa cheChange)</h3>
+                    <span className="vernacular-sub">
+                      Track $0.10 – $0.90 small-change slips issued when USD coins are scarce at the grocery or hardware counter
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    onClick={async () => {
+                      const created = await api
+                        .createChangeVoucher({
+                          customerName: 'Walk-In Customer',
+                          amountUsd: 0.5,
+                          departmentName: 'Groceries',
+                        })
+                        .catch(() => null);
+                      if (created) {
+                        setMsg(`Issued $0.50 Small-Change Voucher ${created.voucherCode}.`);
+                        await load();
+                      }
+                    }}
+                  >
+                    + Issue $0.50 Change Slip
+                  </button>
+                </div>
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Voucher Code</th>
+                        <th>Customer</th>
+                        <th>Department</th>
+                        <th className="num">Change Owed (USD)</th>
+                        <th>Status</th>
+                        <th className="num">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {changeVouchers.map((v) => (
+                        <tr key={v.id}>
+                          <td><code>{v.voucherCode}</code></td>
+                          <td><strong>{v.customerName}</strong></td>
+                          <td>{v.departmentName}</td>
+                          <td className="num"><strong>{formatMoney(v.amountUsd, 'USD')}</strong></td>
+                          <td>
+                            <span className={`status-pill ${v.status === 'REDEEMED' ? 'optimal' : 'low'}`}>
+                              {v.status === 'REDEEMED' ? 'Redeemed' : 'Unredeemed Token'}
+                            </span>
+                          </td>
+                          <td className="num">
+                            {v.status !== 'REDEEMED' && (
+                              <button
+                                type="button"
+                                className="btn btn-primary btn-sm"
+                                onClick={async () => {
+                                  await api.redeemChangeVoucher(v.id).catch(() => null);
+                                  setMsg(`Change voucher ${v.voucherCode} redeemed by customer.`);
+                                  await load();
+                                }}
+                              >
+                                ✓ Redeem Now
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </div>
         )}
-
-        {/* SUB-MENU 3: Damaged & Shrinkage Log (Mandatory Reason Codes) */}
         {mainTab === 'shrinkage' && (
           <div id="operations-panel-shrinkage" role="tabpanel" aria-labelledby="operations-tab-shrinkage">
             <div className="section-head">

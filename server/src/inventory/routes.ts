@@ -290,22 +290,39 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   });
 
   app.get('/api/products', { preHandler: anyUser }, async (req) => {
-    const q = paging.extend({ q: z.string().trim().max(100).optional(), categoryId: z.coerce.number().int().positive().optional() }).parse(req.query);
+    const q = paging
+      .extend({
+        q: z.string().trim().max(100).optional(),
+        categoryId: z.coerce.number().int().positive().optional(),
+        departmentId: z.coerce.number().int().positive().optional(),
+      })
+      .parse(req.query);
     const where = ['p.organisation_id = ?'];
     const params: (string | number)[] = [req.user!.organisationId];
     if (q.q) { where.push("(p.name LIKE ? ESCAPE '\\' OR p.sku LIKE ? ESCAPE '\\')"); const like = `%${q.q.replace(/[\\%_]/g, '\\$&')}%`; params.push(like, like); }
     if (q.categoryId) { where.push('p.category_id = ?'); params.push(q.categoryId); }
+    if (q.departmentId) { where.push('p.department_id = ?'); params.push(q.departmentId); }
     const rows = (db
       .prepare(
         `SELECT p.id, p.sku, p.name, p.description, p.category_id AS categoryId, c.name AS categoryName,
-                p.base_unit_id AS baseUnitId, u.code AS baseUnit, p.unit_cost_cents, p.reorder_level_milli, p.active,
+                p.department_id AS departmentId, dep.name AS departmentName,
+                p.base_unit_id AS baseUnitId, u.code AS baseUnit, p.unit_cost_cents, p.selling_price_cents, p.wholesale_price_cents, p.vat_category AS vatCategory,
+                p.reorder_level_milli, p.active,
                 COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS total_milli
            FROM products p JOIN units_of_measure u ON u.id = p.base_unit_id
                 LEFT JOIN categories c ON c.id = p.category_id
+                LEFT JOIN departments dep ON dep.id = p.department_id
           WHERE ${where.join(' AND ')} ORDER BY p.name LIMIT ? OFFSET ?`,
       )
-      .all(...params, q.limit, q.offset) as ({ id: number; unit_cost_cents: number; reorder_level_milli: number; total_milli: number } & Record<string, unknown>)[]).map(
-      ({ unit_cost_cents, reorder_level_milli, total_milli, ...r }) => {
+      .all(...params, q.limit, q.offset) as ({
+        id: number;
+        unit_cost_cents: number;
+        selling_price_cents: number;
+        wholesale_price_cents: number;
+        reorder_level_milli: number;
+        total_milli: number;
+      } & Record<string, unknown>)[]).map(
+      ({ unit_cost_cents, selling_price_cents, wholesale_price_cents, reorder_level_milli, total_milli, ...r }) => {
         const packagings = (db
           .prepare('SELECT g.id, g.unit_id AS unitId, u.code AS unit, g.factor_milli FROM product_packagings g JOIN units_of_measure u ON u.id = g.unit_id WHERE g.product_id = ?')
           .all(r.id) as { id: number; unitId: number; unit: string; factor_milli: number }[]).map((g) => ({
@@ -314,9 +331,14 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
           unit: g.unit,
           factor: fromMilli(g.factor_milli),
         }));
+        const unitCost = fromCents(unit_cost_cents);
+        const sellingPrice = selling_price_cents > 0 ? fromCents(selling_price_cents) : Math.round(unitCost * 1.3 * 100) / 100;
+        const wholesalePrice = wholesale_price_cents > 0 ? fromCents(wholesale_price_cents) : Math.round(unitCost * 1.15 * 100) / 100;
         return {
           ...r,
-          unitCost: fromCents(unit_cost_cents),
+          unitCost,
+          sellingPrice,
+          wholesalePrice,
           reorderLevel: fromMilli(reorder_level_milli),
           totalStock: fromMilli(total_milli),
           packagings,
@@ -329,12 +351,32 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   app.get('/api/products/:id', { preHandler: anyUser }, async (req) => {
     const { id: rowId } = idParam.parse(req.params);
     const p = db
-      .prepare('SELECT p.id, p.sku, p.name, p.description, p.category_id AS categoryId, p.base_unit_id AS baseUnitId, u.code AS baseUnit, p.unit_cost_cents, p.reorder_level_milli, p.active FROM products p JOIN units_of_measure u ON u.id = p.base_unit_id WHERE p.id = ? AND p.organisation_id = ?')
-      .get(rowId, req.user!.organisationId) as ({ unit_cost_cents: number; reorder_level_milli: number } & Record<string, unknown>) | undefined;
+      .prepare(
+        `SELECT p.id, p.sku, p.name, p.description, p.category_id AS categoryId, p.department_id AS departmentId, dep.name AS departmentName,
+                p.base_unit_id AS baseUnitId, u.code AS baseUnit, p.unit_cost_cents, p.selling_price_cents, p.wholesale_price_cents, p.vat_category AS vatCategory,
+                p.reorder_level_milli, p.active
+           FROM products p JOIN units_of_measure u ON u.id = p.base_unit_id
+                LEFT JOIN departments dep ON dep.id = p.department_id
+          WHERE p.id = ? AND p.organisation_id = ?`,
+      )
+      .get(rowId, req.user!.organisationId) as ({
+        unit_cost_cents: number;
+        selling_price_cents: number;
+        wholesale_price_cents: number;
+        reorder_level_milli: number;
+      } & Record<string, unknown>) | undefined;
     if (!p) throw new AppError(404, 'not_found');
     const packagings = (db.prepare('SELECT g.id, g.unit_id AS unitId, u.code AS unit, g.factor_milli FROM product_packagings g JOIN units_of_measure u ON u.id = g.unit_id WHERE g.product_id = ?').all(rowId) as { id: number; unitId: number; unit: string; factor_milli: number }[]).map((g) => ({ id: g.id, unitId: g.unitId, unit: g.unit, factor: fromMilli(g.factor_milli) }));
-    const { unit_cost_cents, reorder_level_milli, ...rest } = p;
-    return { ...rest, unitCost: fromCents(unit_cost_cents), reorderLevel: fromMilli(reorder_level_milli), packagings };
+    const { unit_cost_cents, selling_price_cents, wholesale_price_cents, reorder_level_milli, ...rest } = p;
+    const unitCost = fromCents(unit_cost_cents);
+    return {
+      ...rest,
+      unitCost,
+      sellingPrice: selling_price_cents > 0 ? fromCents(selling_price_cents) : Math.round(unitCost * 1.3 * 100) / 100,
+      wholesalePrice: wholesale_price_cents > 0 ? fromCents(wholesale_price_cents) : Math.round(unitCost * 1.15 * 100) / 100,
+      reorderLevel: fromMilli(reorder_level_milli),
+      packagings,
+    };
   });
   app.post('/api/products', { preHandler: staff }, async (req, reply) => {
     const orgId = req.user!.organisationId;
@@ -344,17 +386,45 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         name,
         description: text(500),
         categoryId: id.nullish(),
+        departmentId: id.nullish(),
         baseUnitId: id,
         unitCost: money.default(0),
+        sellingPrice: money.optional(),
+        wholesalePrice: money.optional(),
+        vatCategory: z.enum(['standard_15', 'zero_rated', 'exempt']).default('standard_15'),
         reorderLevel: z.number().finite().min(0).max(1e9).default(0),
       })
       .strict()
       .parse(req.body);
     owned('units_of_measure', b.baseUnitId, orgId, 'unit_not_found');
     if (b.categoryId) owned('categories', b.categoryId, orgId, 'category_not_found');
+    if (b.departmentId) {
+      if (!db.prepare('SELECT 1 FROM departments d JOIN branches br ON br.id = d.branch_id WHERE d.id = ? AND br.organisation_id = ?').get(b.departmentId, orgId)) {
+        throw new AppError(400, 'department_not_found');
+      }
+    }
+    const unitCostCents = toCents(b.unitCost);
+    const sellingPriceCents = b.sellingPrice !== undefined ? toCents(b.sellingPrice) : Math.round(unitCostCents * 1.3);
+    const wholesalePriceCents = b.wholesalePrice !== undefined ? toCents(b.wholesalePrice) : Math.round(unitCostCents * 1.15);
     const r = db
-      .prepare('INSERT INTO products (organisation_id, sku, name, description, category_id, base_unit_id, unit_cost_cents, reorder_level_milli) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(orgId, b.sku, b.name, b.description, b.categoryId ?? null, b.baseUnitId, toCents(b.unitCost), toMilli(b.reorderLevel));
+      .prepare(
+        `INSERT INTO products (organisation_id, sku, name, description, category_id, department_id, base_unit_id, unit_cost_cents, selling_price_cents, wholesale_price_cents, vat_category, reorder_level_milli)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        orgId,
+        b.sku,
+        b.name,
+        b.description,
+        b.categoryId ?? null,
+        b.departmentId ?? null,
+        b.baseUnitId,
+        unitCostCents,
+        sellingPriceCents,
+        wholesalePriceCents,
+        b.vatCategory,
+        toMilli(b.reorderLevel),
+      );
     return reply.code(201).send({ id: Number(r.lastInsertRowid) });
   });
   // The SKU and base unit are fixed once created: posted history is expressed in them.
@@ -367,18 +437,31 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         name: name.optional(),
         description: text(500).optional(),
         categoryId: id.nullable().optional(),
+        departmentId: id.nullable().optional(),
         unitCost: money.optional(),
+        sellingPrice: money.optional(),
+        wholesalePrice: money.optional(),
+        vatCategory: z.enum(['standard_15', 'zero_rated', 'exempt']).optional(),
         reorderLevel: z.number().finite().min(0).max(1e9).optional(),
         active: z.boolean().optional(),
       })
       .strict()
       .parse(req.body);
     if (b.categoryId) owned('categories', b.categoryId, orgId, 'category_not_found');
+    if (b.departmentId) {
+      if (!db.prepare('SELECT 1 FROM departments d JOIN branches br ON br.id = d.branch_id WHERE d.id = ? AND br.organisation_id = ?').get(b.departmentId, orgId)) {
+        throw new AppError(400, 'department_not_found');
+      }
+    }
     update(db, 'products', rowId, {
       name: b.name,
       description: b.description,
       category_id: b.categoryId,
+      department_id: b.departmentId,
       unit_cost_cents: b.unitCost !== undefined ? toCents(b.unitCost) : undefined,
+      selling_price_cents: b.sellingPrice !== undefined ? toCents(b.sellingPrice) : undefined,
+      wholesale_price_cents: b.wholesalePrice !== undefined ? toCents(b.wholesalePrice) : undefined,
+      vat_category: b.vatCategory,
       reorder_level_milli: b.reorderLevel !== undefined ? toMilli(b.reorderLevel) : undefined,
       active: flag(b.active),
     });
@@ -412,7 +495,18 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   const posting: Record<
     PostableType,
     z.ZodType<{
-      lines: { productId: number; warehouseId: number; unitId: number; quantity: number; toWarehouseId?: number; unitCost?: number | null; batchNumber?: string | null; expiryDate?: string | null }[];
+      lines: {
+        productId: number;
+        warehouseId: number;
+        unitId: number;
+        quantity: number;
+        toWarehouseId?: number;
+        unitCost?: number | null;
+        unitSellingPrice?: number | null;
+        tenderType?: string | null;
+        batchNumber?: string | null;
+        expiryDate?: string | null;
+      }[];
       reason?: string | null;
       reference?: string | null;
       supplierId?: number | null;
@@ -420,7 +514,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     }>
   > = {
     receipt: z.object({ reference: common.reference, supplierId: common.supplierId, lines: lines({ quantity: qty.positive(), unitCost: money.nullish() }) }).strict(),
-    issue: z.object({ reference: common.reference, departmentId: common.departmentId, lines: lines({ quantity: qty.positive() }) }).strict(),
+    issue: z.object({ reference: common.reference, departmentId: common.departmentId, lines: lines({ quantity: qty.positive(), unitSellingPrice: money.nullish(), tenderType: text(40) }) }).strict(),
     transfer: z.object({ reference: common.reference, lines: lines({ toWarehouseId: id, quantity: qty.positive() }) }).strict(),
     adjustment: z.object({ reference: common.reference, reason: z.string().trim().min(3).max(300), lines: lines({ quantity: qty, unitCost: money.nullish() }) }).strict(),
     count: z.object({ reference: common.reference, lines: lines({ quantity: qty.min(0) }) }).strict(),
@@ -446,6 +540,8 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
           unitId: l.unitId,
           quantityMilli: toMilli(l.quantity),
           unitCostCents: l.unitCost !== undefined && l.unitCost !== null ? toCents(l.unitCost) : null,
+          unitSellingPriceCents: l.unitSellingPrice !== undefined && l.unitSellingPrice !== null ? toCents(l.unitSellingPrice) : null,
+          tenderType: l.tenderType ?? null,
           batchNumber: l.batchNumber,
           expiryDate: l.expiryDate,
         })),
@@ -812,18 +908,25 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
                 (SELECT r.id FROM stock_documents r WHERE r.reverses_document_id = d.id) AS reversedByDocumentId,
                 m.product_id AS productId, p.sku, p.name AS productName, m.warehouse_id AS warehouseId,
                 w.name AS warehouseName, u.code AS unit, m.quantity_milli, m.factor_milli, m.base_delta_milli,
-                m.unit_cost_cents, m.batch_number AS batchNumber, m.expiry_date AS expiryDate
+                m.unit_cost_cents, m.unit_selling_price_cents, m.tender_type AS tenderType, m.batch_number AS batchNumber, m.expiry_date AS expiryDate
            FROM stock_movements m JOIN stock_documents d ON d.id = m.document_id JOIN products p ON p.id = m.product_id
                 JOIN warehouses w ON w.id = m.warehouse_id JOIN units_of_measure u ON u.id = m.unit_id
           WHERE ${where} ORDER BY m.id DESC LIMIT ? OFFSET ?`,
       )
-      .all(...params, q.limit, q.offset) as ({ quantity_milli: number; factor_milli: number; base_delta_milli: number; unit_cost_cents: number } & Record<string, unknown>)[]).map(
-      ({ quantity_milli, factor_milli, base_delta_milli, unit_cost_cents, ...r }) => ({
+      .all(...params, q.limit, q.offset) as ({
+        quantity_milli: number;
+        factor_milli: number;
+        base_delta_milli: number;
+        unit_cost_cents: number;
+        unit_selling_price_cents: number;
+      } & Record<string, unknown>)[]).map(
+      ({ quantity_milli, factor_milli, base_delta_milli, unit_cost_cents, unit_selling_price_cents, ...r }) => ({
         ...r,
         quantity: fromMilli(quantity_milli),
         factor: fromMilli(factor_milli),
         baseChange: fromMilli(base_delta_milli),
         unitCost: fromCents(unit_cost_cents),
+        unitSellingPrice: fromCents(unit_selling_price_cents ?? 0),
       }),
     );
     return { items: rows };
@@ -834,16 +937,36 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   // ---------- inventory reports & low-stock alerts ----------
   app.get('/api/reports/inventory', { preHandler: anyUser }, async (req) => {
     const orgId = req.user!.organisationId;
+    const rq = z
+      .object({
+        period: z.enum(['today', 'week', 'month', 'all']).default('all'),
+        departmentId: z.coerce.number().int().positive().optional(),
+      })
+      .parse(req.query);
+
+    let cutoffIso: string | null = null;
+    if (rq.period === 'today') {
+      const d = new Date();
+      d.setUTCHours(0, 0, 0, 0);
+      cutoffIso = d.toISOString().replace('T', ' ').slice(0, 19);
+    } else if (rq.period === 'week') {
+      const d = new Date(Date.now() - 7 * 86400_000);
+      cutoffIso = d.toISOString().replace('T', ' ').slice(0, 19);
+    } else if (rq.period === 'month') {
+      const d = new Date(Date.now() - 30 * 86400_000);
+      cutoffIso = d.toISOString().replace('T', ' ').slice(0, 19);
+    }
 
     // 1. Low-stock alerts across products (product-level reorder threshold vs total and warehouse stock)
     const lowStockAlerts = (db
       .prepare(
         `SELECT p.id AS productId, p.sku, p.name AS productName, c.name AS categoryName,
-                u.code AS unit, p.unit_cost_cents, p.reorder_level_milli,
+                dep.name AS departmentName, u.code AS unit, p.unit_cost_cents, p.selling_price_cents, p.reorder_level_milli,
                 COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS total_milli
            FROM products p
            JOIN units_of_measure u ON u.id = p.base_unit_id
            LEFT JOIN categories c ON c.id = p.category_id
+           LEFT JOIN departments dep ON dep.id = p.department_id
           WHERE p.organisation_id = ? AND p.active = 1 AND p.reorder_level_milli > 0
             AND COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) <= p.reorder_level_milli
           ORDER BY (total_milli - p.reorder_level_milli) ASC, p.name ASC`,
@@ -853,8 +976,10 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       sku: string;
       productName: string;
       categoryName: string | null;
+      departmentName: string | null;
       unit: string;
       unit_cost_cents: number;
+      selling_price_cents: number;
       reorder_level_milli: number;
       total_milli: number;
     }[]).map((r) => {
@@ -867,6 +992,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         sku: r.sku,
         productName: r.productName,
         categoryName: r.categoryName ?? 'Uncategorised',
+        departmentName: r.departmentName ?? 'General',
         unit: r.unit,
         currentStock,
         reorderLevel,
@@ -984,12 +1110,292 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       netBaseChange: fromMilli(r.net_delta_milli),
     }));
 
+    // 6. Owner End-of-Day Stock-Flow & Earnings Reconciliation (Bought -> Sold -> Earned -> Stock at Hand)
+    const prodFilter = rq.departmentId ? ' AND p.department_id = ?' : '';
+    const prodParams: (number | string)[] = rq.departmentId ? [orgId, rq.departmentId] : [orgId];
+    const productsList = db
+      .prepare(
+        `SELECT p.id, p.sku, p.name, p.unit_cost_cents, p.selling_price_cents, p.vat_category AS vatCategory,
+                u.code AS unit, COALESCE(c.name, 'Uncategorised') AS categoryName,
+                p.department_id AS departmentId, COALESCE(dep.name, 'General Store') AS departmentName,
+                COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS closing_milli
+           FROM products p
+           JOIN units_of_measure u ON u.id = p.base_unit_id
+           LEFT JOIN categories c ON c.id = p.category_id
+           LEFT JOIN departments dep ON dep.id = p.department_id
+          WHERE p.organisation_id = ?${prodFilter}
+          ORDER BY p.name ASC`,
+      )
+      .all(...prodParams) as {
+      id: number;
+      sku: string;
+      name: string;
+      unit_cost_cents: number;
+      selling_price_cents: number;
+      vatCategory: string;
+      unit: string;
+      categoryName: string;
+      departmentId: number | null;
+      departmentName: string;
+      closing_milli: number;
+    }[];
+
+    const periodClause = cutoffIso ? ' AND d.created_at >= ?' : '';
+    const movParams: (number | string)[] = cutoffIso ? [orgId, cutoffIso] : [orgId];
+    const rawMovements = db
+      .prepare(
+        `SELECT m.product_id AS productId, d.type, d.department_id AS docDeptId,
+                m.base_delta_milli, m.unit_cost_cents, m.unit_selling_price_cents, m.tender_type AS tenderType
+           FROM stock_movements m
+           JOIN stock_documents d ON d.id = m.document_id
+          WHERE d.organisation_id = ?
+            AND d.type != 'reversal'
+            AND NOT EXISTS (SELECT 1 FROM stock_documents rev WHERE rev.reverses_document_id = d.id)${periodClause}`,
+      )
+      .all(...movParams) as {
+      productId: number;
+      type: string;
+      docDeptId: number | null;
+      base_delta_milli: number;
+      unit_cost_cents: number;
+      unit_selling_price_cents: number;
+      tenderType: string | null;
+    }[];
+
+    const byProd = new Map<
+      number,
+      {
+        boughtMilli: number;
+        boughtCostCents: number;
+        soldMilli: number;
+        revenueCents: number;
+        cogsCents: number;
+        damagedMilli: number;
+        damagedCostCents: number;
+        adjustedMilli: number;
+        netPeriodDeltaMilli: number;
+      }
+    >();
+
+    const tenderTotalsCents: Record<string, number> = {
+      USD_CASH: 0,
+      ZIG_CASH: 0,
+      ZAR_CASH: 0,
+      ECOCASH_USD: 0,
+      ECOCASH_ZIG: 0,
+      INNBUCKS: 0,
+      ONEMONEY_ZIG: 0,
+      CREDIT: 0,
+    };
+
+    const prodLookup = new Map(productsList.map((p) => [p.id, p]));
+
+    for (const m of rawMovements) {
+      const pInfo = prodLookup.get(m.productId);
+      if (!pInfo) continue;
+      let acc = byProd.get(m.productId);
+      if (!acc) {
+        acc = {
+          boughtMilli: 0,
+          boughtCostCents: 0,
+          soldMilli: 0,
+          revenueCents: 0,
+          cogsCents: 0,
+          damagedMilli: 0,
+          damagedCostCents: 0,
+          adjustedMilli: 0,
+          netPeriodDeltaMilli: 0,
+        };
+        byProd.set(m.productId, acc);
+      }
+      acc.netPeriodDeltaMilli += m.base_delta_milli;
+      const absUnits = Math.abs(m.base_delta_milli) / 1000;
+      const costPerUnit = m.unit_cost_cents > 0 ? m.unit_cost_cents : pInfo.unit_cost_cents;
+
+      if (m.type === 'receipt') {
+        acc.boughtMilli += m.base_delta_milli;
+        acc.boughtCostCents += Math.round(absUnits * costPerUnit);
+      } else if (m.type === 'issue') {
+        acc.soldMilli += Math.abs(m.base_delta_milli);
+        const sellPerUnit =
+          m.unit_selling_price_cents > 0
+            ? m.unit_selling_price_cents
+            : pInfo.selling_price_cents > 0
+              ? pInfo.selling_price_cents
+              : Math.round(costPerUnit * 1.3);
+        const lineRevCents = Math.round(absUnits * sellPerUnit);
+        const lineCogsCents = Math.round(absUnits * costPerUnit);
+        acc.revenueCents += lineRevCents;
+        acc.cogsCents += lineCogsCents;
+        const tKey = m.tenderType && m.tenderType in tenderTotalsCents ? m.tenderType : 'USD_CASH';
+        tenderTotalsCents[tKey] = (tenderTotalsCents[tKey] ?? 0) + lineRevCents;
+      } else if (m.type === 'write_off') {
+        acc.damagedMilli += Math.abs(m.base_delta_milli);
+        acc.damagedCostCents += Math.round(absUnits * costPerUnit);
+      } else if (m.type === 'adjustment' || m.type === 'count') {
+        acc.adjustedMilli += m.base_delta_milli;
+      }
+    }
+
+    let totalBoughtUnits = 0;
+    let totalBoughtCostCents = 0;
+    let totalSoldUnits = 0;
+    let totalRevenueCents = 0;
+    let totalCogsCents = 0;
+    let totalVat15Cents = 0;
+    let totalDamagedUnits = 0;
+    let totalDamagedCostCents = 0;
+    let totalClosingUnits = 0;
+    let totalClosingCostValueCents = 0;
+    let totalClosingRetailValueCents = 0;
+
+    const deptAggregator = new Map<
+      string,
+      {
+        departmentName: string;
+        skuCount: number;
+        openingUnits: number;
+        boughtUnits: number;
+        boughtCost: number;
+        soldUnits: number;
+        revenue: number;
+        cogs: number;
+        grossProfit: number;
+        damagedUnits: number;
+        damagedCost: number;
+        closingUnits: number;
+        stockAtHandCostValue: number;
+        stockAtHandRetailValue: number;
+      }
+    >();
+
+    const productStockFlow = productsList.map((p) => {
+      const stats = byProd.get(p.id) ?? {
+        boughtMilli: 0,
+        boughtCostCents: 0,
+        soldMilli: 0,
+        revenueCents: 0,
+        cogsCents: 0,
+        damagedMilli: 0,
+        damagedCostCents: 0,
+        adjustedMilli: 0,
+        netPeriodDeltaMilli: 0,
+      };
+      const closingUnits = fromMilli(p.closing_milli);
+      const openingMilli = Math.max(0, p.closing_milli - stats.netPeriodDeltaMilli);
+      const openingUnits = fromMilli(openingMilli);
+      const boughtUnits = fromMilli(stats.boughtMilli);
+      const soldUnits = fromMilli(stats.soldMilli);
+      const damagedUnits = fromMilli(stats.damagedMilli);
+      const unitCost = fromCents(p.unit_cost_cents);
+      const sellingPrice = p.selling_price_cents > 0 ? fromCents(p.selling_price_cents) : Math.round(unitCost * 1.3 * 100) / 100;
+      const revenue = fromCents(stats.revenueCents);
+      const cogs = fromCents(stats.cogsCents);
+      const grossProfit = Math.round((revenue - cogs) * 100) / 100;
+      const vat15Cents = p.vatCategory === 'standard_15' ? Math.round((stats.revenueCents * 15) / 115) : 0;
+      const closingCostCents = Math.round(closingUnits * p.unit_cost_cents);
+      const closingRetailCents = Math.round(closingUnits * (p.selling_price_cents > 0 ? p.selling_price_cents : p.unit_cost_cents * 1.3));
+
+      totalBoughtUnits += boughtUnits;
+      totalBoughtCostCents += stats.boughtCostCents;
+      totalSoldUnits += soldUnits;
+      totalRevenueCents += stats.revenueCents;
+      totalCogsCents += stats.cogsCents;
+      totalVat15Cents += vat15Cents;
+      totalDamagedUnits += damagedUnits;
+      totalDamagedCostCents += stats.damagedCostCents;
+      totalClosingUnits += closingUnits;
+      totalClosingCostValueCents += closingCostCents;
+      totalClosingRetailValueCents += closingRetailCents;
+
+      const dName = p.departmentName;
+      let dRow = deptAggregator.get(dName);
+      if (!dRow) {
+        dRow = {
+          departmentName: dName,
+          skuCount: 0,
+          openingUnits: 0,
+          boughtUnits: 0,
+          boughtCost: 0,
+          soldUnits: 0,
+          revenue: 0,
+          cogs: 0,
+          grossProfit: 0,
+          damagedUnits: 0,
+          damagedCost: 0,
+          closingUnits: 0,
+          stockAtHandCostValue: 0,
+          stockAtHandRetailValue: 0,
+        };
+        deptAggregator.set(dName, dRow);
+      }
+      dRow.skuCount += 1;
+      dRow.openingUnits = Math.round((dRow.openingUnits + openingUnits) * 1000) / 1000;
+      dRow.boughtUnits = Math.round((dRow.boughtUnits + boughtUnits) * 1000) / 1000;
+      dRow.boughtCost = Math.round((dRow.boughtCost + fromCents(stats.boughtCostCents)) * 100) / 100;
+      dRow.soldUnits = Math.round((dRow.soldUnits + soldUnits) * 1000) / 1000;
+      dRow.revenue = Math.round((dRow.revenue + revenue) * 100) / 100;
+      dRow.cogs = Math.round((dRow.cogs + cogs) * 100) / 100;
+      dRow.grossProfit = Math.round((dRow.grossProfit + grossProfit) * 100) / 100;
+      dRow.damagedUnits = Math.round((dRow.damagedUnits + damagedUnits) * 1000) / 1000;
+      dRow.damagedCost = Math.round((dRow.damagedCost + fromCents(stats.damagedCostCents)) * 100) / 100;
+      dRow.closingUnits = Math.round((dRow.closingUnits + closingUnits) * 1000) / 1000;
+      dRow.stockAtHandCostValue = Math.round((dRow.stockAtHandCostValue + fromCents(closingCostCents)) * 100) / 100;
+      dRow.stockAtHandRetailValue = Math.round((dRow.stockAtHandRetailValue + fromCents(closingRetailCents)) * 100) / 100;
+
+      return {
+        productId: p.id,
+        sku: p.sku,
+        productName: p.name,
+        categoryName: p.categoryName,
+        departmentId: p.departmentId,
+        departmentName: p.departmentName,
+        vatCategory: p.vatCategory,
+        unit: p.unit,
+        unitCost,
+        sellingPrice,
+        openingUnits,
+        boughtUnits,
+        boughtCost: fromCents(stats.boughtCostCents),
+        soldUnits,
+        revenue,
+        cogs,
+        grossProfit,
+        damagedUnits,
+        damagedCost: fromCents(stats.damagedCostCents),
+        closingUnits,
+        stockAtHandCostValue: fromCents(closingCostCents),
+        stockAtHandRetailValue: fromCents(closingRetailCents),
+      };
+    });
+
+    const ownerSummary = {
+      period: rq.period,
+      totalBoughtUnits: Math.round(totalBoughtUnits * 1000) / 1000,
+      totalBoughtCost: fromCents(totalBoughtCostCents),
+      totalSoldUnits: Math.round(totalSoldUnits * 1000) / 1000,
+      totalRevenue: fromCents(totalRevenueCents),
+      totalCogs: fromCents(totalCogsCents),
+      grossProfit: fromCents(totalRevenueCents - totalCogsCents),
+      netProfitAfterShrinkage: fromCents(totalRevenueCents - totalCogsCents - totalDamagedCostCents),
+      vat15Payable: fromCents(totalVat15Cents),
+      totalDamagedUnits: Math.round(totalDamagedUnits * 1000) / 1000,
+      totalDamagedCost: fromCents(totalDamagedCostCents),
+      totalClosingUnits: Math.round(totalClosingUnits * 1000) / 1000,
+      stockAtHandCostValue: fromCents(totalClosingCostValueCents),
+      stockAtHandRetailValue: fromCents(totalClosingRetailValueCents),
+      tenderBreakdown: Object.fromEntries(Object.entries(tenderTotalsCents).map(([k, v]) => [k, fromCents(v)])),
+      byDepartment: Array.from(deptAggregator.values()),
+      productStockFlow,
+    };
+
     return {
       lowStockAlerts,
       valuationByCategory,
       warehouseStockSummary,
       departmentConsumption,
       movementSummary,
+      ownerSummary,
     };
   });
 
@@ -1572,5 +1978,729 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     reply.header('x-content-type-options', 'nosniff');
     reply.header('content-security-policy', "default-src 'none'");
     return reply.send(buf);
+  });
+
+  // ---------- Stage 7: Zimbabwean SME Dual-Department Trading & Operations Endpoints ----------
+
+  function ensureSmeSeedForOrg(orgId: number) {
+    // 1. Staff 4-Digit Fast PINs
+    const pinCount = (db.prepare('SELECT COUNT(*) n FROM staff_pins WHERE organisation_id = ?').get(orgId) as { n: number }).n;
+    if (pinCount === 0) {
+      const execU = db.prepare("SELECT id FROM users WHERE organisation_id = ? AND role = 'executive_manager' LIMIT 1").get(orgId) as { id: number } | undefined;
+      const invU = db.prepare("SELECT id FROM users WHERE organisation_id = ? AND role = 'inventory_manager' LIMIT 1").get(orgId) as { id: number } | undefined;
+      const insPin = db.prepare(
+        `INSERT OR IGNORE INTO staff_pins (organisation_id, user_id, staff_name, role_title, pin_code, department_scope, can_view_cost, can_write_off, active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      );
+      insPin.run(orgId, execU?.id ?? null, 'Tendai Moyo (Owner)', 'Owner / Executive Manager', '1980', 'Groceries & Hardware', 1, 1);
+      insPin.run(orgId, invU?.id ?? null, 'Rudo Chikwanda', 'Senior Storekeeper', '2468', 'Groceries & Hardware', 1, 1);
+      insPin.run(orgId, invU?.id ?? null, 'Blessing Ndlovu', 'Hardware Yard Dispatch', '1357', 'Hardware & Building', 0, 0);
+      insPin.run(orgId, invU?.id ?? null, 'Nyasha Mutasa', 'Grocery Till Cashier #1', '4321', 'Groceries & Staples', 0, 0);
+    }
+
+    // 2. Chikwereti (Customer Credit & Farmers Debtors Book)
+    const debtCount = (db.prepare('SELECT COUNT(*) n FROM customer_credit_accounts WHERE organisation_id = ?').get(orgId) as { n: number }).n;
+    if (debtCount === 0) {
+      const insDebt = db.prepare(
+        `INSERT INTO customer_credit_accounts (organisation_id, customer_name, phone, department_name, credit_limit_cents, balance_cents, due_date, items_summary, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insDebt.run(orgId, 'Mai Chipo Tuckshop (Mbare)', '+263 772 319 402', 'Groceries', 25000, 8450, '2026-11-05', '10x Pearlenta 10kg, 2x Cartons Roil Cooking Oil 2L', 'CURRENT');
+      insDebt.run(orgId, 'SekuruSibanda Plot 14 (Goromonzi)', '+263 712 884 119', 'Hardware & Agro', 50000, 21500, '2026-11-10', '20x PPC Surebuild Cement 50kg, 2x Brickforce Rolls', 'DUE_SOON');
+      insDebt.run(orgId, 'Munashe Builders & Contractors', '+263 774 501 228', 'Hardware & Building', 80000, 34000, '2026-10-20', '30x PPC Cement 50kg, 15x IBR Chromadek Sheets 3.6m', 'OVERDUE');
+    }
+
+    // 3. Supplier Balances Owed (Creditors)
+    const credCount = (db.prepare('SELECT COUNT(*) n FROM supplier_credit_ledgers WHERE organisation_id = ?').get(orgId) as { n: number }).n;
+    if (credCount === 0) {
+      const insCred = db.prepare(
+        `INSERT INTO supplier_credit_ledgers (organisation_id, supplier_name, invoice_ref, department_name, total_cents, paid_cents, balance_cents, currency_code, due_date, notes, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insCred.run(orgId, 'National Foods Ltd (Harare Depot)', 'NF-INV-88412', 'Groceries', 185000, 125000, 60000, 'USD', '2026-11-08', '7-day trade credit on Roller Meal & Mahatma Rice', 'PARTIAL');
+      insCred.run(orgId, 'PPC Zimbabwe (Msasa Cement Plant)', 'PPC-BYO-44109', 'Hardware & Building', 240000, 180000, 60000, 'USD', '2026-11-12', 'Balance payable upon next 5-tonne delivery', 'PARTIAL');
+      insCred.run(orgId, 'Musina Cross-Border Runner (Omalayitsha)', 'MUSINA-RUNNER-19', 'Hardware & Groceries', 92000, 92000, 0, 'USD', '2026-10-26', 'Beitbridge ZIMRA duty & freight cleared in full', 'SETTLED');
+    }
+
+    // 4. Paid & Uncollected Stock (Hardware "Collect Later" / Lay-By)
+    const layCount = (db.prepare('SELECT COUNT(*) n FROM paid_uncollected_items WHERE organisation_id = ?').get(orgId) as { n: number }).n;
+    if (layCount === 0) {
+      const insLay = db.prepare(
+        `INSERT INTO paid_uncollected_items (organisation_id, receipt_ref, customer_name, customer_phone, product_name, department_name, warehouse_name, ordered_qty, collected_qty, unit, total_paid_cents, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insLay.run(orgId, 'RCP-HW-1088', 'VaChigumba (Ruwa Stand #412)', '+263 773 910 441', 'PPC Surebuild Cement 50kg Bag', 'Hardware & Building', 'Main Warehouse', 100, 40, 'bag', 125000, 'PARTIAL_COLLECTED');
+      insLay.run(orgId, 'RCP-HW-1094', 'Tafadzwa Moyo (Chitungwiza)', '+263 782 119 005', 'IBR Chromadek Roofing Sheet 3.6m', 'Hardware & Building', 'Msasa Reserve Store', 24, 0, 'sheet', 52800, 'AWAITING_COLLECTION');
+    }
+
+    // 5. Till Shifts & Multi-Tender Cash-Up
+    const shiftCount = (db.prepare('SELECT COUNT(*) n FROM till_shifts WHERE organisation_id = ?').get(orgId) as { n: number }).n;
+    if (shiftCount === 0) {
+      const insShift = db.prepare(
+        `INSERT INTO till_shifts
+          (organisation_id, shift_ref, cashier_name, department_name, expected_usd_cents, counted_usd_cents, expected_zig_cents, counted_zig_cents, expected_zar_cents, counted_zar_cents, ecocash_usd_cents, ecocash_zig_cents, innbucks_usd_cents, onemoney_zig_cents, change_vouchers_issued_cents, variance_usd_cents, status, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insShift.run(orgId, 'SHIFT-GROC-AM', 'Nyasha Mutasa (Grocery Till #1)', 'Groceries', 42500, 42500, 384000, 384000, 145000, 145000, 11850, 96000, 9400, 22000, 350, 0, 'BALANCED', 'Morning grocery shift balanced to the cent');
+      insShift.run(orgId, 'SHIFT-HW-AM', 'Blessing Ndlovu (Hardware Counter)', 'Hardware & Building', 89000, 89000, 120000, 120000, 210000, 210000, 24500, 0, 16000, 0, 150, 0, 'BALANCED', 'Cement & roofing dispatch cash-up verified');
+    }
+
+    // 6. USD Small-Change Vouchers
+    const vouchCount = (db.prepare('SELECT COUNT(*) n FROM change_vouchers WHERE organisation_id = ?').get(orgId) as { n: number }).n;
+    if (vouchCount === 0) {
+      const insVouch = db.prepare(
+        `INSERT INTO change_vouchers (organisation_id, voucher_code, customer_name, customer_phone, amount_cents, department_name, status, created_by_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insVouch.run(orgId, 'CHG-9041', 'Gogo Ndlovu', '+263 775 210 990', 50, 'Groceries', 'UNREDEEMED', 'Nyasha Mutasa');
+      insVouch.run(orgId, 'CHG-9042', 'Farai Katsande', '+263 719 400 112', 35, 'Groceries', 'UNREDEEMED', 'Nyasha Mutasa');
+      insVouch.run(orgId, 'CHG-9038', 'Tinashe Bhebhe', '+263 772 800 311', 75, 'Hardware & Building', 'REDEEMED', 'Blessing Ndlovu');
+    }
+
+    // 7. Break-Bulk & Recipe Yield Batches
+    const yieldCount = (db.prepare('SELECT COUNT(*) n FROM yield_batches WHERE organisation_id = ?').get(orgId) as { n: number }).n;
+    if (yieldCount === 0) {
+      const insYield = db.prepare(
+        `INSERT INTO yield_batches (organisation_id, batch_ref, kind, department_name, source_name, input_qty, input_unit, output_name, expected_output_qty, actual_output_qty, output_unit, waste_qty, yield_pct, created_by_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      insYield.run(orgId, 'BRK-2026-011', 'BREAK_BULK', 'Groceries', 'Mahatma Long Grain Rice (Carton 12x2kg)', 2, 'carton', 'Mahatma Rice 2kg Shelf Pack', 24, 24, 'each', 0, 100, 'Rudo Chikwanda');
+      insYield.run(orgId, 'BRK-2026-012', 'BREAK_BULK', 'Hardware & Building', 'Wire Nails 3-Inch 50kg Bulk Bag', 1, 'bag (50kg)', 'Wire Nails 3-Inch 1kg Counter Pack', 50, 49.5, 'kg', 0.5, 99, 'Blessing Ndlovu');
+    }
+  }
+
+  // Overview of all SME ledgers in one call
+  app.get('/api/sme/overview', { preHandler: anyUser }, async (req) => {
+    const orgId = req.user!.organisationId;
+    ensureSmeSeedForOrg(orgId);
+
+    const debtors = (db
+      .prepare('SELECT * FROM customer_credit_accounts WHERE organisation_id = ? ORDER BY id DESC')
+      .all(orgId) as Record<string, unknown>[]).map((r) => ({
+      id: r.id,
+      customerName: r.customer_name,
+      phone: r.phone,
+      departmentName: r.department_name,
+      creditLimit: fromCents(Number(r.credit_limit_cents ?? 0)),
+      balance: fromCents(Number(r.balance_cents ?? 0)),
+      dueDate: r.due_date,
+      itemsSummary: r.items_summary,
+      status: r.status,
+      updatedAt: r.updated_at,
+    }));
+
+    const creditors = (db
+      .prepare('SELECT * FROM supplier_credit_ledgers WHERE organisation_id = ? ORDER BY id DESC')
+      .all(orgId) as Record<string, unknown>[]).map((r) => ({
+      id: r.id,
+      supplierId: r.supplier_id,
+      supplierName: r.supplier_name,
+      invoiceRef: r.invoice_ref,
+      departmentName: r.department_name,
+      totalAmount: fromCents(Number(r.total_cents ?? 0)),
+      paidAmount: fromCents(Number(r.paid_cents ?? 0)),
+      balanceOwed: fromCents(Number(r.balance_cents ?? 0)),
+      currencyCode: r.currency_code,
+      dueDate: r.due_date,
+      notes: r.notes,
+      status: r.status,
+      updatedAt: r.updated_at,
+    }));
+
+    const laybys = (db
+      .prepare('SELECT * FROM paid_uncollected_items WHERE organisation_id = ? ORDER BY id DESC')
+      .all(orgId) as Record<string, unknown>[]).map((r) => ({
+      id: r.id,
+      receiptRef: r.receipt_ref,
+      customerName: r.customer_name,
+      customerPhone: r.customer_phone,
+      productId: r.product_id,
+      productName: r.product_name,
+      departmentName: r.department_name,
+      warehouseName: r.warehouse_name,
+      orderedQty: Number(r.ordered_qty),
+      collectedQty: Number(r.collected_qty),
+      remainingQty: Math.max(0, Number(r.ordered_qty) - Number(r.collected_qty)),
+      unit: r.unit,
+      totalPaid: fromCents(Number(r.total_paid_cents ?? 0)),
+      status: r.status,
+      createdAt: r.created_at,
+    }));
+
+    const tillShifts = (db
+      .prepare('SELECT * FROM till_shifts WHERE organisation_id = ? ORDER BY id DESC LIMIT 30')
+      .all(orgId) as Record<string, unknown>[]).map((r) => ({
+      id: r.id,
+      shiftRef: r.shift_ref,
+      cashierName: r.cashier_name,
+      departmentName: r.department_name,
+      expectedUsd: fromCents(Number(r.expected_usd_cents ?? 0)),
+      countedUsd: fromCents(Number(r.counted_usd_cents ?? 0)),
+      expectedZig: fromCents(Number(r.expected_zig_cents ?? 0)),
+      countedZig: fromCents(Number(r.counted_zig_cents ?? 0)),
+      expectedZar: fromCents(Number(r.expected_zar_cents ?? 0)),
+      countedZar: fromCents(Number(r.counted_zar_cents ?? 0)),
+      ecocashUsd: fromCents(Number(r.ecocash_usd_cents ?? 0)),
+      ecocashZig: fromCents(Number(r.ecocash_zig_cents ?? 0)),
+      innbucksUsd: fromCents(Number(r.innbucks_usd_cents ?? 0)),
+      onemoneyZig: fromCents(Number(r.onemoney_zig_cents ?? 0)),
+      changeVouchersIssued: fromCents(Number(r.change_vouchers_issued_cents ?? 0)),
+      varianceUsd: fromCents(Number(r.variance_usd_cents ?? 0)),
+      status: r.status,
+      notes: r.notes,
+      closedAt: r.closed_at,
+    }));
+
+    const changeVouchers = (db
+      .prepare('SELECT * FROM change_vouchers WHERE organisation_id = ? ORDER BY id DESC LIMIT 50')
+      .all(orgId) as Record<string, unknown>[]).map((r) => ({
+      id: r.id,
+      voucherCode: r.voucher_code,
+      customerName: r.customer_name,
+      customerPhone: r.customer_phone,
+      amountUsd: fromCents(Number(r.amount_cents ?? 0)),
+      departmentName: r.department_name,
+      status: r.status,
+      createdByName: r.created_by_name,
+      createdAt: r.created_at,
+      redeemedAt: r.redeemed_at,
+    }));
+
+    const yieldBatches = (db
+      .prepare('SELECT * FROM yield_batches WHERE organisation_id = ? ORDER BY id DESC LIMIT 50')
+      .all(orgId) as Record<string, unknown>[]).map((r) => ({
+      id: r.id,
+      batchRef: r.batch_ref,
+      kind: r.kind,
+      departmentName: r.department_name,
+      sourceName: r.source_name,
+      inputQty: Number(r.input_qty),
+      inputUnit: r.input_unit,
+      outputName: r.output_name,
+      expectedOutputQty: Number(r.expected_output_qty),
+      actualOutputQty: Number(r.actual_output_qty),
+      outputUnit: r.output_unit,
+      wasteQty: Number(r.waste_qty),
+      yieldPct: Number(r.yield_pct),
+      documentId: r.document_id,
+      createdByName: r.created_by_name,
+      createdAt: r.created_at,
+    }));
+
+    const staffPins = (db
+      .prepare('SELECT * FROM staff_pins WHERE organisation_id = ? ORDER BY id ASC')
+      .all(orgId) as Record<string, unknown>[]).map((r) => ({
+      id: r.id,
+      userId: r.user_id,
+      staffName: r.staff_name,
+      roleTitle: r.role_title,
+      pinCode: r.pin_code,
+      departmentScope: r.department_scope,
+      canViewCost: Boolean(r.can_view_cost),
+      canWriteOff: Boolean(r.can_write_off),
+      active: Boolean(r.active),
+    }));
+
+    return {
+      debtors,
+      creditors,
+      laybys,
+      tillShifts,
+      changeVouchers,
+      yieldBatches,
+      staffPins,
+    };
+  });
+
+  // Counter Sale / Dispatch endpoint: posts an authoritative `issue` document while optionally updating Chikwereti credit or Lay-By collection
+  app.post('/api/sme/counter-sale', { preHandler: staff }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    ensureSmeSeedForOrg(orgId);
+    const b = z
+      .object({
+        warehouseId: id,
+        departmentId: id.nullish(),
+        departmentName: z.string().trim().max(80).default('Groceries'),
+        tenderType: z
+          .enum(['USD_CASH', 'ZIG_CASH', 'ZAR_CASH', 'ECOCASH_USD', 'ECOCASH_ZIG', 'INNBUCKS', 'ONEMONEY_ZIG', 'CREDIT'])
+          .default('USD_CASH'),
+        reference: text(80),
+        customerName: text(120),
+        customerPhone: text(40),
+        holdForLaterCollection: z.boolean().optional(),
+        changeVoucherAmountUsd: z.number().min(0).max(100).optional(),
+        lines: z
+          .array(
+            z
+              .object({
+                productId: id,
+                unitId: id,
+                quantity: qty.positive(),
+                unitSellingPrice: money.optional(),
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(100),
+      })
+      .strict()
+      .parse(req.body);
+
+    const key = idemKey(req);
+    const saleRef = b.reference ?? `SALE-${Date.now().toString().slice(-6)}`;
+
+    const posted = postDocument(db, req.user!, {
+      type: 'issue',
+      departmentId: b.departmentId ?? null,
+      reference: saleRef,
+      reason: `Counter sale (${b.tenderType})${b.customerName ? ` - ${b.customerName}` : ''}`,
+      idempotencyKey: key,
+      lines: b.lines.map((l) => ({
+        productId: l.productId,
+        warehouseId: b.warehouseId,
+        unitId: l.unitId,
+        quantityMilli: toMilli(l.quantity),
+        unitSellingPriceCents: l.unitSellingPrice !== undefined ? toCents(l.unitSellingPrice) : null,
+        tenderType: b.tenderType,
+      })),
+    });
+
+    const doc = getDocument(db, orgId, posted.documentId);
+    const totalSaleCents = (doc?.lines ?? []).reduce(
+      (sum, l) => sum + Math.round(Math.abs(l.baseChange) * (l.unitSellingPrice || l.unitCost * 1.3) * 100),
+      0,
+    );
+
+    // If sold on CREDIT (Chikwereti), record or update customer credit account
+    if (b.tenderType === 'CREDIT' && !posted.replayed) {
+      const custName = b.customerName || 'Walk-In Credit Customer';
+      const custPhone = b.customerPhone || '+263 770 000 000';
+      const summary = `${saleRef} (${b.lines.length} item(s))`;
+      const existing = db
+        .prepare('SELECT id, balance_cents, items_summary FROM customer_credit_accounts WHERE organisation_id = ? AND customer_name = ? LIMIT 1')
+        .get(orgId, custName) as { id: number; balance_cents: number; items_summary: string } | undefined;
+      if (existing) {
+        db.prepare(
+          "UPDATE customer_credit_accounts SET balance_cents = balance_cents + ?, items_summary = ?, status = 'CURRENT', updated_at = datetime('now') WHERE id = ?",
+        ).run(totalSaleCents, `${existing.items_summary}; ${summary}`.slice(0, 280), existing.id);
+      } else {
+        const due = new Date(Date.now() + 14 * 86400_000).toISOString().slice(0, 10);
+        db.prepare(
+          `INSERT INTO customer_credit_accounts (organisation_id, customer_name, phone, department_name, credit_limit_cents, balance_cents, due_date, items_summary, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CURRENT')`,
+        ).run(orgId, custName, custPhone, b.departmentName, Math.max(50000, totalSaleCents * 2), totalSaleCents, due, summary);
+      }
+    }
+
+    // If Hardware "Hold for Later Collection" is checked, create a Paid & Uncollected reservation entry
+    if (b.holdForLaterCollection && !posted.replayed) {
+      const whRow = db.prepare('SELECT name FROM warehouses WHERE id = ?').get(b.warehouseId) as { name: string } | undefined;
+      for (const l of b.lines) {
+        const pRow = db
+          .prepare('SELECT p.name, p.selling_price_cents, u.code AS unit FROM products p JOIN units_of_measure u ON u.id = p.base_unit_id WHERE p.id = ?')
+          .get(l.productId) as { name: string; selling_price_cents: number; unit: string } | undefined;
+        const unitSellCents = l.unitSellingPrice !== undefined ? toCents(l.unitSellingPrice) : (pRow?.selling_price_cents ?? 1000);
+        db.prepare(
+          `INSERT INTO paid_uncollected_items
+            (organisation_id, receipt_ref, customer_name, customer_phone, product_id, product_name, department_name, warehouse_name, ordered_qty, collected_qty, unit, total_paid_cents, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'AWAITING_COLLECTION')`,
+        ).run(
+          orgId,
+          saleRef,
+          b.customerName || 'Hardware Yard Customer',
+          b.customerPhone || '+263 770 000 000',
+          l.productId,
+          pRow?.name ?? `Product #${l.productId}`,
+          b.departmentName,
+          whRow?.name ?? 'Main Warehouse',
+          l.quantity,
+          pRow?.unit ?? 'each',
+          Math.round(l.quantity * unitSellCents),
+        );
+      }
+    }
+
+    // If a USD small-change voucher was issued with this sale
+    let issuedVoucherCode: string | null = null;
+    if (b.changeVoucherAmountUsd && b.changeVoucherAmountUsd > 0 && !posted.replayed) {
+      issuedVoucherCode = `CHG-${Math.floor(1000 + Math.random() * 9000)}`;
+      db.prepare(
+        `INSERT OR IGNORE INTO change_vouchers (organisation_id, voucher_code, customer_name, customer_phone, amount_cents, department_name, status, created_by_name)
+         VALUES (?, ?, ?, ?, ?, ?, 'UNREDEEMED', ?)`,
+      ).run(
+        orgId,
+        issuedVoucherCode,
+        b.customerName || 'Walk-In Customer',
+        b.customerPhone || null,
+        toCents(b.changeVoucherAmountUsd),
+        b.departmentName,
+        req.user!.name,
+      );
+    }
+
+    return reply.code(posted.replayed ? 200 : 201).send({
+      replayed: posted.replayed,
+      document: doc,
+      totalSaleUsd: fromCents(totalSaleCents),
+      issuedVoucherCode,
+    });
+  });
+
+  // Chikwereti (Customer Credit) CRUD
+  app.post('/api/sme/debtors', { preHandler: staff }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        customerName: name,
+        phone: z.string().trim().min(3).max(40),
+        departmentName: z.string().trim().min(2).max(60).default('Groceries'),
+        creditLimit: money.default(200),
+        balance: money.default(0),
+        dueDate: z.string().trim().min(8).max(20),
+        itemsSummary: z.string().trim().max(300).default('Counter credit account'),
+      })
+      .strict()
+      .parse(req.body);
+    const res = db
+      .prepare(
+        `INSERT INTO customer_credit_accounts (organisation_id, customer_name, phone, department_name, credit_limit_cents, balance_cents, due_date, items_summary, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CURRENT')`,
+      )
+      .run(orgId, b.customerName, b.phone, b.departmentName, toCents(b.creditLimit), toCents(b.balance), b.dueDate, b.itemsSummary);
+    return reply.code(201).send({ id: Number(res.lastInsertRowid) });
+  });
+
+  app.post('/api/sme/debtors/:id/repay', { preHandler: staff }, async (req) => {
+    const { id: rowId } = idParam.parse(req.params);
+    const orgId = req.user!.organisationId;
+    const b = z.object({ amount: money.positive() }).strict().parse(req.body);
+    const row = db
+      .prepare('SELECT id, balance_cents FROM customer_credit_accounts WHERE id = ? AND organisation_id = ?')
+      .get(rowId, orgId) as { id: number; balance_cents: number } | undefined;
+    if (!row) throw new AppError(404, 'not_found');
+    const nextBalance = Math.max(0, row.balance_cents - toCents(b.amount));
+    const nextStatus = nextBalance === 0 ? 'CLEARED' : 'CURRENT';
+    db.prepare("UPDATE customer_credit_accounts SET balance_cents = ?, status = ?, updated_at = datetime('now') WHERE id = ?").run(nextBalance, nextStatus, rowId);
+    return { ok: true, balance: fromCents(nextBalance), status: nextStatus };
+  });
+
+  // Supplier Balances Owed (Creditors) CRUD
+  app.post('/api/sme/creditors', { preHandler: staff }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        supplierName: name,
+        invoiceRef: z.string().trim().min(1).max(60),
+        departmentName: z.string().trim().max(60).default('Groceries & Hardware'),
+        totalAmount: money.positive(),
+        paidAmount: money.default(0),
+        currencyCode: z.string().trim().max(8).default('USD'),
+        dueDate: z.string().trim().min(8).max(20),
+        notes: text(200),
+      })
+      .strict()
+      .parse(req.body);
+    const totalCents = toCents(b.totalAmount);
+    const paidCents = Math.min(totalCents, toCents(b.paidAmount));
+    const balCents = Math.max(0, totalCents - paidCents);
+    const status = balCents === 0 ? 'SETTLED' : paidCents > 0 ? 'PARTIAL' : 'OWED';
+    const res = db
+      .prepare(
+        `INSERT INTO supplier_credit_ledgers (organisation_id, supplier_name, invoice_ref, department_name, total_cents, paid_cents, balance_cents, currency_code, due_date, notes, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(orgId, b.supplierName, b.invoiceRef, b.departmentName, totalCents, paidCents, balCents, b.currencyCode, b.dueDate, b.notes, status);
+    return reply.code(201).send({ id: Number(res.lastInsertRowid) });
+  });
+
+  app.post('/api/sme/creditors/:id/pay', { preHandler: staff }, async (req) => {
+    const { id: rowId } = idParam.parse(req.params);
+    const orgId = req.user!.organisationId;
+    const b = z.object({ amount: money.positive() }).strict().parse(req.body);
+    const row = db
+      .prepare('SELECT id, total_cents, paid_cents, balance_cents FROM supplier_credit_ledgers WHERE id = ? AND organisation_id = ?')
+      .get(rowId, orgId) as { id: number; total_cents: number; paid_cents: number; balance_cents: number } | undefined;
+    if (!row) throw new AppError(404, 'not_found');
+    const addCents = toCents(b.amount);
+    const nextPaid = Math.min(row.total_cents, row.paid_cents + addCents);
+    const nextBal = Math.max(0, row.total_cents - nextPaid);
+    const nextStatus = nextBal === 0 ? 'SETTLED' : 'PARTIAL';
+    db.prepare("UPDATE supplier_credit_ledgers SET paid_cents = ?, balance_cents = ?, status = ?, updated_at = datetime('now') WHERE id = ?").run(
+      nextPaid,
+      nextBal,
+      nextStatus,
+      rowId,
+    );
+    return { ok: true, paidAmount: fromCents(nextPaid), balanceOwed: fromCents(nextBal), status: nextStatus };
+  });
+
+  // Paid & Uncollected Stock (Hardware "Collect Later" / Lay-By)
+  app.post('/api/sme/layby', { preHandler: staff }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        receiptRef: z.string().trim().min(1).max(60),
+        customerName: name,
+        customerPhone: z.string().trim().min(3).max(40),
+        productName: z.string().trim().min(1).max(120),
+        departmentName: z.string().trim().max(60).default('Hardware & Building'),
+        warehouseName: z.string().trim().max(80).default('Main Warehouse'),
+        orderedQty: qty.positive(),
+        collectedQty: qty.min(0).default(0),
+        unit: z.string().trim().min(1).max(20).default('bag'),
+        totalPaid: money.default(0),
+      })
+      .strict()
+      .parse(req.body);
+    const status = b.collectedQty >= b.orderedQty ? 'COMPLETED' : b.collectedQty > 0 ? 'PARTIAL_COLLECTED' : 'AWAITING_COLLECTION';
+    const res = db
+      .prepare(
+        `INSERT INTO paid_uncollected_items
+          (organisation_id, receipt_ref, customer_name, customer_phone, product_name, department_name, warehouse_name, ordered_qty, collected_qty, unit, total_paid_cents, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        orgId,
+        b.receiptRef,
+        b.customerName,
+        b.customerPhone,
+        b.productName,
+        b.departmentName,
+        b.warehouseName,
+        b.orderedQty,
+        b.collectedQty,
+        b.unit,
+        toCents(b.totalPaid),
+        status,
+      );
+    return reply.code(201).send({ id: Number(res.lastInsertRowid) });
+  });
+
+  app.post('/api/sme/layby/:id/collect', { preHandler: staff }, async (req) => {
+    const { id: rowId } = idParam.parse(req.params);
+    const orgId = req.user!.organisationId;
+    const b = z.object({ collectQty: qty.positive() }).strict().parse(req.body);
+    const row = db
+      .prepare('SELECT id, ordered_qty, collected_qty FROM paid_uncollected_items WHERE id = ? AND organisation_id = ?')
+      .get(rowId, orgId) as { id: number; ordered_qty: number; collected_qty: number } | undefined;
+    if (!row) throw new AppError(404, 'not_found');
+    const nextCollected = Math.min(row.ordered_qty, row.collected_qty + b.collectQty);
+    const nextStatus = nextCollected >= row.ordered_qty ? 'COMPLETED' : 'PARTIAL_COLLECTED';
+    db.prepare("UPDATE paid_uncollected_items SET collected_qty = ?, status = ?, updated_at = datetime('now') WHERE id = ?").run(
+      nextCollected,
+      nextStatus,
+      rowId,
+    );
+    return {
+      ok: true,
+      collectedQty: nextCollected,
+      remainingQty: Math.max(0, row.ordered_qty - nextCollected),
+      status: nextStatus,
+    };
+  });
+
+  // Multi-Tender Till Shifts & Cash-Up
+  app.post('/api/sme/till-shifts', { preHandler: staff }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        shiftRef: z.string().trim().min(1).max(60),
+        cashierName: name,
+        departmentName: z.string().trim().max(60).default('General Store & Yard'),
+        expectedUsd: money.default(0),
+        countedUsd: money.default(0),
+        expectedZig: money.default(0),
+        countedZig: money.default(0),
+        expectedZar: money.default(0),
+        countedZar: money.default(0),
+        ecocashUsd: money.default(0),
+        ecocashZig: money.default(0),
+        innbucksUsd: money.default(0),
+        onemoneyZig: money.default(0),
+        changeVouchersIssued: money.default(0),
+        notes: text(200),
+      })
+      .strict()
+      .parse(req.body);
+    const expUsdCents = toCents(b.expectedUsd);
+    const cntUsdCents = toCents(b.countedUsd);
+    const varCents = cntUsdCents - expUsdCents;
+    const status = varCents === 0 ? 'BALANCED' : varCents < 0 ? 'SHORTAGE' : 'SURPLUS';
+    const res = db
+      .prepare(
+        `INSERT INTO till_shifts
+          (organisation_id, shift_ref, cashier_name, department_name, expected_usd_cents, counted_usd_cents, expected_zig_cents, counted_zig_cents, expected_zar_cents, counted_zar_cents, ecocash_usd_cents, ecocash_zig_cents, innbucks_usd_cents, onemoney_zig_cents, change_vouchers_issued_cents, variance_usd_cents, status, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        orgId,
+        b.shiftRef,
+        b.cashierName,
+        b.departmentName,
+        expUsdCents,
+        cntUsdCents,
+        toCents(b.expectedZig),
+        toCents(b.countedZig),
+        toCents(b.expectedZar),
+        toCents(b.countedZar),
+        toCents(b.ecocashUsd),
+        toCents(b.ecocashZig),
+        toCents(b.innbucksUsd),
+        toCents(b.onemoneyZig),
+        toCents(b.changeVouchersIssued),
+        varCents,
+        status,
+        b.notes,
+      );
+    return reply.code(201).send({ id: Number(res.lastInsertRowid), status, varianceUsd: fromCents(varCents) });
+  });
+
+  // USD Small-Change Vouchers
+  app.post('/api/sme/change-vouchers', { preHandler: staff }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        customerName: z.string().trim().min(1).max(80).default('Walk-In Customer'),
+        customerPhone: text(40),
+        amountUsd: z.number().positive().max(100),
+        departmentName: z.string().trim().max(60).default('Groceries'),
+      })
+      .strict()
+      .parse(req.body);
+    const code = `CHG-${Math.floor(1000 + Math.random() * 9000)}`;
+    const res = db
+      .prepare(
+        `INSERT INTO change_vouchers (organisation_id, voucher_code, customer_name, customer_phone, amount_cents, department_name, status, created_by_name)
+         VALUES (?, ?, ?, ?, ?, ?, 'UNREDEEMED', ?)`,
+      )
+      .run(orgId, code, b.customerName, b.customerPhone, toCents(b.amountUsd), b.departmentName, req.user!.name);
+    return reply.code(201).send({ id: Number(res.lastInsertRowid), voucherCode: code });
+  });
+
+  app.post('/api/sme/change-vouchers/:id/redeem', { preHandler: staff }, async (req) => {
+    const { id: rowId } = idParam.parse(req.params);
+    const orgId = req.user!.organisationId;
+    const row = db
+      .prepare('SELECT id FROM change_vouchers WHERE id = ? AND organisation_id = ?')
+      .get(rowId, orgId) as { id: number } | undefined;
+    if (!row) throw new AppError(404, 'not_found');
+    db.prepare("UPDATE change_vouchers SET status = 'REDEEMED', redeemed_at = datetime('now') WHERE id = ?").run(rowId);
+    return { ok: true };
+  });
+
+  // Break-Bulk & Recipe Yield Batches (with optional real stock adjustment posting)
+  app.post('/api/sme/yield-batches', { preHandler: staff }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        kind: z.enum(['BREAK_BULK', 'RECIPE_YIELD']).default('BREAK_BULK'),
+        departmentName: z.string().trim().max(60).default('Groceries'),
+        sourceName: z.string().trim().min(1).max(120),
+        inputQty: qty.positive(),
+        inputUnit: z.string().trim().min(1).max(30),
+        outputName: z.string().trim().min(1).max(120),
+        expectedOutputQty: qty.positive(),
+        actualOutputQty: qty.positive(),
+        outputUnit: z.string().trim().min(1).max(30),
+        productId: id.nullish(),
+        warehouseId: id.nullish(),
+        unitId: id.nullish(),
+        deltaBaseQty: qty.optional(),
+      })
+      .strict()
+      .parse(req.body);
+
+    let docId: number | null = null;
+    if (b.productId && b.warehouseId && b.unitId && b.deltaBaseQty && b.deltaBaseQty !== 0) {
+      const posted = postDocument(db, req.user!, {
+        type: 'adjustment',
+        reference: `YLD-${Date.now().toString().slice(-5)}`,
+        reason: `${b.kind === 'BREAK_BULK' ? 'Break-Bulk' : 'Yield Transformation'}: ${b.sourceName} -> ${b.outputName}`,
+        idempotencyKey: `yield-${orgId}-${Date.now()}-${Math.random()}`,
+        lines: [
+          {
+            productId: b.productId,
+            warehouseId: b.warehouseId,
+            unitId: b.unitId,
+            quantityMilli: toMilli(b.deltaBaseQty),
+          },
+        ],
+      });
+      docId = posted.documentId;
+    }
+
+    const wasteQty = Math.max(0, Math.round((b.expectedOutputQty - b.actualOutputQty) * 100) / 100);
+    const yieldPct = Math.round((b.actualOutputQty / b.expectedOutputQty) * 1000) / 10;
+    const batchRef = `${b.kind === 'BREAK_BULK' ? 'BRK' : 'YLD'}-${Date.now().toString().slice(-5)}`;
+    const res = db
+      .prepare(
+        `INSERT INTO yield_batches
+          (organisation_id, batch_ref, kind, department_name, source_name, input_qty, input_unit, output_name, expected_output_qty, actual_output_qty, output_unit, waste_qty, yield_pct, document_id, created_by_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        orgId,
+        batchRef,
+        b.kind,
+        b.departmentName,
+        b.sourceName,
+        b.inputQty,
+        b.inputUnit,
+        b.outputName,
+        b.expectedOutputQty,
+        b.actualOutputQty,
+        b.outputUnit,
+        wasteQty,
+        yieldPct,
+        docId,
+        req.user!.name,
+      );
+    return reply.code(201).send({ id: Number(res.lastInsertRowid), batchRef, documentId: docId, yieldPct });
+  });
+
+  // Staff 4-Digit Fast PIN Directory
+  app.post('/api/sme/staff-pins', { preHandler: staff }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        staffName: name,
+        roleTitle: z.string().trim().min(2).max(60).default('Storefloor Counter Staff'),
+        pinCode: z.string().trim().regex(/^\d{4}$/, 'PIN must be 4 digits'),
+        departmentScope: z.string().trim().max(60).default('Groceries & Hardware'),
+        canViewCost: z.boolean().default(false),
+        canWriteOff: z.boolean().default(false),
+      })
+      .strict()
+      .parse(req.body);
+    const execU = db.prepare('SELECT id FROM users WHERE organisation_id = ? ORDER BY id DESC LIMIT 1').get(orgId) as { id: number } | undefined;
+    const res = db
+      .prepare(
+        `INSERT INTO staff_pins (organisation_id, user_id, staff_name, role_title, pin_code, department_scope, can_view_cost, can_write_off, active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      )
+      .run(orgId, execU?.id ?? req.user!.id, b.staffName, b.roleTitle, b.pinCode, b.departmentScope, b.canViewCost ? 1 : 0, b.canWriteOff ? 1 : 0);
+    return reply.code(201).send({ id: Number(res.lastInsertRowid) });
+  });
+
+  app.patch('/api/sme/staff-pins/:id', { preHandler: staff }, async (req) => {
+    const { id: rowId } = idParam.parse(req.params);
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        active: z.boolean().optional(),
+        canViewCost: z.boolean().optional(),
+        canWriteOff: z.boolean().optional(),
+        pinCode: z.string().trim().regex(/^\d{4}$/).optional(),
+      })
+      .strict()
+      .parse(req.body);
+    if (!db.prepare('SELECT 1 FROM staff_pins WHERE id = ? AND organisation_id = ?').get(rowId, orgId)) throw new AppError(404, 'not_found');
+    update(db, 'staff_pins', rowId, {
+      active: flag(b.active),
+      can_view_cost: flag(b.canViewCost),
+      can_write_off: flag(b.canWriteOff),
+      pin_code: b.pinCode,
+    });
+    return { ok: true };
   });
 }

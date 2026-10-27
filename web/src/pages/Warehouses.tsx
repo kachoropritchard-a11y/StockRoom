@@ -90,18 +90,38 @@ export function Warehouses() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [brRes, whRes, dpRes, repRes, balRes] = await Promise.all([
+      const [brRes, whRes, dpRes, repRes, balRes, smeRes] = await Promise.all([
         api.branches(),
         api.warehouses(),
         api.departments(),
         api.inventoryReports(),
         api.balances(selectedWhId),
+        api.smeOverview().catch(() => null),
       ]);
       setBranches(brRes);
       setWarehouses(whRes);
       setDepartments(dpRes);
       setReports(repRes);
       setBalances(balRes.items);
+      if (smeRes && smeRes.debtors.length > 0) {
+        setDebtors(
+          smeRes.debtors.map((d) => ({
+            id: String(d.id),
+            customerName: d.customerName,
+            phone: d.phone,
+            category:
+              d.departmentName.toLowerCase().includes('hardware') || d.departmentName.toLowerCase().includes('build')
+                ? 'Builder / Contractor'
+                : d.departmentName.toLowerCase().includes('agro')
+                  ? 'A1 / A2 Farmer (Agro)'
+                  : 'Tuckshop / Regular',
+            itemsTaken: d.itemsSummary,
+            totalUsd: d.balance > 0 ? d.balance : d.creditLimit,
+            paidUsd: d.balance === 0 ? d.creditLimit : 0,
+            dueDate: d.status === 'CLEARED' ? 'Paid in Full' : d.dueDate,
+          })),
+        );
+      }
       if (brRes[0]) {
         const defaultBr = String(brRes[0].id);
         setWhBranchId((prev) => prev || defaultBr);
@@ -384,26 +404,25 @@ export function Warehouses() {
               <form
                 className="form-grid subcard"
                 style={{ marginBottom: '1.25rem' }}
-                onSubmit={(e) => {
+                onSubmit={async (e) => {
                   e.preventDefault();
                   if (!ckName.trim()) return;
-                  setDebtors((prev) => [
-                    {
-                      id: `CK-0${prev.length + 1}`,
+                  await api
+                    .createDebtor({
                       customerName: ckName.trim(),
                       phone: ckPhone.trim() || '+263 77 000 0000',
-                      category: ckCat,
-                      itemsTaken: ckItems.trim() || 'Assorted Store Goods',
-                      totalUsd: Number(ckTotalUsd) || 0,
-                      paidUsd: 0,
+                      departmentName: ckCat,
+                      creditLimit: Math.max(100, Number(ckTotalUsd) * 2),
+                      balance: Number(ckTotalUsd) || 0,
                       dueDate: ckDue,
-                    },
-                    ...prev,
-                  ]);
+                      itemsSummary: ckItems.trim() || 'Assorted Store Goods',
+                    })
+                    .catch(() => null);
                   setCkName('');
                   setCkPhone('');
                   setCkItems('');
                   setMsg('Recorded new customer credit ("Chikwereti") account.');
+                  await load();
                 }}
               >
                 <label>
@@ -489,10 +508,16 @@ export function Warehouses() {
                                 <button
                                   type="button"
                                   className="btn btn-outline btn-sm"
-                                  onClick={() => {
-                                    setDebtors((prev) =>
-                                      prev.map((x) => (x.id === d.id ? { ...x, paidUsd: x.totalUsd, dueDate: 'Paid in Full' } : x)),
-                                    );
+                                  onClick={async () => {
+                                    const numId = Number(d.id);
+                                    if (Number.isFinite(numId) && numId > 0) {
+                                      await api.repayDebtor(numId, owed).catch(() => null);
+                                      await load();
+                                    } else {
+                                      setDebtors((prev) =>
+                                        prev.map((x) => (x.id === d.id ? { ...x, paidUsd: x.totalUsd, dueDate: 'Paid in Full' } : x)),
+                                      );
+                                    }
                                     setMsg(`Marked ${d.customerName}'s Chikwereti balance as settled!`);
                                   }}
                                 >

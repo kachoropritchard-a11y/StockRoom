@@ -23,7 +23,7 @@ async function setup() {
 
   const call = async (method: 'GET' | 'POST' | 'PATCH', url: string, token: string, payload?: unknown, key?: string | null) => {
     const headers: Record<string, string> = { authorization: `Bearer ${token}` };
-    if (key !== null && method === 'POST' && (url.startsWith('/api/stock') || url.endsWith('/receive') || url.endsWith('/fulfill'))) {
+    if (key !== null && method === 'POST' && (url.startsWith('/api/stock') || url.endsWith('/receive') || url.endsWith('/fulfill') || url === '/api/sme/counter-sale')) {
       headers['idempotency-key'] = key ?? newKey();
     }
     const res = await app.inject({ method, url, headers, payload: payload as object | undefined });
@@ -926,3 +926,142 @@ test('executive approvals queue returns draft POs, pending requisitions, and dra
   assert.equal(approvals.body.draftCountSheets[0].lineCount, 1);
   assert.equal(approvals.body.draftCountSheets[0].varianceCount, 1);
 });
+
+test('Stage 7 Zimbabwean SME dual-department trading: retail pricing, counter sales, Chikwereti debtors, lay-by yard stock, 4-digit PIN login, and owner stock-flow reconciliation', async () => {
+  const t = await setup();
+
+  // 1. Create Groceries & Hardware departments
+  const grocDept = (await t.call('POST', '/api/departments', t.exec, { branchId: 1, name: 'Groceries & Staples' })).body.id as number;
+  const hardDept = (await t.call('POST', '/api/departments', t.exec, { branchId: 1, name: 'Hardware & Building' })).body.id as number;
+
+  // 2. Configure Grocery product ($2.00 cost, $3.00 selling, zero_rated) and create Hardware product ($9.80 cost, $12.50 selling, standard_15)
+  await t.call('PATCH', `/api/products/${t.product}`, t.exec, {
+    unitCost: 2.0,
+    sellingPrice: 3.0,
+    wholesalePrice: 2.75,
+    vatCategory: 'zero_rated',
+    departmentId: grocDept,
+  });
+
+  const cementRes = await t.call('POST', '/api/products', t.exec, {
+    sku: 'HW-CEM-50KG',
+    name: 'PPC Surebuild Cement 50kg (32.5N)',
+    baseUnitId: t.units.each,
+    unitCost: 9.8,
+    sellingPrice: 12.5,
+    wholesalePrice: 11.8,
+    vatCategory: 'standard_15',
+    departmentId: hardDept,
+    reorderLevel: 30,
+  });
+  assert.equal(cementRes.status, 201);
+  const cementId = cementRes.body.id as number;
+
+  // 3. Receive stock for both departments (Bought: 50 Rice @ $2.00 = $100, 100 Cement @ $9.80 = $980)
+  await t.call('POST', '/api/stock/receipts', t.inv, {
+    reference: 'GRN-GROC-01',
+    lines: [{ productId: t.product, warehouseId: t.wh1, unitId: t.units.each, quantity: 50, unitCost: 2.0 }],
+  });
+  await t.call('POST', '/api/stock/receipts', t.inv, {
+    reference: 'GRN-HARD-01',
+    lines: [{ productId: cementId, warehouseId: t.wh1, unitId: t.units.each, quantity: 100, unitCost: 9.8 }],
+  });
+
+  // 4. Record a Grocery Counter Sale with USD Cash + Small-Change Voucher ($0.40)
+  const grocSale = await t.call('POST', '/api/sme/counter-sale', t.inv, {
+    warehouseId: t.wh1,
+    departmentId: grocDept,
+    departmentName: 'Groceries & Staples',
+    tenderType: 'USD_CASH',
+    changeVoucherAmountUsd: 0.4,
+    customerPhone: '+263 77 211 9088',
+    lines: [{ productId: t.product, unitId: t.units.each, quantity: 10, unitSellingPrice: 3.0 }],
+  });
+  assert.equal(grocSale.status, 201);
+  assert.equal(grocSale.body.totalSaleUsd, 30);
+  assert.equal(await t.balance(t.product, t.wh1), 40);
+
+  // 5. Record a Hardware Counter Sale on Chikwereti Credit + Hold in Yard ("Collect Later")
+  const hardSale = await t.call('POST', '/api/sme/counter-sale', t.inv, {
+    warehouseId: t.wh1,
+    departmentId: hardDept,
+    departmentName: 'Hardware & Building',
+    tenderType: 'CREDIT',
+    customerName: 'Builder Moyo',
+    customerPhone: '+263 77 401 8812',
+    holdForLaterCollection: true,
+    lines: [{ productId: cementId, unitId: t.units.each, quantity: 20, unitSellingPrice: 12.5 }],
+  });
+  assert.equal(hardSale.status, 201);
+  assert.equal(hardSale.body.totalSaleUsd, 250);
+  assert.equal(await t.balance(cementId, t.wh1), 80);
+
+  // 6. Verify SME Overview persisted Chikwereti debtor, Uncollected Yard Lay-By, and Change Voucher
+  const sme = await t.call('GET', '/api/sme/overview', t.inv);
+  assert.equal(sme.status, 200);
+  const debtor = sme.body.debtors.find((d: { customerName: string }) => d.customerName === 'Builder Moyo');
+  assert.ok(debtor);
+  assert.equal(debtor.balance, 250);
+
+  const layby = sme.body.laybys.find((l: { customerName: string }) => l.customerName === 'Builder Moyo');
+  assert.ok(layby);
+  assert.equal(layby.orderedQty, 20);
+  assert.equal(layby.remainingQty, 20);
+
+  const voucher = sme.body.changeVouchers.find((v: { amountUsd: number }) => v.amountUsd === 0.4);
+  assert.ok(voucher);
+  assert.equal(voucher.status, 'UNREDEEMED');
+
+  // 7. Collect 8 bags of cement from the yard & repay $100 on Chikwereti debtor
+  const collectRes = await t.call('POST', `/api/sme/layby/${layby.id}/collect`, t.inv, { collectQty: 8 });
+  assert.equal(collectRes.status, 200);
+  assert.equal(collectRes.body.collectedQty, 8);
+  assert.equal(collectRes.body.remainingQty, 12);
+  assert.equal(collectRes.body.status, 'PARTIAL_COLLECTED');
+
+  const repayRes = await t.call('POST', `/api/sme/debtors/${debtor.id}/repay`, t.inv, { amount: 100 });
+  assert.equal(repayRes.status, 200);
+  assert.equal(repayRes.body.balance, 150);
+
+  // 8. Verify Owner Stock-Flow & Earnings Reconciliation Report (`GET /api/reports/inventory?period=today`)
+  const rep = await t.call('GET', '/api/reports/inventory?period=today', t.exec);
+  assert.equal(rep.status, 200);
+  const owner = rep.body.ownerSummary;
+  assert.ok(owner);
+  assert.equal(owner.totalBoughtUnits, 150); // 50 Rice + 100 Cement
+  assert.equal(owner.totalBoughtCost, 1080); // $100 + $980
+  assert.equal(owner.totalSoldUnits, 30); // 10 Rice + 20 Cement
+  assert.equal(owner.totalRevenue, 280); // $30 Rice + $250 Cement
+  assert.equal(owner.totalCogs, 216); // (10 * $2.00 = $20) + (20 * $9.80 = $196)
+  assert.equal(owner.grossProfit, 64); // $280 - $216 = $64
+  assert.equal(owner.totalClosingUnits, 120); // 40 Rice + 80 Cement
+
+  const grocPerf = owner.byDepartment.find((d: { departmentName: string }) => d.departmentName === 'Groceries & Staples');
+  const hardPerf = owner.byDepartment.find((d: { departmentName: string }) => d.departmentName === 'Hardware & Building');
+  assert.equal(grocPerf.revenue, 30);
+  assert.equal(grocPerf.grossProfit, 10);
+  assert.equal(hardPerf.revenue, 250);
+  assert.equal(hardPerf.grossProfit, 54);
+
+  // 9. Issue a 4-Digit Fast PIN for a counter attendant and verify `/api/auth/pin-login`
+  const pinCreate = await t.call('POST', '/api/sme/staff-pins', t.exec, {
+    staffName: 'Tendai Moyo (Yard)',
+    roleTitle: 'Hardware Yard Gate',
+    pinCode: '7788',
+    departmentScope: 'Hardware & Building',
+  });
+  assert.equal(pinCreate.status, 201);
+
+  const pinLoginRes = await t.app.inject({
+    method: 'POST',
+    url: '/api/auth/pin-login',
+    headers: { 'x-requested-with': 'stockroom' },
+    payload: { pin: '7788' },
+  });
+  assert.equal(pinLoginRes.statusCode, 200);
+  const pinData = pinLoginRes.json();
+  assert.ok(pinData.token);
+  assert.ok(pinData.user.name.includes('Tendai Moyo'));
+  assert.deepEqual(verifyLedger(t.db), { ok: true, problems: [] });
+});
+

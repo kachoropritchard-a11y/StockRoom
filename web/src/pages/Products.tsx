@@ -87,10 +87,12 @@ export function Products() {
   const [page, setPage] = useState(0);
   const [balances, setBalances] = useState<BalanceItem[]>([]);
   const [categories, setCategories] = useState<{ id: number; name: string; active: number }[]>([]);
+  const [departments, setDepartments] = useState<{ id: number; name: string; active: number }[]>([]);
   const [units, setUnits] = useState<{ id: number; code: string; name: string }[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: number; name: string }[]>([]);
   const [search, setSearch] = useState(initialQ);
   const [catFilter, setCatFilter] = useState<number | undefined>(undefined);
+  const [deptFilter, setDeptFilter] = useState<number | undefined>(undefined);
   const [whFilter] = useState<number | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
@@ -109,15 +111,22 @@ export function Products() {
   const [sku, setSku] = useState('');
   const [name, setName] = useState('');
   const [categoryId, setCategoryId] = useState<string>('');
+  const [departmentId, setDepartmentId] = useState<string>('');
   const [baseUnitId, setBaseUnitId] = useState<string>('');
-  const [unitCost, setUnitCost] = useState('0');
+  const [unitCost, setUnitCost] = useState('5.00');
+  const [sellingPrice, setSellingPrice] = useState('6.50');
+  const [wholesalePrice, setWholesalePrice] = useState('5.80');
+  const [vatCategory, setVatCategory] = useState<'standard_15' | 'zero_rated' | 'exempt'>('standard_15');
   const [reorderLevel, setReorderLevel] = useState('10');
 
   // Edit Product state
   const [editingProduct, setEditingProduct] = useState<ProductItem | null>(null);
   const [editName, setEditName] = useState('');
   const [editCategoryId, setEditCategoryId] = useState<string>('');
+  const [editDepartmentId, setEditDepartmentId] = useState<string>('');
   const [editUnitCost, setEditUnitCost] = useState('0');
+  const [editSellingPrice, setEditSellingPrice] = useState('0');
+  const [editVatCategory, setEditVatCategory] = useState<'standard_15' | 'zero_rated' | 'exempt'>('standard_15');
   const [editReorderLevel, setEditReorderLevel] = useState('0');
 
   // Packaging & Category form
@@ -135,12 +144,14 @@ export function Products() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [pRes, bRes, cRes, uRes, wRes] = await Promise.all([
-        api.products(search, { categoryId: catFilter, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
+      const [pRes, bRes, cRes, uRes, wRes, dRes, smeRes] = await Promise.all([
+        api.products(search, { categoryId: catFilter, departmentId: deptFilter, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
         api.balances(whFilter),
         api.categories(),
         api.units(),
         api.warehouses(),
+        api.departments().catch(() => []),
+        api.smeOverview().catch(() => null),
       ]);
       setProducts(pRes.items);
       setTotalProducts(pRes.total);
@@ -148,6 +159,27 @@ export function Products() {
       setCategories(cRes);
       setUnits(uRes);
       setWarehouses(wRes);
+      setDepartments(dRes);
+      if (smeRes && smeRes.laybys.length > 0) {
+        setLaybyItems(
+          smeRes.laybys.map((l) => ({
+            id: String(l.id),
+            receiptNo: l.receiptRef,
+            customerName: l.customerName,
+            phone: l.customerPhone,
+            productName: l.productName,
+            paidQty: l.orderedQty,
+            collectedQty: l.collectedQty,
+            unit: l.unit,
+            status:
+              l.status === 'COMPLETED'
+                ? 'COLLECTED'
+                : l.status === 'PARTIAL_COLLECTED'
+                  ? 'PARTIAL_PICKUP'
+                  : 'AWAITING_COLLECTION',
+          })),
+        );
+      }
       if (uRes[0]) setBaseUnitId((prev) => prev || String(uRes[0].id));
       if (pRes.items[0]) setPkgProductId((prev) => prev || String(pRes.items[0].id));
       if (uRes[1]) setPkgUnitId((prev) => prev || String(uRes[1].id));
@@ -156,7 +188,7 @@ export function Products() {
     } finally {
       setLoading(false);
     }
-  }, [search, catFilter, page, whFilter]);
+  }, [search, catFilter, deptFilter, page, whFilter]);
 
   useEffect(() => {
     load();
@@ -226,14 +258,18 @@ export function Products() {
         sku,
         name,
         categoryId: categoryId ? Number(categoryId) : null,
+        departmentId: departmentId ? Number(departmentId) : null,
         baseUnitId: Number(baseUnitId),
         unitCost: Number(unitCost),
+        sellingPrice: Number(sellingPrice),
+        wholesalePrice: Number(wholesalePrice),
+        vatCategory,
         reorderLevel: Number(reorderLevel),
       });
       setSku('');
       setName('');
       setShowAddDrawer(false);
-      setMsg('Product created and added to catalogue.');
+      setMsg('Product created with retail selling price and department assignment.');
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -244,7 +280,10 @@ export function Products() {
     setEditingProduct(p);
     setEditName(p.name);
     setEditCategoryId(p.categoryId ? String(p.categoryId) : '');
+    setEditDepartmentId(p.departmentId ? String(p.departmentId) : '');
     setEditUnitCost(String(p.unitCost));
+    setEditSellingPrice(String(p.sellingPrice ?? Math.round(p.unitCost * 1.3 * 100) / 100));
+    setEditVatCategory(p.vatCategory ?? 'standard_15');
     setEditReorderLevel(String(p.reorderLevel));
   }
 
@@ -257,7 +296,10 @@ export function Products() {
       await api.updateProduct(editingProduct.id, {
         name: editName.trim(),
         categoryId: editCategoryId ? Number(editCategoryId) : null,
+        departmentId: editDepartmentId ? Number(editDepartmentId) : null,
         unitCost: Number(editUnitCost),
+        sellingPrice: Number(editSellingPrice),
+        vatCategory: editVatCategory,
         reorderLevel: Number(editReorderLevel),
       });
       setEditingProduct(null);
@@ -399,6 +441,15 @@ export function Products() {
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Ngwerewere Roller Meal 10kg" required />
             </label>
             <label>
+              Shop Department (Groceries vs Hardware)
+              <select value={departmentId} onChange={(e) => setDepartmentId(e.target.value)}>
+                <option value="">General Store</option>
+                {departments.filter((d) => d.active).map((d) => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>
               Category
               <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
                 <option value="">Uncategorised</option>
@@ -416,8 +467,24 @@ export function Products() {
               </select>
             </label>
             <label>
-              Base Unit Cost (USD)
+              Buying / Landed Cost (USD)
               <input type="number" step="0.01" min="0" value={unitCost} onChange={(e) => setUnitCost(e.target.value)} required />
+            </label>
+            <label>
+              Retail Selling Price (USD)
+              <input type="number" step="0.01" min="0" value={sellingPrice} onChange={(e) => setSellingPrice(e.target.value)} required />
+            </label>
+            <label>
+              Wholesale / Bulk Price (USD)
+              <input type="number" step="0.01" min="0" value={wholesalePrice} onChange={(e) => setWholesalePrice(e.target.value)} required />
+            </label>
+            <label>
+              ZIMRA VAT Category
+              <select value={vatCategory} onChange={(e) => setVatCategory(e.target.value as 'standard_15' | 'zero_rated' | 'exempt')}>
+                <option value="standard_15">Standard Rated (15% VAT)</option>
+                <option value="zero_rated">Zero-Rated Staple (0% VAT)</option>
+                <option value="exempt">VAT Exempt</option>
+              </select>
             </label>
             <label>
               Reorder Alert Threshold
@@ -516,6 +583,19 @@ export function Products() {
 
               <div className="filter-bar">
                 <select
+                  aria-label="Filter by department"
+                  value={deptFilter ?? ''}
+                  onChange={(e) => {
+                    setDeptFilter(e.target.value ? Number(e.target.value) : undefined);
+                    setPage(0);
+                  }}
+                >
+                  <option value="">All Departments (Groceries + Hardware)</option>
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>{d.name}</option>
+                  ))}
+                </select>
+                <select
                   aria-label="Filter by category"
                   value={catFilter ?? ''}
                   onChange={(e) => {
@@ -538,13 +618,14 @@ export function Products() {
                     setPage(0);
                   }}
                 />
-                {(search || catFilter !== undefined) && (
+                {(search || catFilter !== undefined || deptFilter !== undefined) && (
                   <button
                     type="button"
                     className="btn btn-outline btn-sm"
                     onClick={() => {
                       setSearch('');
                       setCatFilter(undefined);
+                      setDeptFilter(undefined);
                       setPage(0);
                     }}
                   >
@@ -557,7 +638,7 @@ export function Products() {
             {editingProduct && (
               <div className="subcard" style={{ marginBottom: '1rem' }}>
                 <div className="section-head">
-                  <h3>Edit Product: {editingProduct.sku}</h3>
+                  <h3>Edit Product Pricing &amp; Department: {editingProduct.sku}</h3>
                   <button type="button" className="btn btn-outline btn-sm" onClick={() => setEditingProduct(null)}>
                     Cancel
                   </button>
@@ -566,6 +647,15 @@ export function Products() {
                   <label>
                     Product Name
                     <input value={editName} onChange={(e) => setEditName(e.target.value)} required />
+                  </label>
+                  <label>
+                    Department (Groceries vs Hardware)
+                    <select value={editDepartmentId} onChange={(e) => setEditDepartmentId(e.target.value)}>
+                      <option value="">General Store</option>
+                      {departments.map((d) => (
+                        <option key={d.id} value={d.id}>{d.name}</option>
+                      ))}
+                    </select>
                   </label>
                   <label>
                     Category
@@ -577,8 +667,20 @@ export function Products() {
                     </select>
                   </label>
                   <label>
-                    Base Unit Cost (USD)
+                    Buying / Landed Cost (USD)
                     <input type="number" step="0.01" min="0" value={editUnitCost} onChange={(e) => setEditUnitCost(e.target.value)} required />
+                  </label>
+                  <label>
+                    Retail Selling Price (USD)
+                    <input type="number" step="0.01" min="0" value={editSellingPrice} onChange={(e) => setEditSellingPrice(e.target.value)} required />
+                  </label>
+                  <label>
+                    ZIMRA VAT Category
+                    <select value={editVatCategory} onChange={(e) => setEditVatCategory(e.target.value as 'standard_15' | 'zero_rated' | 'exempt')}>
+                      <option value="standard_15">Standard Rated (15% VAT)</option>
+                      <option value="zero_rated">Zero-Rated Staple (0% VAT)</option>
+                      <option value="exempt">VAT Exempt</option>
+                    </select>
                   </label>
                   <label>
                     Reorder Level ({editingProduct.baseUnit})
@@ -628,19 +730,22 @@ export function Products() {
                           <div className="picture-meta">
                             <h3 className="picture-title">{p.name}</h3>
                             <div className="picture-sku">
-                              {p.sku} · {p.categoryName ?? 'General'}
+                              {p.sku} · {p.departmentName ?? p.categoryName ?? 'General'}
                             </div>
                           </div>
                           <span className={`status-pill ${statusClass}`}>{statusText}</span>
                         </div>
 
                         <div style={{ marginTop: '0.75rem' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.84rem', marginBottom: '0.25rem' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: '0.25rem', flexWrap: 'wrap', gap: '0.25rem' }}>
                             <span>
                               On Shelf: <strong>{p.totalStock} {p.baseUnit}</strong>
                             </span>
                             <span>
-                              Cost: <strong>{formatMoney(p.unitCost)}</strong>
+                              Buy: <strong>{formatMoney(p.unitCost)}</strong> · Sell:{' '}
+                              <strong style={{ color: 'var(--zim-green-700)' }}>
+                                {formatMoney(p.sellingPrice ?? p.unitCost * 1.3)}
+                              </strong>
                             </span>
                           </div>
                           <div className="stock-bar-track">
@@ -1028,14 +1133,20 @@ export function Products() {
                             <button
                               type="button"
                               className="btn btn-primary btn-sm"
-                              onClick={() => {
-                                setLaybyItems((prev) =>
-                                  prev.map((x) =>
-                                    x.id === item.id
-                                      ? { ...x, collectedQty: x.paidQty, status: 'COLLECTED' }
-                                      : x,
-                                  ),
-                                );
+                              onClick={async () => {
+                                const numId = Number(item.id);
+                                if (Number.isFinite(numId) && numId > 0) {
+                                  await api.collectLayby(numId, remaining).catch(() => null);
+                                  await load();
+                                } else {
+                                  setLaybyItems((prev) =>
+                                    prev.map((x) =>
+                                      x.id === item.id
+                                        ? { ...x, collectedQty: x.paidQty, status: 'COLLECTED' }
+                                        : x,
+                                    ),
+                                  );
+                                }
                                 setMsg(`Marked remaining ${remaining} ${item.unit} for ${item.customerName} as collected.`);
                               }}
                             >

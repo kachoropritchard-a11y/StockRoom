@@ -46,7 +46,7 @@ export function Procurement() {
   const [supPhone, setSupPhone] = useState('');
   const [creditors, setCreditors] = useState<SupplierCreditorItem[]>(INITIAL_CREDITORS);
 
-  // New PO / GRN Wizard form
+  // New PO / GRN Wizard form (with Multi-Line invoice support)
   const [poSupplierId, setPoSupplierId] = useState('');
   const [poWarehouseId, setPoWarehouseId] = useState('');
   const [poRef, setPoRef] = useState('');
@@ -56,6 +56,9 @@ export function Procurement() {
   const [poUnitId, setPoUnitId] = useState('');
   const [poQty, setPoQty] = useState('50');
   const [poCost, setPoCost] = useState('3.50');
+  const [poCartLines, setPoCartLines] = useState<
+    { productId: number; productName: string; unitId: number; unitLabel: string; orderedQuantity: number; unitCost: number }[]
+  >([]);
 
   // Cross-Border Landed Cost Calculator state (Musina/Joburg/Lusaka/Dar es Salaam -> Zimbabwe)
   const [cbCurrency, setCbCurrency] = useState<'ZAR' | 'USD'>('ZAR');
@@ -83,16 +86,30 @@ export function Procurement() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [sRes, wRes, pRes, poRes] = await Promise.all([
+      const [sRes, wRes, pRes, poRes, smeRes] = await Promise.all([
         api.suppliers(),
         api.warehouses(),
         api.products('', { limit: 200 }),
         api.purchaseOrders(statusFilter || undefined),
+        api.smeOverview().catch(() => null),
       ]);
       setSuppliers(sRes);
       setWarehouses(wRes);
       setProducts(pRes.items);
       setPurchaseOrders(poRes.items);
+      if (smeRes && smeRes.creditors.length > 0) {
+        setCreditors(
+          smeRes.creditors.map((c) => ({
+            id: c.id,
+            supplierName: c.supplierName,
+            contact: c.notes ?? c.departmentName,
+            invoiceRef: c.invoiceRef,
+            totalUsd: c.totalAmount,
+            paidUsd: c.paidAmount,
+            dueDate: c.status === 'SETTLED' ? 'Paid in Full' : c.dueDate,
+          })),
+        );
+      }
       if (sRes[0]) setPoSupplierId((prev) => prev || String(sRes[0].id));
       if (wRes[0]) setPoWarehouseId((prev) => prev || String(wRes[0].id));
       const initialProduct =
@@ -162,33 +179,69 @@ export function Procurement() {
     }
   }
 
+  function addCurrentItemToPoBasket() {
+    if (!currentPoProduct) return;
+    const uObj = availableUnits.find((u) => String(u.id) === poUnitId) ?? availableUnits[0];
+    if (!uObj) return;
+    const qtyNum = Number(poQty);
+    const costNum = Number(poCost);
+    if (qtyNum <= 0 || costNum < 0) return;
+    setPoCartLines((prev) => {
+      const filtered = prev.filter((x) => x.productId !== currentPoProduct.id);
+      return [
+        ...filtered,
+        {
+          productId: currentPoProduct.id,
+          productName: currentPoProduct.name,
+          unitId: uObj.id,
+          unitLabel: uObj.label,
+          orderedQuantity: qtyNum,
+          unitCost: costNum,
+        },
+      ];
+    });
+  }
+
   async function handleCreatePo(e: FormEvent) {
     e.preventDefault();
     setError('');
     setMsg('');
     try {
+      const linesPayload =
+        poCartLines.length > 0
+          ? poCartLines.map((l) => ({
+              productId: l.productId,
+              unitId: l.unitId,
+              orderedQuantity: l.orderedQuantity,
+              unitCost: l.unitCost,
+            }))
+          : [
+              {
+                productId: Number(poProductId),
+                unitId: Number(poUnitId),
+                orderedQuantity: Number(poQty),
+                unitCost: Number(poCost),
+              },
+            ];
+
       const created = await api.createPurchaseOrder({
         supplierId: Number(poSupplierId),
         warehouseId: Number(poWarehouseId),
         reference: poRef.trim() || `PO-${Date.now().toString().slice(-5)}`,
         notes: poNotes.trim() || undefined,
         approveImmediately: poApproveNow,
-        lines: [
-          {
-            productId: Number(poProductId),
-            unitId: Number(poUnitId),
-            orderedQuantity: Number(poQty),
-            unitCost: Number(poCost),
-          },
-        ],
+        lines: linesPayload,
       });
       setPoRef('');
       setPoNotes('');
+      setPoCartLines([]);
       setSelectedPo(created);
       setWizardStep(1);
       setGrnRef(`${created.reference}-GRN-1`);
-      setDeliveryQty({ [created.lines[0].productId]: String(created.lines[0].remainingQuantity) });
-      setMsg(`Purchase Order ${created.reference} created (${created.status}). Ready to receive below.`);
+      const nextMap: Record<number, string> = {};
+      for (const l of created.lines) nextMap[l.productId] = String(l.remainingQuantity);
+      setDeliveryQty(nextMap);
+      setMsg(`Purchase Order ${created.reference} created with ${created.lines.length} item(s) (${created.status}). Ready to receive below.`);
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -356,61 +409,100 @@ export function Procurement() {
                 )}
 
                 {wizardStep === 2 && (
-                  <div className="form-grid">
-                    <label>
-                      2A. Product Being Ordered / Received
-                      <select
-                        value={poProductId}
-                        onChange={(e) => {
-                          setPoProductId(e.target.value);
-                          const p = products.find((x) => String(x.id) === e.target.value);
-                          if (p) {
-                            setPoUnitId(String(p.baseUnitId));
-                            setPoCost(String(p.unitCost || 1));
-                          }
-                        }}
-                        required
-                      >
-                        {products.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} ({p.sku}) — On shelf: {p.totalStock} {p.baseUnit}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      2B. Pack / Unit
-                      <select value={poUnitId} onChange={(e) => setPoUnitId(e.target.value)} required>
-                        {availableUnits.map((u) => (
-                          <option key={u.id} value={u.id}>{u.label}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      2C. Quantity
-                      <input type="number" step="0.001" min="0.001" value={poQty} onChange={(e) => setPoQty(e.target.value)} required />
-                    </label>
-                    <label>
-                      2D. Unit Cost (USD $)
-                      <input type="number" step="0.01" min="0" value={poCost} onChange={(e) => setPoCost(e.target.value)} required />
-                    </label>
-                    <div className="form-actions">
-                      <button type="button" className="btn btn-outline" onClick={() => setWizardStep(1)}>
-                        ← Back
-                      </button>
-                      <button type="button" className="btn btn-primary" onClick={() => setWizardStep(3)}>
-                        Next: Step 3 (Confirm) →
-                      </button>
+                  <div>
+                    <div className="form-grid">
+                      <label>
+                        2A. Product Being Ordered / Received
+                        <select
+                          value={poProductId}
+                          onChange={(e) => {
+                            setPoProductId(e.target.value);
+                            const p = products.find((x) => String(x.id) === e.target.value);
+                            if (p) {
+                              setPoUnitId(String(p.baseUnitId));
+                              setPoCost(String(p.unitCost || 1));
+                            }
+                          }}
+                          required
+                        >
+                          {products.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name} ({p.sku}) — On shelf: {p.totalStock} {p.baseUnit}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        2B. Pack / Unit
+                        <select value={poUnitId} onChange={(e) => setPoUnitId(e.target.value)} required>
+                          {availableUnits.map((u) => (
+                            <option key={u.id} value={u.id}>{u.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        2C. Quantity
+                        <input type="number" step="0.001" min="0.001" value={poQty} onChange={(e) => setPoQty(e.target.value)} required />
+                      </label>
+                      <label>
+                        2D. Unit Cost (USD $)
+                        <input type="number" step="0.01" min="0" value={poCost} onChange={(e) => setPoCost(e.target.value)} required />
+                      </label>
+                      <div className="form-actions" style={{ gap: '0.5rem' }}>
+                        <button type="button" className="btn btn-outline" onClick={() => setWizardStep(1)}>
+                          ← Back
+                        </button>
+                        <button type="button" className="btn btn-secondary" onClick={addCurrentItemToPoBasket}>
+                          + Add Item to Invoice List ({poCartLines.length})
+                        </button>
+                        <button type="button" className="btn btn-primary" onClick={() => setWizardStep(3)}>
+                          Next: Step 3 (Confirm) →
+                        </button>
+                      </div>
                     </div>
+
+                    {poCartLines.length > 0 && (
+                      <div style={{ marginTop: '0.85rem', padding: '0.65rem', background: 'var(--zim-green-50)', borderRadius: '8px' }}>
+                        <strong style={{ fontSize: '0.85rem' }}>Multi-Line Invoice Basket ({poCartLines.length} items):</strong>
+                        <ul style={{ margin: '0.35rem 0 0', paddingLeft: '1.2rem', fontSize: '0.84rem' }}>
+                          {poCartLines.map((item) => (
+                            <li key={item.productId}>
+                              <strong>{item.productName}</strong> — {item.orderedQuantity} × {item.unitLabel} @ {formatMoney(item.unitCost)} ={' '}
+                              <strong>{formatMoney(item.orderedQuantity * item.unitCost)}</strong>{' '}
+                              <button
+                                type="button"
+                                className="btn btn-outline btn-sm"
+                                style={{ padding: '0.1rem 0.4rem', marginLeft: '0.4rem' }}
+                                onClick={() => setPoCartLines((prev) => prev.filter((x) => x.productId !== item.productId))}
+                              >
+                                Remove
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {wizardStep === 3 && (
                   <div className="form-grid">
                     <div>
-                      <strong>Summary:</strong> Ordering <strong>{poQty}</strong> units of{' '}
-                      <strong>{currentPoProduct?.name ?? 'Product'}</strong> at <strong>${Number(poCost).toFixed(2)}</strong> each
-                      (Total: <strong>{formatMoney(Number(poQty) * Number(poCost))}</strong>).
+                      {poCartLines.length > 0 ? (
+                        <>
+                          <strong>Multi-Line Order Summary:</strong> {poCartLines.length} line item(s) totalling{' '}
+                          <strong>
+                            {formatMoney(poCartLines.reduce((acc, l) => acc + l.orderedQuantity * l.unitCost, 0))}
+                          </strong>
+                          .
+                        </>
+                      ) : (
+                        <>
+                          <strong>Summary:</strong> Ordering <strong>{poQty}</strong> units of{' '}
+                          <strong>{currentPoProduct?.name ?? 'Product'}</strong> at <strong>${Number(poCost).toFixed(2)}</strong> each
+                          (Total: <strong>{formatMoney(Number(poQty) * Number(poCost))}</strong>).
+                        </>
+                      )}
                     </div>
                     <label className="checkbox-row">
                       <input
@@ -761,7 +853,8 @@ export function Procurement() {
                             <button
                               type="button"
                               className="btn btn-outline btn-sm"
-                              onClick={() => {
+                              onClick={async () => {
+                                await api.payCreditor(c.id, owed).catch(() => null);
                                 setCreditors((prev) =>
                                   prev.map((x) => (x.id === c.id ? { ...x, paidUsd: x.totalUsd, dueDate: 'Paid in Full' } : x)),
                                 );

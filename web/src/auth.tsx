@@ -5,6 +5,7 @@ interface AuthState {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  pinLogin: (pin: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -24,12 +25,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (email: string, password: string) => {
     setUser((await api.login(email, password)).user);
   }, []);
+  const pinLogin = useCallback(async (pin: string) => {
+    setUser((await api.pinLogin(pin)).user);
+  }, []);
   const logout = useCallback(async () => {
     await api.logout().catch(() => undefined);
     setUser(null);
   }, []);
 
-  const value = useMemo(() => ({ user, loading, login, logout }), [user, loading, login, logout]);
+  const value = useMemo(() => ({ user, loading, login, pinLogin, logout }), [user, loading, login, pinLogin, logout]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
