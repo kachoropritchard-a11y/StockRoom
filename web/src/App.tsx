@@ -7,6 +7,9 @@ import { Spinner } from './components/Spinner';
 import { Dashboard } from './pages/Dashboard';
 import { Login } from './pages/Login';
 import { NotFound } from './pages/NotFound';
+import { Operations } from './pages/Operations';
+import { Organisation } from './pages/Organisation';
+import { Products } from './pages/Products';
 
 /** Client-side route guard. The server enforces the same rules; this only provides sensible navigation. */
 export function RequireRole({ roles, children }: { roles: User['role'][]; children?: ReactNode }) {
@@ -31,11 +34,16 @@ export function App() {
       <Route element={<RequireRole roles={['executive_manager']} />}>
         <Route path="/executive" element={<Shell portal="executive" />}>
           <Route index element={<Dashboard />} />
+          <Route path="products" element={<Products />} />
+          <Route path="operations" element={<Operations />} />
+          <Route path="organisation" element={<Organisation />} />
         </Route>
       </Route>
       <Route element={<RequireRole roles={['inventory_manager']} />}>
         <Route path="/inventory" element={<Shell portal="inventory" />}>
           <Route index element={<Dashboard />} />
+          <Route path="products" element={<Products />} />
+          <Route path="operations" element={<Operations />} />
         </Route>
       </Route>
       <Route path="*" element={<NotFound />} />

@@ -297,3 +297,94 @@ test('reversing a count restores the pre-count balance and the ledger still veri
   assert.equal(await t.balance(), 10);
   assert.deepEqual(verifyLedger(t.db), { ok: true, problems: [] });
 });
+
+test('costing, reorder levels, batch/expiry tracking, and dashboard summary metrics', async () => {
+  const t = await setup();
+  await t.call('PATCH', `/api/products/${t.product}`, t.exec, { unitCost: 2.5, reorderLevel: 60 });
+  // Receive 2 cartons (48 each) at $60/carton ($2.50/each) with batch and expiry
+  const rec = await t.call('POST', '/api/stock/receipts', t.exec, {
+    reference: 'GRN-100',
+    lines: [{ productId: t.product, warehouseId: t.wh1, unitId: t.units.carton, quantity: 2, unitCost: 60, batchNumber: 'LOT-2026-A', expiryDate: '2026-11-05' }],
+  });
+  assert.equal(rec.status, 201);
+  assert.equal(rec.body.document.lines[0].unitCost, 2.5);
+  assert.equal(rec.body.document.lines[0].batchNumber, 'LOT-2026-A');
+  assert.equal(rec.body.document.lines[0].expiryDate, '2026-11-05');
+
+  const bal = (await t.call('GET', `/api/stock/balances?productId=${t.product}`, t.exec)).body.items[0];
+  assert.equal(bal.quantity, 48);
+  assert.equal(bal.stockValue, 120);
+  assert.equal(bal.lowStock, true);
+
+  const summary = (await t.call('GET', '/api/dashboard/summary', t.exec)).body;
+  assert.equal(summary.totalStockValue, 120);
+  assert.equal(summary.lowStockCount, 1);
+  assert.equal(summary.expiringSoonCount, 1);
+});
+
+test('count-sheet approval workflow computes variances from stock_balances and posts via the ledger', async () => {
+  const t = await setup();
+  await t.receive(25);
+  const created = await t.call('POST', '/api/stock/count-sheets', t.inv, {
+    warehouseId: t.wh1,
+    reference: 'CS-OCT',
+    notes: 'Month-end physical count',
+    lines: [{ productId: t.product, unitId: t.units.each, countedQuantity: 22 }],
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.status, 'draft');
+  assert.equal(created.body.lines[0].expectedBaseQuantity, 25);
+  assert.equal(created.body.lines[0].varianceBaseQuantity, -3);
+  // Draft does not alter ledger balance yet
+  assert.equal(await t.balance(), 25);
+  // Inventory manager cannot approve; executive approves
+  assert.equal((await t.call('POST', `/api/stock/count-sheets/${created.body.id}/approve`, t.inv, {})).status, 403);
+  const approved = await t.call('POST', `/api/stock/count-sheets/${created.body.id}/approve`, t.exec, {});
+  assert.equal(approved.status, 201);
+  assert.equal(approved.body.sheet.status, 'approved');
+  assert.equal(await t.balance(), 22);
+  assert.deepEqual(verifyLedger(t.db), { ok: true, problems: [] });
+});
+
+test('executive user management and self-service password reset', async () => {
+  const t = await setup();
+  assert.equal((await t.call('GET', '/api/users', t.inv)).status, 403);
+  const created = await t.call('POST', '/api/users', t.exec, {
+    email: 'mutare@example.com',
+    name: 'Mutare Clerk',
+    password: 'initial-password-123',
+    role: 'inventory_manager',
+    branchId: t.branch2,
+  });
+  assert.equal(created.status, 201);
+  // Self-demotion is blocked
+  assert.equal((await t.call('PATCH', '/api/users/1', t.exec, { active: false })).status, 400);
+
+  // Self-service forgot-password + reset-password
+  const forgot = await t.app.inject({
+    method: 'POST',
+    url: '/api/auth/forgot-password',
+    headers: { 'x-requested-with': 'stockroom' },
+    payload: { email: 'mutare@example.com' },
+  });
+  assert.equal(forgot.statusCode, 200);
+  const { resetToken } = forgot.json() as { resetToken: string };
+  assert.ok(resetToken);
+  const outbox = t.db.prepare('SELECT to_email FROM email_outbox WHERE to_email = ?').get('mutare@example.com') as { to_email: string };
+  assert.equal(outbox.to_email, 'mutare@example.com');
+
+  const reset = await t.app.inject({
+    method: 'POST',
+    url: '/api/auth/reset-password',
+    headers: { 'x-requested-with': 'stockroom' },
+    payload: { token: resetToken, newPassword: 'updated-password-456' },
+  });
+  assert.equal(reset.statusCode, 200);
+  const loginRes = await t.app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    headers: { 'x-requested-with': 'stockroom' },
+    payload: { email: 'mutare@example.com', password: 'updated-password-456' },
+  });
+  assert.equal(loginRes.statusCode, 200);
+});

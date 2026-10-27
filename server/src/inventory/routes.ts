@@ -1,9 +1,23 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import type { Db } from '../db.ts';
 import type { Role } from '../app.ts';
 import { AppError } from '../errors.ts';
-import { fromMilli, getDocument, postDocument, reverseDocument, toMilli, verifyLedger, type PostableType } from './engine.ts';
+import {
+  approveCountSheet,
+  createCountSheet,
+  fromCents,
+  fromMilli,
+  getCountSheet,
+  getDocument,
+  postDocument,
+  reverseDocument,
+  toCents,
+  toMilli,
+  verifyLedger,
+  type PostableType,
+} from './engine.ts';
 
 type Guard = (...roles: Role[]) => (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
 
@@ -11,6 +25,7 @@ const id = z.number().int().positive();
 const name = z.string().trim().min(1).max(120);
 const text = (max: number) => z.string().trim().max(max).nullish().transform((v) => v || null);
 const qty = z.number().finite().min(-1e9).max(1e9);
+const money = z.number().finite().min(0).max(1e9);
 const paging = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50), offset: z.coerce.number().int().min(0).default(0) });
 const idParam = z.object({ id: z.coerce.number().int().positive() });
 const flag = (v: boolean | undefined) => (v === undefined ? undefined : v ? 1 : 0);
@@ -22,7 +37,7 @@ function update(db: Db, table: string, rowId: number, cols: Record<string, unkno
   db.prepare(`UPDATE ${table} SET ${entries.map(([c]) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...(entries.map(([, v]) => v) as (string | number | null)[]), rowId);
 }
 
-export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAuth: Guard) {
+export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAuth: Guard, bcryptCost = 12) {
   const exec = requireAuth('executive_manager');
   const staff = requireAuth('executive_manager', 'inventory_manager');
   const anyUser = requireAuth();
@@ -42,6 +57,73 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   app.patch('/api/organisation', { preHandler: exec }, async (req) => {
     const b = z.object({ name: name.optional(), allowNegativeStock: z.boolean().optional() }).strict().parse(req.body);
     update(db, 'organisations', req.user!.organisationId, { name: b.name, allow_negative_stock: flag(b.allowNegativeStock) });
+    return { ok: true };
+  });
+
+  // ---------- user management (executive only) ----------
+  app.get('/api/users', { preHandler: exec }, async (req) => {
+    const rows = db
+      .prepare(
+        `SELECT u.id, u.email, u.name, u.role, u.branch_id AS branchId, b.name AS branchName, u.active, u.locked_until AS lockedUntil, u.created_at AS createdAt
+           FROM users u LEFT JOIN branches b ON b.id = u.branch_id
+          WHERE u.organisation_id = ? ORDER BY u.name`,
+      )
+      .all(req.user!.organisationId) as Record<string, unknown>[];
+    return rows.map((r) => ({ ...r, active: !!r.active }));
+  });
+  app.post('/api/users', { preHandler: exec }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        email: z.string().trim().email().max(254),
+        name,
+        password: z.string().min(10, 'Password must be at least 10 characters').max(200),
+        role: z.enum(['executive_manager', 'inventory_manager']),
+        branchId: id.nullish(),
+      })
+      .strict()
+      .parse(req.body);
+    if (b.branchId) ownedBranch(b.branchId, orgId);
+    const hash = await bcrypt.hash(b.password, bcryptCost);
+    const r = db
+      .prepare('INSERT INTO users (organisation_id, branch_id, email, name, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(orgId, b.branchId ?? null, b.email, b.name, hash, b.role);
+    return reply.code(201).send({ id: Number(r.lastInsertRowid) });
+  });
+  app.patch('/api/users/:id', { preHandler: exec }, async (req) => {
+    const { id: rowId } = idParam.parse(req.params);
+    const orgId = req.user!.organisationId;
+    owned('users', rowId, orgId, 'not_found');
+    const b = z
+      .object({
+        name: name.optional(),
+        role: z.enum(['executive_manager', 'inventory_manager']).optional(),
+        branchId: id.nullable().optional(),
+        active: z.boolean().optional(),
+        password: z.string().min(10).max(200).optional(),
+        unlock: z.boolean().optional(),
+      })
+      .strict()
+      .parse(req.body);
+    if (rowId === req.user!.id && (b.active === false || b.role === 'inventory_manager')) {
+      throw new AppError(400, 'cannot_demote_or_deactivate_self');
+    }
+    if (b.branchId) ownedBranch(b.branchId, orgId);
+    const cols: Record<string, unknown> = {
+      name: b.name,
+      role: b.role,
+      branch_id: b.branchId,
+      active: flag(b.active),
+    };
+    if (b.password) cols.password_hash = await bcrypt.hash(b.password, bcryptCost);
+    if (b.unlock || b.password) {
+      cols.failed_attempts = 0;
+      cols.locked_until = null;
+    }
+    update(db, 'users', rowId, cols);
+    if (b.active === false || b.password) {
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(rowId);
+    }
     return { ok: true };
   });
 
@@ -65,7 +147,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   for (const table of ['warehouses', 'departments'] as const) {
     app.get(`/api/${table}`, { preHandler: anyUser }, async (req) =>
       db
-        .prepare(`SELECT t.id, t.branch_id AS branchId, t.name, t.active FROM ${table} t JOIN branches b ON b.id = t.branch_id WHERE b.organisation_id = ? ORDER BY t.name`)
+        .prepare(`SELECT t.id, t.branch_id AS branchId, b.name AS branchName, t.name, t.active FROM ${table} t JOIN branches b ON b.id = t.branch_id WHERE b.organisation_id = ? ORDER BY t.name`)
         .all(req.user!.organisationId),
     );
     app.post(`/api/${table}`, { preHandler: exec }, async (req, reply) => {
@@ -132,30 +214,66 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     const params: (string | number)[] = [req.user!.organisationId];
     if (q.q) { where.push("(p.name LIKE ? ESCAPE '\\' OR p.sku LIKE ? ESCAPE '\\')"); const like = `%${q.q.replace(/[\\%_]/g, '\\$&')}%`; params.push(like, like); }
     if (q.categoryId) { where.push('p.category_id = ?'); params.push(q.categoryId); }
-    const rows = db
+    const rows = (db
       .prepare(
-        `SELECT p.id, p.sku, p.name, p.description, p.category_id AS categoryId, p.base_unit_id AS baseUnitId, u.code AS baseUnit, p.active
-           FROM products p JOIN units_of_measure u ON u.id = p.base_unit_id WHERE ${where.join(' AND ')} ORDER BY p.name LIMIT ? OFFSET ?`,
+        `SELECT p.id, p.sku, p.name, p.description, p.category_id AS categoryId, c.name AS categoryName,
+                p.base_unit_id AS baseUnitId, u.code AS baseUnit, p.unit_cost_cents, p.reorder_level_milli, p.active,
+                COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS total_milli
+           FROM products p JOIN units_of_measure u ON u.id = p.base_unit_id
+                LEFT JOIN categories c ON c.id = p.category_id
+          WHERE ${where.join(' AND ')} ORDER BY p.name LIMIT ? OFFSET ?`,
       )
-      .all(...params, q.limit, q.offset);
+      .all(...params, q.limit, q.offset) as ({ id: number; unit_cost_cents: number; reorder_level_milli: number; total_milli: number } & Record<string, unknown>)[]).map(
+      ({ unit_cost_cents, reorder_level_milli, total_milli, ...r }) => {
+        const packagings = (db
+          .prepare('SELECT g.id, g.unit_id AS unitId, u.code AS unit, g.factor_milli FROM product_packagings g JOIN units_of_measure u ON u.id = g.unit_id WHERE g.product_id = ?')
+          .all(r.id) as { id: number; unitId: number; unit: string; factor_milli: number }[]).map((g) => ({
+          id: g.id,
+          unitId: g.unitId,
+          unit: g.unit,
+          factor: fromMilli(g.factor_milli),
+        }));
+        return {
+          ...r,
+          unitCost: fromCents(unit_cost_cents),
+          reorderLevel: fromMilli(reorder_level_milli),
+          totalStock: fromMilli(total_milli),
+          packagings,
+        };
+      },
+    );
     const total = (db.prepare(`SELECT COUNT(*) n FROM products p WHERE ${where.join(' AND ')}`).get(...params) as { n: number }).n;
     return { items: rows, total };
   });
   app.get('/api/products/:id', { preHandler: anyUser }, async (req) => {
     const { id: rowId } = idParam.parse(req.params);
     const p = db
-      .prepare('SELECT p.id, p.sku, p.name, p.description, p.category_id AS categoryId, p.base_unit_id AS baseUnitId, u.code AS baseUnit, p.active FROM products p JOIN units_of_measure u ON u.id = p.base_unit_id WHERE p.id = ? AND p.organisation_id = ?')
-      .get(rowId, req.user!.organisationId);
+      .prepare('SELECT p.id, p.sku, p.name, p.description, p.category_id AS categoryId, p.base_unit_id AS baseUnitId, u.code AS baseUnit, p.unit_cost_cents, p.reorder_level_milli, p.active FROM products p JOIN units_of_measure u ON u.id = p.base_unit_id WHERE p.id = ? AND p.organisation_id = ?')
+      .get(rowId, req.user!.organisationId) as ({ unit_cost_cents: number; reorder_level_milli: number } & Record<string, unknown>) | undefined;
     if (!p) throw new AppError(404, 'not_found');
     const packagings = (db.prepare('SELECT g.id, g.unit_id AS unitId, u.code AS unit, g.factor_milli FROM product_packagings g JOIN units_of_measure u ON u.id = g.unit_id WHERE g.product_id = ?').all(rowId) as { id: number; unitId: number; unit: string; factor_milli: number }[]).map((g) => ({ id: g.id, unitId: g.unitId, unit: g.unit, factor: fromMilli(g.factor_milli) }));
-    return { ...p, packagings };
+    const { unit_cost_cents, reorder_level_milli, ...rest } = p;
+    return { ...rest, unitCost: fromCents(unit_cost_cents), reorderLevel: fromMilli(reorder_level_milli), packagings };
   });
   app.post('/api/products', { preHandler: staff }, async (req, reply) => {
     const orgId = req.user!.organisationId;
-    const b = z.object({ sku: z.string().trim().min(1).max(60), name, description: text(500), categoryId: id.nullish(), baseUnitId: id }).strict().parse(req.body);
+    const b = z
+      .object({
+        sku: z.string().trim().min(1).max(60),
+        name,
+        description: text(500),
+        categoryId: id.nullish(),
+        baseUnitId: id,
+        unitCost: money.default(0),
+        reorderLevel: z.number().finite().min(0).max(1e9).default(0),
+      })
+      .strict()
+      .parse(req.body);
     owned('units_of_measure', b.baseUnitId, orgId, 'unit_not_found');
     if (b.categoryId) owned('categories', b.categoryId, orgId, 'category_not_found');
-    const r = db.prepare('INSERT INTO products (organisation_id, sku, name, description, category_id, base_unit_id) VALUES (?, ?, ?, ?, ?, ?)').run(orgId, b.sku, b.name, b.description, b.categoryId ?? null, b.baseUnitId);
+    const r = db
+      .prepare('INSERT INTO products (organisation_id, sku, name, description, category_id, base_unit_id, unit_cost_cents, reorder_level_milli) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(orgId, b.sku, b.name, b.description, b.categoryId ?? null, b.baseUnitId, toCents(b.unitCost), toMilli(b.reorderLevel));
     return reply.code(201).send({ id: Number(r.lastInsertRowid) });
   });
   // The SKU and base unit are fixed once created: posted history is expressed in them.
@@ -163,9 +281,26 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     const { id: rowId } = idParam.parse(req.params);
     const orgId = req.user!.organisationId;
     owned('products', rowId, orgId, 'not_found');
-    const b = z.object({ name: name.optional(), description: text(500).optional(), categoryId: id.nullable().optional(), active: z.boolean().optional() }).strict().parse(req.body);
+    const b = z
+      .object({
+        name: name.optional(),
+        description: text(500).optional(),
+        categoryId: id.nullable().optional(),
+        unitCost: money.optional(),
+        reorderLevel: z.number().finite().min(0).max(1e9).optional(),
+        active: z.boolean().optional(),
+      })
+      .strict()
+      .parse(req.body);
     if (b.categoryId) owned('categories', b.categoryId, orgId, 'category_not_found');
-    update(db, 'products', rowId, { name: b.name, description: b.description, category_id: b.categoryId, active: flag(b.active) });
+    update(db, 'products', rowId, {
+      name: b.name,
+      description: b.description,
+      category_id: b.categoryId,
+      unit_cost_cents: b.unitCost !== undefined ? toCents(b.unitCost) : undefined,
+      reorder_level_milli: b.reorderLevel !== undefined ? toMilli(b.reorderLevel) : undefined,
+      active: flag(b.active),
+    });
     return { ok: true };
   });
   app.post('/api/products/:id/packagings', { preHandler: staff }, async (req, reply) => {
@@ -187,13 +322,26 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     return k;
   };
   const common = { reference: text(80), supplierId: id.nullish(), departmentId: id.nullish() };
-  const line = { productId: id, warehouseId: id, unitId: id };
+  const batchFields = {
+    batchNumber: text(60),
+    expiryDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD').nullish().transform((v) => v || null),
+  };
+  const line = { productId: id, warehouseId: id, unitId: id, ...batchFields };
   const lines = <T extends z.ZodRawShape>(extra: T) => z.array(z.object({ ...line, ...extra }).strict()).min(1).max(200);
-  const posting: Record<PostableType, z.ZodType<{ lines: { productId: number; warehouseId: number; unitId: number; quantity: number; toWarehouseId?: number }[]; reason?: string | null; reference?: string | null; supplierId?: number | null; departmentId?: number | null }>> = {
-    receipt: z.object({ reference: common.reference, supplierId: common.supplierId, lines: lines({ quantity: qty.positive() }) }).strict(),
+  const posting: Record<
+    PostableType,
+    z.ZodType<{
+      lines: { productId: number; warehouseId: number; unitId: number; quantity: number; toWarehouseId?: number; unitCost?: number | null; batchNumber?: string | null; expiryDate?: string | null }[];
+      reason?: string | null;
+      reference?: string | null;
+      supplierId?: number | null;
+      departmentId?: number | null;
+    }>
+  > = {
+    receipt: z.object({ reference: common.reference, supplierId: common.supplierId, lines: lines({ quantity: qty.positive(), unitCost: money.nullish() }) }).strict(),
     issue: z.object({ reference: common.reference, departmentId: common.departmentId, lines: lines({ quantity: qty.positive() }) }).strict(),
     transfer: z.object({ reference: common.reference, lines: lines({ toWarehouseId: id, quantity: qty.positive() }) }).strict(),
-    adjustment: z.object({ reference: common.reference, reason: z.string().trim().min(3).max(300), lines: lines({ quantity: qty }) }).strict(),
+    adjustment: z.object({ reference: common.reference, reason: z.string().trim().min(3).max(300), lines: lines({ quantity: qty, unitCost: money.nullish() }) }).strict(),
     count: z.object({ reference: common.reference, lines: lines({ quantity: qty.min(0) }) }).strict(),
     write_off: z.object({ reference: common.reference, departmentId: common.departmentId, reason: z.string().trim().min(3).max(300), lines: lines({ quantity: qty.positive() }) }).strict(),
   };
@@ -210,11 +358,62 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         reason: body.reason,
         supplierId: body.supplierId,
         departmentId: body.departmentId,
-        lines: body.lines.map((l) => ({ productId: l.productId, warehouseId: l.warehouseId, toWarehouseId: l.toWarehouseId, unitId: l.unitId, quantityMilli: toMilli(l.quantity) })),
+        lines: body.lines.map((l) => ({
+          productId: l.productId,
+          warehouseId: l.warehouseId,
+          toWarehouseId: l.toWarehouseId,
+          unitId: l.unitId,
+          quantityMilli: toMilli(l.quantity),
+          unitCostCents: l.unitCost !== undefined && l.unitCost !== null ? toCents(l.unitCost) : null,
+          batchNumber: l.batchNumber,
+          expiryDate: l.expiryDate,
+        })),
       });
       return reply.code(result.replayed ? 200 : 201).send({ replayed: result.replayed, document: getDocument(db, req.user!.organisationId, result.documentId) });
     });
   }
+
+  // ---------- count-sheet workflow ----------
+  app.get('/api/stock/count-sheets', { preHandler: anyUser }, async (req) => {
+    const rows = db
+      .prepare(
+        `SELECT cs.id, cs.warehouse_id AS warehouseId, w.name AS warehouseName, cs.reference, cs.notes, cs.status,
+                cs.posted_document_id AS postedDocumentId, cs.created_at AS createdAt, cs.approved_at AS approvedAt,
+                (SELECT COUNT(*) FROM count_sheet_lines l WHERE l.count_sheet_id = cs.id) AS lineCount
+           FROM count_sheets cs JOIN warehouses w ON w.id = cs.warehouse_id
+          WHERE cs.organisation_id = ? ORDER BY cs.id DESC LIMIT 100`,
+      )
+      .all(req.user!.organisationId);
+    return { items: rows };
+  });
+  app.get('/api/stock/count-sheets/:id', { preHandler: anyUser }, async (req) => {
+    const { id: sheetId } = idParam.parse(req.params);
+    const sheet = getCountSheet(db, req.user!.organisationId, sheetId);
+    if (!sheet) throw new AppError(404, 'not_found');
+    return sheet;
+  });
+  app.post('/api/stock/count-sheets', { preHandler: staff }, async (req, reply) => {
+    const b = z
+      .object({
+        warehouseId: id,
+        reference: text(80),
+        notes: text(300),
+        lines: z.array(z.object({ productId: id, unitId: id, countedQuantity: qty.min(0) }).strict()).min(1).max(200),
+      })
+      .strict()
+      .parse(req.body);
+    const sheetId = createCountSheet(db, req.user!, b);
+    return reply.code(201).send(getCountSheet(db, req.user!.organisationId, sheetId));
+  });
+  app.post('/api/stock/count-sheets/:id/approve', { preHandler: exec }, async (req, reply) => {
+    const { id: sheetId } = idParam.parse(req.params);
+    const result = approveCountSheet(db, req.user!, sheetId, idemKey(req));
+    return reply.code(result.replayed ? 200 : 201).send({
+      replayed: result.replayed,
+      sheet: getCountSheet(db, req.user!.organisationId, sheetId),
+      document: getDocument(db, req.user!.organisationId, result.documentId),
+    });
+  });
 
   app.post('/api/stock/documents/:id/reverse', { preHandler: staff }, async (req, reply) => {
     const { id: docId } = idParam.parse(req.params);
@@ -246,11 +445,26 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     where += scope(req, 'w.branch_id', params);
     const rows = (db
       .prepare(
-        `SELECT b.product_id AS productId, p.sku, p.name AS productName, b.warehouse_id AS warehouseId, w.name AS warehouseName, u.code AS unit, b.quantity_milli
+        `SELECT b.product_id AS productId, p.sku, p.name AS productName, p.unit_cost_cents, p.reorder_level_milli,
+                b.warehouse_id AS warehouseId, w.name AS warehouseName, u.code AS unit, b.quantity_milli
            FROM stock_balances b JOIN products p ON p.id = b.product_id JOIN warehouses w ON w.id = b.warehouse_id JOIN units_of_measure u ON u.id = p.base_unit_id
           WHERE ${where} ORDER BY p.name, w.name LIMIT ? OFFSET ?`,
       )
-      .all(...params, q.limit, q.offset) as ({ quantity_milli: number } & Record<string, unknown>)[]).map(({ quantity_milli, ...r }) => ({ ...r, quantity: fromMilli(quantity_milli) }));
+      .all(...params, q.limit, q.offset) as ({ quantity_milli: number; unit_cost_cents: number; reorder_level_milli: number } & Record<string, unknown>)[]).map(
+      ({ quantity_milli, unit_cost_cents, reorder_level_milli, ...r }) => {
+        const quantity = fromMilli(quantity_milli);
+        const unitCost = fromCents(unit_cost_cents);
+        const reorderLevel = fromMilli(reorder_level_milli);
+        return {
+          ...r,
+          quantity,
+          unitCost,
+          stockValue: Math.round(quantity * unitCost * 100) / 100,
+          reorderLevel,
+          lowStock: reorder_level_milli > 0 && quantity_milli <= reorder_level_milli,
+        };
+      },
+    );
     return { items: rows };
   });
 
@@ -266,18 +480,24 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     where += scope(req, 'w.branch_id', params);
     const rows = (db
       .prepare(
-        `SELECT m.id, m.document_id AS documentId, d.type, d.reference, d.reason, d.created_at AS createdAt, m.product_id AS productId, p.sku, m.warehouse_id AS warehouseId,
-                w.name AS warehouseName, u.code AS unit, m.quantity_milli, m.factor_milli, m.base_delta_milli
+        `SELECT m.id, m.document_id AS documentId, d.type, d.reference, d.reason, d.created_at AS createdAt,
+                (SELECT r.id FROM stock_documents r WHERE r.reverses_document_id = d.id) AS reversedByDocumentId,
+                m.product_id AS productId, p.sku, p.name AS productName, m.warehouse_id AS warehouseId,
+                w.name AS warehouseName, u.code AS unit, m.quantity_milli, m.factor_milli, m.base_delta_milli,
+                m.unit_cost_cents, m.batch_number AS batchNumber, m.expiry_date AS expiryDate
            FROM stock_movements m JOIN stock_documents d ON d.id = m.document_id JOIN products p ON p.id = m.product_id
                 JOIN warehouses w ON w.id = m.warehouse_id JOIN units_of_measure u ON u.id = m.unit_id
           WHERE ${where} ORDER BY m.id DESC LIMIT ? OFFSET ?`,
       )
-      .all(...params, q.limit, q.offset) as ({ quantity_milli: number; factor_milli: number; base_delta_milli: number } & Record<string, unknown>)[]).map(({ quantity_milli, factor_milli, base_delta_milli, ...r }) => ({
-      ...r,
-      quantity: fromMilli(quantity_milli),
-      factor: fromMilli(factor_milli),
-      baseChange: fromMilli(base_delta_milli),
-    }));
+      .all(...params, q.limit, q.offset) as ({ quantity_milli: number; factor_milli: number; base_delta_milli: number; unit_cost_cents: number } & Record<string, unknown>)[]).map(
+      ({ quantity_milli, factor_milli, base_delta_milli, unit_cost_cents, ...r }) => ({
+        ...r,
+        quantity: fromMilli(quantity_milli),
+        factor: fromMilli(factor_milli),
+        baseChange: fromMilli(base_delta_milli),
+        unitCost: fromCents(unit_cost_cents),
+      }),
+    );
     return { items: rows };
   });
 

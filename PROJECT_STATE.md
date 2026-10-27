@@ -1,67 +1,49 @@
 # PROJECT_STATE
 
 ## Architecture
-- **Monorepo** (npm workspaces): `server/` (API) and `web/` (PWA frontend). Environment found: Node 24, Python 3.12; no git, Docker or Postgres installed.
-- **Backend:** Node 24 running TypeScript natively (type-stripping, no build step), Fastify, Zod validation, helmet, CORS allow-list, rate-limited login.
-- **Database:** SQLite via built-in `node:sqlite`, so there are no native dependencies. Plain `.sql` migrations in `server/migrations`, applied by `server/src/migrate.ts`. The SQL is kept portable so it can move to PostgreSQL for multi-instance production (the `Db` usage is confined to `db.ts` and the queries in `app.ts`/`seed.ts`).
-- **Auth:** email and password (bcryptjs), opaque random session token stored hashed (SHA-256) in `sessions`. It is sent as an httpOnly SameSite=Lax cookie (web) or as a `Bearer` token (native/desktop wrappers). Authorization is enforced on the server by `requireAuth(...roles)`.
-- **Roles:** `executive_manager`, `inventory_manager`. Data model: organisation → branches → warehouses and departments.
-- **Frontend:** Vite, React, TypeScript, react-router, plain CSS tokens (Zimbabwe palette: green, gold, charcoal, off-white). The PWA is a hand-written manifest and a small service worker (the app shell only, never `/api`). The service worker registers only in production builds.
-- **Wrappers:** the PWA works with Capacitor (mobile) and Tauri/Electron (desktop) without changes, using Bearer auth and a configurable API base URL (to do when wrapping).
-- **Deployment (planned):** the Node server serves `web/dist` and `/api` behind HTTPS (single container or VM), with persistent volume or PostgreSQL. Not yet implemented.
+- **Monorepo** (npm workspaces): `server/` (API) and `web/` (PWA frontend). Environment: Node 24, Python 3.12, Git 2.56 (`C:\Program Files\Git\cmd\git.exe`, added to User PATH and initialised in `.git`).
+- **Backend:** Node 24 running TypeScript natively (type-stripping, no build step), Fastify, Zod validation, helmet, CORS allow-list, rate-limited login, CSRF header + Origin check.
+- **Database:** SQLite via built-in `node:sqlite`, plain `.sql` migrations in `server/migrations` (`001_init.sql` .. `004_inventory_gaps.sql`), applied by `server/src/migrate.ts`.
+- **Authoritative Stock Engine:** `server/src/inventory/engine.ts` is the sole writer to `stock_movements`. `stock_balances` is a SQL view (`SUM(base_delta_milli)` per organisation, product, and warehouse). No duplicate balance calculation logic exists anywhere in the codebase.
+- **Auth & Security:** email/password (`bcryptjs`), opaque session tokens stored SHA-256 hashed in `sessions`, sent as `httpOnly SameSite=Lax` cookie (web) or `Bearer` token (mobile/desktop wrappers). Account lockout after 5 failed attempts, operator CLI password reset (`npm run reset-password`), and self-service password reset (`POST /api/auth/forgot-password` + `POST /api/auth/reset-password` backed by `password_reset_tokens` and `email_outbox`).
+- **Frontend:** Vite, React, TypeScript, `react-router-dom`, Zimbabwe-inspired design tokens (deep green `#0b4f3a`, warm gold `#c9962b`, charcoal `#22262a`, off-white `#f7f4ec`), responsive desktop & mobile drawer shell, PWA manifest + service worker + generated PNG icons.
 
-## Run
+## Run & Test
 ```
 npm install
-copy .env.example .env
-npm run seed        # dev only; prints credentials once
-npm run dev:server  # http://127.0.0.1:4000
-npm run dev:web     # http://localhost:5173 (proxies /api)
-npm test            # server tests;  npm test -w web for frontend tests
+npm run migrate
+npm run seed          # seeds demo org, users, and Zimbabwean inventory data (idempotent)
+npm run dev:server    # http://127.0.0.1:4000 (running in background)
+npm run dev:web       # http://localhost:5173 (running in background)
+npm test              # 30 server tests
+npm test -w web       # 3 frontend routing tests
+npm run verify-ledger # audits ledger invariants
 ```
 
-## Completed (Stage 1: setup, auth, shell)
-- Config validation, DB connection, migration runner, `001_init` schema, dev seed.
-- API: `/api/health`, `/api/auth/{login,logout,me}`, `/api/dashboard/summary`, role-guarded `/api/executive/ping` and `/api/inventory/ping`.
-- Web: login, role-based routing (`/executive`, `/inventory`), shell (collapsible sidebar, mobile drawer, topbar, sign-out), dashboard shell with KPI cards, loading, error and 404 states, PWA manifest and service worker.
-- **Verified:** server tests 7/7 pass; web tests 3/3 pass; typecheck passes for both; `vite build` succeeds; manual API smoke test against a real DB file (login, cookie session, 403 on the wrong role, summary) passed.
+## Completed Stages
+- **Stage 1 & 1.1:** Project setup, config validation, SQLite migrations, login/logout, CSRF protection, account lockout, password change/reset, role-based portals (`/executive`, `/inventory`), PWA manifest/icons/SW.
+- **Stage 2:** Core inventory schema (`003_inventory.sql`) and ledger engine (`server/src/inventory/engine.ts`): organisations, branches, warehouses, departments, categories, units of measure, product packagings (unit conversions), suppliers, products, stock documents, and append-only `stock_movements` ledger with `Idempotency-Key` protection, `BEGIN IMMEDIATE` transactions, negative-stock prevention, and executive-only reversals.
+- **Stage 2.1 (Gaps Fixed + Full Interactive Web App):**
+  - **Git Issue Fixed:** Located `C:\Program Files\Git\cmd\git.exe`, added to User `PATH`, initialised `.git` repository, and committed baseline + stage changes.
+  - **Costing & Valuation (`004_inventory_gaps.sql`):** Added `unit_cost_cents` on `products` and `stock_movements`. Receipts record unit cost per base unit and update the product's latest unit cost; warehouse and organisation stock values are computed directly from `stock_balances × unit_cost_cents`.
+  - **Reorder Levels & Low-Stock Alerts:** Added `reorder_level_milli` on `products`; low-stock status is derived live from `stock_balances`.
+  - **Batch / Lot & Expiry Tracking:** Added `batch_number` and `expiry_date` (`YYYY-MM-DD`) on `stock_movements` (preserved across transfers and reversals) and expiring-soon count in dashboard summary.
+  - **Count-Sheet Approval Workflow:** Added `count_sheets` and `count_sheet_lines`. Staff save draft counts, inspect live variances against `getBalance()`, and executives approve them (`POST /api/stock/count-sheets/:id/approve`), which posts an authoritative `count` document through `postDocument()`.
+  - **User Management & Self-Service Password Reset:** Added `GET/POST/PATCH /api/users` (executive-only, with self-demotion protection and session revocation) and `POST /api/auth/forgot-password` + `POST /api/auth/reset-password` using `password_reset_tokens` and `email_outbox`.
+  - **Interactive Web Application Wired to Live API:**
+    - `Dashboard`: Live stock valuation, active products, low-stock alerts, draft count sheets, warehouse valuation breakdown, and recent ledger movements.
+    - `Products & Stock` (`/executive/products`, `/inventory/products`): Searchable catalogue, packaging conversion builder, category/supplier creation, and warehouse stock balances with low-stock badges.
+    - `Movements & Counts` (`/executive/operations`, `/inventory/operations`): Post receipts (with supplier, cost, batch/lot, expiry), issues, transfers, adjustments, write-offs, draft/approve count sheets, and executive document reversals on the ledger table.
+    - `Org & Users` (`/executive/organisation`): Negative-stock policy toggle, live `Verify Ledger Integrity` audit button, branch/warehouse/department creation, and user role/branch management.
+  - **Verified:** Server tests 30/30 pass; Web tests 3/3 pass; TypeScript typecheck and production Vite build pass; `npm run verify-ledger` passes (`Ledger OK.`); headless Chrome screenshots verified all 4 screens live on `http://localhost:5173`.
 
-## Stage 1.1 (hardening, completed)
-- **CSRF:** cookie-authenticated writes require the `X-Requested-With: stockroom` header and an allowed Origin. Bearer-token clients are exempt.
-- **Lockout:** 5 failed logins lock the account for 15 minutes (HTTP 423, configurable). Migration `002_login_security`.
-- **Passwords:** `POST /api/auth/change-password` (min 10 chars, revokes other sessions) and the operator CLI `npm run reset-password -- <email>` (clears lockout and sessions). Email-based self-service reset needs an SMTP provider and is deferred.
-- **Tests:** `BCRYPT_COST` is configurable (4 in tests), so the server suite runs in ~2s.
-- **Icons:** PNG 192/512/180 generated by `web/scripts/make-icons.mjs`, referenced in the manifest and index.html.
-- **Browser verification:** headless Chrome script checked login error, executive and inventory portals, redirect from the wrong portal, collapsed sidebar and the mobile drawer.
-- **Verified:** server tests 10/10, web tests 3/3, typecheck and build pass.
+## Current Task
+Stage 2.1 complete and web app running live on `http://localhost:5173` (proxying `/api` to `http://127.0.0.1:4000`). Waiting for user review and next stage instructions.
 
-## Stage 2 (database schema and core inventory engine, completed)
-**Schema** (`003_inventory.sql`): organisations (+ `allow_negative_stock`, default off), categories, units_of_measure, suppliers, products, product_packagings, stock_documents (header), stock_movements (ledger). Branches, warehouses, departments, users and roles come from Stage 1.
-- **Quantities** are integers in thousandths (3 decimals), so there is no float drift. The API uses decimals and rejects more than 3 decimal places.
-- **Ledger is authoritative:** `stock_movements` rows are signed base-unit deltas. `stock_balances` is a **view** (SUM per organisation, product and warehouse). Balances are never stored separately, so they cannot drift. `getBalance()` in the engine is the single definition used for balance reads, count variances and the negative-stock check.
-- **Immutable:** triggers block UPDATE/DELETE on ledger and document tables. FKs on history are `RESTRICT`. Corrections are made only with reversal documents (one per original, executive-only, exact opposite, linked by `reverses_document_id`).
-- **Location** = warehouse. Departments are recorded on issues and write-offs (must be in the same branch as the warehouse).
-- **Packaging:** `product_packagings` (1 carton = 24 each). Each ledger row keeps the entered quantity, unit and the factor in force at posting time.
-- **Engine** (`server/src/inventory/engine.ts`) is the only writer to the ledger: `postDocument` (receipt, issue, transfer, adjustment, count, write_off), `reverseDocument`, `verifyLedger`. Each posting runs in one `BEGIN IMMEDIATE` transaction, so all lines post or none do. Negative stock is checked after insert (rolls back with `insufficient_stock`). Counts record the variance against the ledger balance.
-- **Duplicate protection:** a required `Idempotency-Key` header, unique per organisation. Replay returns 200 with the original document. Same key with a different body returns 409 `idempotency_key_reuse`.
-- **Permissions** (`DOC_PERMISSIONS`): executives and inventory managers can post receipts, issues, transfers, counts, adjustments and write-offs. Reversals are executive-only. Inventory managers with a branch can only post to, and read, their own branch's warehouses (transfer destinations may be any warehouse in the organisation). Org structure and the organisation settings are executive-only. Master data (products, categories, units, suppliers) is open to both roles. Everything is scoped to the caller's organisation.
-- **API:** `/api/organisation`, `/api/{branches,warehouses,departments,categories,units,suppliers,products}` (+ `/products/:id/packagings`), `POST /api/stock/{receipts,issues,transfers,adjustments,counts,write-offs}`, `POST /api/stock/documents/:id/reverse`, `GET /api/stock/{balances,movements,documents/:id}`, `GET /api/stock/verify` (executive).
-- **Audit tools:** `verifyLedger` checks sign rules, quantity x factor arithmetic, transfers net to zero, reversals cancel originals and no negative balances. Run it with `npm run verify-ledger` (exit code 1 on problems) or `GET /api/stock/verify`.
-- **Verified:** server tests 27/27 (including 400 randomised postings and reversals, with balances compared to an independent sum of movements, and tampering detection); typecheck clean; the dev database migrated and `verify-ledger` reports OK. The randomised test found a real defect, now fixed: the audit wrongly flagged reversals of counts (count rows hold the counted quantity, not the variance). A regression test covers it.
+## Known Issues / Notes for Future Stages
+- Advanced reporting/exports (CSV/PDF export, date-range movement analytics charts, department consumption reports) can be added in the next stage.
+- Purchase order / receiving workflow (draft PO -> partial/full GRN receipt) can be layered onto `stock_documents` if needed.
+- `node:sqlite` is built-in on Node 24; keep SQL portable for optional PostgreSQL deployment later.
 
-## Current task
-Stage 2 complete. Waiting for the go-ahead on Stage 3.
-
-## Known issues / not yet done
-- **No frontend for inventory yet.** The web app still only has login, the portals and the dashboard shell.
-- No costing/valuation (unit cost, stock value) yet. It will be added to receipts and the ledger later.
-- No reservations, lots/serial numbers or expiry dates.
-- Posting `count` records only the variance; the counted quantity is stored on the ledger row, but there is no count-sheet workflow (open, approve) yet.
-- User management API (create/disable users, assign roles and branches) is not built. Users are seeded only.
-- No low-stock thresholds or reorder levels. Dashboard KPIs still show only the org structure.
-- Branch scoping treats a user with no branch as organisation-wide. Revisit when user management exists.
-- `verifyLedger` is O(ledger); it is fine now, but run it off-peak or incrementally at scale.
-- Git is not installed, so there is no repository. Email password reset is deferred (needs SMTP). PWA offline and install behaviour is untested. `node:sqlite` is experimental, so plan the PostgreSQL move before scaling.
-
-## Next step (proposed)
-Stage 3: user management API and UI (executive), then inventory screens: products, receiving, stock movements, transfers and counts, wired to this API; dashboard KPIs from real data (stock value once costing exists, low stock, recent movements).
+## Next Step
+Ready for your testing on `http://localhost:5173` and your instructions for the next stage.

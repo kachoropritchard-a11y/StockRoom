@@ -3,8 +3,23 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth';
 
 const NAV = {
-  executive: { title: 'Executive Portal', items: [{ to: '/executive', label: 'Overview', end: true }] },
-  inventory: { title: 'Inventory Portal', items: [{ to: '/inventory', label: 'Overview', end: true }] },
+  executive: {
+    title: 'Executive Portal',
+    items: [
+      { to: '/executive', label: 'Overview', end: true },
+      { to: '/executive/products', label: 'Products & Stock', end: false },
+      { to: '/executive/operations', label: 'Movements & Counts', end: false },
+      { to: '/executive/organisation', label: 'Org & Users', end: false },
+    ],
+  },
+  inventory: {
+    title: 'Inventory Portal',
+    items: [
+      { to: '/inventory', label: 'Overview', end: true },
+      { to: '/inventory/products', label: 'Products & Stock', end: false },
+      { to: '/inventory/operations', label: 'Movements & Counts', end: false },
+    ],
+  },
 };
 
 export function Shell({ portal }: { portal: keyof typeof NAV }) {

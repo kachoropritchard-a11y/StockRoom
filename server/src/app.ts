@@ -9,6 +9,7 @@ import { z } from 'zod';
 import type { Config } from './config.ts';
 import type { Db } from './db.ts';
 import { AppError } from './errors.ts';
+import { fromCents, fromMilli } from './inventory/engine.ts';
 import { registerInventoryRoutes } from './inventory/routes.ts';
 
 export type Role = 'executive_manager' | 'inventory_manager';
@@ -182,16 +183,138 @@ export function buildApp(db: Db, config: Config) {
 
   app.get('/api/auth/me', { preHandler: requireAuth() }, async (req) => ({ user: req.user }));
 
-  // Dashboard shell data, scoped to the caller's organisation. Real inventory metrics arrive in later stages.
+  // Self-service password reset: stores hashed token + writes to email_outbox so it works with or without an external SMTP relay.
+  app.post('/api/auth/forgot-password', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req) => {
+    const { email } = z.object({ email: z.string().trim().email().max(254) }).parse(req.body);
+    const u = db.prepare('SELECT id, email, active FROM users WHERE email = ?').get(email) as { id: number; email: string; active: number } | undefined;
+    let resetToken: string | undefined;
+    if (u && u.active) {
+      resetToken = randomBytes(24).toString('base64url');
+      const expires = new Date(Date.now() + 30 * 60_000).toISOString();
+      db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(u.id);
+      db.prepare('INSERT INTO password_reset_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)').run(sha256(resetToken), u.id, expires);
+      db.prepare('INSERT INTO email_outbox (to_email, subject, body) VALUES (?, ?, ?)').run(
+        u.email,
+        'Stockroom password reset',
+        `Use reset token: ${resetToken} (valid for 30 minutes)`,
+      );
+    }
+    return { ok: true, ...(config.NODE_ENV !== 'production' && resetToken ? { resetToken } : {}) };
+  });
+
+  app.post('/api/auth/reset-password', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
+    const body = z.object({ token: z.string().min(10).max(200), newPassword: z.string().min(10).max(200) }).parse(req.body);
+    const row = db
+      .prepare('SELECT user_id FROM password_reset_tokens WHERE token_hash = ? AND expires_at > ?')
+      .get(sha256(body.token), new Date().toISOString()) as { user_id: number } | undefined;
+    if (!row) return reply.code(400).send({ error: 'invalid_or_expired_reset_token' });
+    const hash = await bcrypt.hash(body.newPassword, config.BCRYPT_COST);
+    db.prepare('UPDATE users SET password_hash = ?, failed_attempts = 0, locked_until = NULL WHERE id = ?').run(hash, row.user_id);
+    db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(row.user_id);
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(row.user_id);
+    return { ok: true };
+  });
+
+  // Dashboard summary, scoped to the caller's organisation, combining structure and live ledger metrics.
   app.get('/api/dashboard/summary', { preHandler: requireAuth() }, async (req) => {
     const org = req.user!.organisationId;
     const count = (sql: string) => (db.prepare(sql).get(org) as { n: number }).n;
+
+    const valueRow = db
+      .prepare(
+        `SELECT COALESCE(SUM(b.quantity_milli * p.unit_cost_cents), 0) AS total_milli_cents
+           FROM stock_balances b JOIN products p ON p.id = b.product_id
+          WHERE b.organisation_id = ? AND b.quantity_milli > 0`,
+      )
+      .get(org) as { total_milli_cents: number };
+    const totalStockValue = Math.round(valueRow.total_milli_cents / 1000) / 100;
+
+    const lowStockItems = (db
+      .prepare(
+        `SELECT p.id AS productId, p.sku, p.name AS productName, u.code AS unit, p.reorder_level_milli,
+                COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS qty_milli
+           FROM products p JOIN units_of_measure u ON u.id = p.base_unit_id
+          WHERE p.organisation_id = ? AND p.active = 1 AND p.reorder_level_milli > 0
+            AND COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) <= p.reorder_level_milli
+          ORDER BY p.name LIMIT 20`,
+      )
+      .all(org) as { productId: number; sku: string; productName: string; unit: string; reorder_level_milli: number; qty_milli: number }[]).map((r) => ({
+      productId: r.productId,
+      sku: r.sku,
+      productName: r.productName,
+      unit: r.unit,
+      quantity: fromMilli(r.qty_milli),
+      reorderLevel: fromMilli(r.reorder_level_milli),
+    }));
+
+    const warehouseSummary = (db
+      .prepare(
+        `SELECT w.id AS warehouseId, w.name AS warehouseName, br.name AS branchName,
+                COALESCE(SUM(b.quantity_milli), 0) AS total_qty_milli,
+                COALESCE(SUM(CASE WHEN b.quantity_milli > 0 THEN b.quantity_milli * p.unit_cost_cents ELSE 0 END), 0) AS total_milli_cents
+           FROM warehouses w
+           JOIN branches br ON br.id = w.branch_id
+           LEFT JOIN stock_balances b ON b.warehouse_id = w.id AND b.organisation_id = br.organisation_id
+           LEFT JOIN products p ON p.id = b.product_id
+          WHERE br.organisation_id = ? AND w.active = 1
+          GROUP BY w.id, w.name, br.name
+          ORDER BY w.name`,
+      )
+      .all(org) as { warehouseId: number; warehouseName: string; branchName: string; total_qty_milli: number; total_milli_cents: number }[]).map((w) => ({
+      warehouseId: w.warehouseId,
+      warehouseName: w.warehouseName,
+      branchName: w.branchName,
+      totalUnits: fromMilli(w.total_qty_milli),
+      stockValue: Math.round(w.total_milli_cents / 1000) / 100,
+    }));
+
+    const recentMovements = (db
+      .prepare(
+        `SELECT m.id, m.document_id AS documentId, d.type, d.reference, d.created_at AS createdAt,
+                p.sku, p.name AS productName, w.name AS warehouseName, u.code AS unit,
+                m.quantity_milli, m.base_delta_milli, m.unit_cost_cents
+           FROM stock_movements m
+           JOIN stock_documents d ON d.id = m.document_id
+           JOIN products p ON p.id = m.product_id
+           JOIN warehouses w ON w.id = m.warehouse_id
+           JOIN units_of_measure u ON u.id = m.unit_id
+          WHERE m.organisation_id = ?
+          ORDER BY m.id DESC LIMIT 10`,
+      )
+      .all(org) as { id: number; documentId: number; type: string; reference: string | null; createdAt: string; sku: string; productName: string; warehouseName: string; unit: string; quantity_milli: number; base_delta_milli: number; unit_cost_cents: number }[]).map((m) => ({
+      id: m.id,
+      documentId: m.documentId,
+      type: m.type,
+      reference: m.reference,
+      createdAt: m.createdAt,
+      sku: m.sku,
+      productName: m.productName,
+      warehouseName: m.warehouseName,
+      unit: m.unit,
+      quantity: fromMilli(m.quantity_milli),
+      baseChange: fromMilli(m.base_delta_milli),
+      unitCost: fromCents(m.unit_cost_cents),
+    }));
+
+    const soon = new Date(Date.now() + 30 * 86400_000).toISOString().slice(0, 10);
+    const expiringSoonCount = (db
+      .prepare('SELECT COUNT(DISTINCT id) n FROM stock_movements WHERE organisation_id = ? AND expiry_date IS NOT NULL AND expiry_date <= ? AND base_delta_milli > 0')
+      .get(org, soon) as { n: number }).n;
+
     return {
       role: req.user!.role,
       branches: count('SELECT COUNT(*) n FROM branches WHERE organisation_id = ? AND active = 1'),
       warehouses: count('SELECT COUNT(*) n FROM warehouses w JOIN branches b ON b.id = w.branch_id WHERE b.organisation_id = ? AND w.active = 1'),
       departments: count('SELECT COUNT(*) n FROM departments d JOIN branches b ON b.id = d.branch_id WHERE b.organisation_id = ? AND d.active = 1'),
       users: req.user!.role === 'executive_manager' ? count('SELECT COUNT(*) n FROM users WHERE organisation_id = ? AND active = 1') : null,
+      products: count('SELECT COUNT(*) n FROM products WHERE organisation_id = ? AND active = 1'),
+      totalStockValue,
+      lowStockCount: lowStockItems.length,
+      expiringSoonCount,
+      pendingCountSheets: count("SELECT COUNT(*) n FROM count_sheets WHERE organisation_id = ? AND status = 'draft'"),
+      lowStockItems,
+      warehouseSummary,
+      recentMovements,
     };
   });
 
@@ -199,7 +322,7 @@ export function buildApp(db: Db, config: Config) {
   app.get('/api/executive/ping', { preHandler: requireAuth('executive_manager') }, async () => ({ portal: 'executive' }));
   app.get('/api/inventory/ping', { preHandler: requireAuth('inventory_manager', 'executive_manager') }, async () => ({ portal: 'inventory' }));
 
-  registerInventoryRoutes(app, db, requireAuth);
+  registerInventoryRoutes(app, db, requireAuth, config.BCRYPT_COST);
 
   return app;
 }

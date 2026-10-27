@@ -34,6 +34,10 @@ export interface LineInput {
   /** In milli-units of `unitId`. Positive for most types; signed non-zero for adjustments; counted quantity (>= 0) for counts. */
   quantityMilli: number;
   toWarehouseId?: number; // transfers only
+  /** Optional unit cost in cents for the entered unit (on receipts). Defaults to the product's base unit cost. */
+  unitCostCents?: number | null;
+  batchNumber?: string | null;
+  expiryDate?: string | null;
 }
 
 export interface PostInput {
@@ -51,7 +55,7 @@ export interface PostResult {
   replayed: boolean;
 }
 
-// ---------- quantity helpers ----------
+// ---------- quantity & currency helpers ----------
 
 /** Converts a decimal quantity (max 3 decimal places) to integer milli-units. */
 export function toMilli(n: number): number {
@@ -62,6 +66,15 @@ export function toMilli(n: number): number {
 }
 export const fromMilli = (m: number) => m / 1000;
 
+/** Converts a decimal currency amount (max 2 decimal places) to integer cents. */
+export function toCents(n: number): number {
+  const c = Math.round(n * 100);
+  if (Math.abs(n * 100 - c) > 1e-6) throw new AppError(400, 'invalid_currency_precision');
+  if (!Number.isSafeInteger(c) || c < 0) throw new AppError(400, 'invalid_unit_cost');
+  return c;
+}
+export const fromCents = (c: number) => c / 100;
+
 /** entered quantity (milli) x factor (milli) -> base milli-units; must be exact. */
 function toBase(quantityMilli: number, factorMilli: number): number {
   const product = quantityMilli * factorMilli;
@@ -69,14 +82,19 @@ function toBase(quantityMilli: number, factorMilli: number): number {
   return product / 1000;
 }
 
+let txDepth = 0;
 export function tx<T>(db: Db, fn: () => T): T {
-  db.exec('BEGIN IMMEDIATE');
+  const outer = txDepth === 0;
+  if (outer) db.exec('BEGIN IMMEDIATE');
+  txDepth++;
   try {
     const result = fn();
-    db.exec('COMMIT');
+    txDepth--;
+    if (outer) db.exec('COMMIT');
     return result;
   } catch (err) {
-    db.exec('ROLLBACK');
+    txDepth--;
+    if (outer) db.exec('ROLLBACK');
     throw err;
   }
 }
@@ -109,8 +127,8 @@ export function canAccessWarehouse(actor: AuthUser, warehouseBranchId: number): 
 }
 
 function loadProduct(db: Db, orgId: number, id: number) {
-  const p = db.prepare('SELECT id, base_unit_id, active FROM products WHERE id = ? AND organisation_id = ?').get(id, orgId) as
-    | { id: number; base_unit_id: number; active: number }
+  const p = db.prepare('SELECT id, base_unit_id, unit_cost_cents, active FROM products WHERE id = ? AND organisation_id = ?').get(id, orgId) as
+    | { id: number; base_unit_id: number; unit_cost_cents: number; active: number }
     | undefined;
   if (!p) throw new AppError(400, 'product_not_found', { productId: id });
   if (!p.active) throw new AppError(400, 'product_inactive', { productId: id });
@@ -136,6 +154,9 @@ interface Row {
   quantityMilli: number;
   factorMilli: number;
   deltaMilli: number;
+  unitCostCents: number;
+  batchNumber: string | null;
+  expiryDate: string | null;
 }
 
 const hashOf = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -152,10 +173,10 @@ function findReplay(db: Db, orgId: number, key: string, hash: string): PostResul
 const insertRow = (db: Db, documentId: number, orgId: number, r: Row) =>
   db
     .prepare(
-      `INSERT INTO stock_movements (document_id, organisation_id, product_id, warehouse_id, unit_id, quantity_milli, factor_milli, base_delta_milli)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO stock_movements (document_id, organisation_id, product_id, warehouse_id, unit_id, quantity_milli, factor_milli, base_delta_milli, unit_cost_cents, batch_number, expiry_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(documentId, orgId, r.productId, r.warehouseId, r.unitId, r.quantityMilli, r.factorMilli, r.deltaMilli);
+    .run(documentId, orgId, r.productId, r.warehouseId, r.unitId, r.quantityMilli, r.factorMilli, r.deltaMilli, r.unitCostCents, r.batchNumber, r.expiryDate);
 
 /** After posting, no touched product/warehouse may be below zero (unless the organisation allows it). */
 function assertNonNegative(db: Db, orgId: number, pairs: Iterable<string>) {
@@ -181,7 +202,14 @@ export function postDocument(db: Db, actor: AuthUser, input: PostInput): PostRes
   if (input.departmentId && type !== 'issue' && type !== 'write_off') throw new AppError(400, 'department_not_allowed');
 
   const orgId = actor.organisationId;
-  const hash = hashOf([type, input.lines.map((l) => [l.productId, l.warehouseId, l.toWarehouseId ?? null, l.unitId, l.quantityMilli]), input.supplierId ?? null, input.departmentId ?? null, input.reference ?? null, reason]);
+  const hash = hashOf([
+    type,
+    input.lines.map((l) => [l.productId, l.warehouseId, l.toWarehouseId ?? null, l.unitId, l.quantityMilli, l.unitCostCents ?? null, l.batchNumber ?? null, l.expiryDate ?? null]),
+    input.supplierId ?? null,
+    input.departmentId ?? null,
+    input.reference ?? null,
+    reason,
+  ]);
 
   return tx(db, () => {
     const replay = findReplay(db, orgId, input.idempotencyKey, hash);
@@ -211,7 +239,31 @@ export function postDocument(db: Db, actor: AuthUser, input: PostInput): PostRes
       if (department && department.branch_id !== from.branch_id) throw new AppError(400, 'department_branch_mismatch');
       const q = line.quantityMilli;
       const base = (n: number) => toBase(Math.abs(n), factor);
-      const row = (warehouseId: number, deltaMilli: number): Row => ({ warehouseId, productId: line.productId, unitId: line.unitId, quantityMilli: Math.abs(q), factorMilli: factor, deltaMilli });
+      const batchNumber = line.batchNumber?.trim() || null;
+      const expiryDate = line.expiryDate?.trim() || null;
+      if (expiryDate && !/^\d{4}-\d{2}-\d{2}$/.test(expiryDate)) throw new AppError(400, 'invalid_expiry_date');
+
+      // Cost per base unit in cents. On receipts, if unitCostCents (for entered unit) is supplied, convert to base-unit cost and update product cost.
+      let baseUnitCostCents = product.unit_cost_cents;
+      if (line.unitCostCents !== undefined && line.unitCostCents !== null) {
+        if (line.unitCostCents < 0) throw new AppError(400, 'invalid_unit_cost');
+        baseUnitCostCents = Math.round((line.unitCostCents * 1000) / factor);
+        if (type === 'receipt') {
+          db.prepare('UPDATE products SET unit_cost_cents = ? WHERE id = ?').run(baseUnitCostCents, product.id);
+        }
+      }
+
+      const row = (warehouseId: number, deltaMilli: number): Row => ({
+        warehouseId,
+        productId: line.productId,
+        unitId: line.unitId,
+        quantityMilli: Math.abs(q),
+        factorMilli: factor,
+        deltaMilli,
+        unitCostCents: baseUnitCostCents,
+        batchNumber,
+        expiryDate,
+      });
 
       switch (type) {
         case 'receipt':
@@ -283,13 +335,123 @@ export function reverseDocument(db: Db, actor: AuthUser, originalId: number, rea
       .run(orgId, reason, originalId, idempotencyKey, hash, actor.id);
     const documentId = Number(doc.lastInsertRowid);
     db.prepare(
-      `INSERT INTO stock_movements (document_id, organisation_id, product_id, warehouse_id, unit_id, quantity_milli, factor_milli, base_delta_milli)
-       SELECT ?, organisation_id, product_id, warehouse_id, unit_id, quantity_milli, factor_milli, -base_delta_milli
+      `INSERT INTO stock_movements (document_id, organisation_id, product_id, warehouse_id, unit_id, quantity_milli, factor_milli, base_delta_milli, unit_cost_cents, batch_number, expiry_date)
+       SELECT ?, organisation_id, product_id, warehouse_id, unit_id, quantity_milli, factor_milli, -base_delta_milli, unit_cost_cents, batch_number, expiry_date
          FROM stock_movements WHERE document_id = ?`,
     ).run(documentId, originalId);
     const touched = db.prepare('SELECT DISTINCT product_id, warehouse_id FROM stock_movements WHERE document_id = ?').all(documentId) as { product_id: number; warehouse_id: number }[];
     assertNonNegative(db, orgId, touched.map((t) => `${t.product_id}:${t.warehouse_id}`));
     return { documentId, replayed: false };
+  });
+}
+
+// ---------- count-sheet approval workflow ----------
+
+export interface CountSheetInput {
+  warehouseId: number;
+  reference?: string | null;
+  notes?: string | null;
+  lines: { productId: number; unitId: number; countedQuantity: number }[];
+}
+
+export function createCountSheet(db: Db, actor: AuthUser, input: CountSheetInput): number {
+  const orgId = actor.organisationId;
+  return tx(db, () => {
+    const wh = loadWarehouse(db, orgId, input.warehouseId);
+    if (!canAccessWarehouse(actor, wh.branch_id)) throw new AppError(403, 'forbidden_warehouse');
+    const seen = new Set<number>();
+    const sheetRes = db
+      .prepare('INSERT INTO count_sheets (organisation_id, warehouse_id, reference, notes, created_by) VALUES (?, ?, ?, ?, ?)')
+      .run(orgId, input.warehouseId, input.reference?.trim() || null, input.notes?.trim() || null, actor.id);
+    const sheetId = Number(sheetRes.lastInsertRowid);
+    const insertLine = db.prepare('INSERT INTO count_sheet_lines (count_sheet_id, product_id, unit_id, counted_milli) VALUES (?, ?, ?, ?)');
+    for (const l of input.lines) {
+      if (seen.has(l.productId)) throw new AppError(400, 'duplicate_count_line');
+      seen.add(l.productId);
+      const product = loadProduct(db, orgId, l.productId);
+      resolveFactor(db, product, l.unitId);
+      const countedMilli = toMilli(l.countedQuantity);
+      if (countedMilli < 0) throw new AppError(400, 'quantity_must_not_be_negative');
+      insertLine.run(sheetId, l.productId, l.unitId, countedMilli);
+    }
+    return sheetId;
+  });
+}
+
+export function getCountSheet(db: Db, orgId: number, sheetId: number) {
+  const sheet = db
+    .prepare(
+      `SELECT cs.id, cs.warehouse_id AS warehouseId, w.name AS warehouseName, cs.reference, cs.notes, cs.status,
+              cs.posted_document_id AS postedDocumentId, cs.created_by AS createdBy, cs.approved_by AS approvedBy,
+              cs.created_at AS createdAt, cs.approved_at AS approvedAt
+         FROM count_sheets cs JOIN warehouses w ON w.id = cs.warehouse_id
+        WHERE cs.id = ? AND cs.organisation_id = ?`,
+    )
+    .get(sheetId, orgId) as
+    | { id: number; warehouseId: number; warehouseName: string; reference: string | null; notes: string | null; status: string; postedDocumentId: number | null; createdBy: number; approvedBy: number | null; createdAt: string; approvedAt: string | null }
+    | undefined;
+  if (!sheet) return null;
+  const rawLines = db
+    .prepare(
+      `SELECT l.id, l.product_id AS productId, p.sku, p.name AS productName, p.base_unit_id AS baseUnitId,
+              l.unit_id AS unitId, u.code AS unit, l.counted_milli
+         FROM count_sheet_lines l JOIN products p ON p.id = l.product_id JOIN units_of_measure u ON u.id = l.unit_id
+        WHERE l.count_sheet_id = ? ORDER BY p.name`,
+    )
+    .all(sheetId) as { id: number; productId: number; sku: string; productName: string; baseUnitId: number; unitId: number; unit: string; counted_milli: number }[];
+  const lines = rawLines.map((l) => {
+    const factorMilli = resolveFactor(db, { id: l.productId, base_unit_id: l.baseUnitId }, l.unitId);
+    const countedBaseMilli = toBase(l.counted_milli, factorMilli);
+    const currentBaseMilli = getBalance(db, orgId, l.productId, sheet.warehouseId);
+    return {
+      id: l.id,
+      productId: l.productId,
+      sku: l.sku,
+      productName: l.productName,
+      unitId: l.unitId,
+      unit: l.unit,
+      countedQuantity: fromMilli(l.counted_milli),
+      countedBaseQuantity: fromMilli(countedBaseMilli),
+      expectedBaseQuantity: fromMilli(currentBaseMilli),
+      varianceBaseQuantity: fromMilli(countedBaseMilli - currentBaseMilli),
+    };
+  });
+  return { ...sheet, lines };
+}
+
+/** Approves a draft count sheet by posting an authoritative 'count' document via postDocument. */
+export function approveCountSheet(db: Db, actor: AuthUser, sheetId: number, idempotencyKey: string): PostResult {
+  if (actor.role !== 'executive_manager') throw new AppError(403, 'forbidden');
+  const orgId = actor.organisationId;
+  return tx(db, () => {
+    const sheet = db
+      .prepare('SELECT id, warehouse_id, reference, status, posted_document_id FROM count_sheets WHERE id = ? AND organisation_id = ?')
+      .get(sheetId, orgId) as { id: number; warehouse_id: number; reference: string | null; status: string; posted_document_id: number | null } | undefined;
+    if (!sheet) throw new AppError(404, 'count_sheet_not_found');
+    if (sheet.status === 'approved' && sheet.posted_document_id) {
+      return { documentId: sheet.posted_document_id, replayed: true };
+    }
+    if (sheet.status !== 'draft') throw new AppError(409, 'count_sheet_not_draft');
+    const lines = db
+      .prepare('SELECT product_id, unit_id, counted_milli FROM count_sheet_lines WHERE count_sheet_id = ? ORDER BY id')
+      .all(sheetId) as { product_id: number; unit_id: number; counted_milli: number }[];
+    const posted = postDocument(db, actor, {
+      type: 'count',
+      reference: sheet.reference ?? `CS-${sheet.id}`,
+      idempotencyKey,
+      lines: lines.map((l) => ({
+        productId: l.product_id,
+        warehouseId: sheet.warehouse_id,
+        unitId: l.unit_id,
+        quantityMilli: l.counted_milli,
+      })),
+    });
+    db.prepare("UPDATE count_sheets SET status = 'approved', posted_document_id = ?, approved_by = ?, approved_at = datetime('now') WHERE id = ?").run(
+      posted.documentId,
+      actor.id,
+      sheetId,
+    );
+    return posted;
   });
 }
 
@@ -308,10 +470,10 @@ export function getDocument(db: Db, orgId: number, id: number) {
   const lines = (db
     .prepare(
       `SELECT id, product_id AS productId, warehouse_id AS warehouseId, unit_id AS unitId,
-              quantity_milli, factor_milli, base_delta_milli
+              quantity_milli, factor_milli, base_delta_milli, unit_cost_cents, batch_number AS batchNumber, expiry_date AS expiryDate
          FROM stock_movements WHERE document_id = ? ORDER BY id`,
     )
-    .all(id) as { id: number; productId: number; warehouseId: number; unitId: number; quantity_milli: number; factor_milli: number; base_delta_milli: number }[]).map((l) => ({
+    .all(id) as { id: number; productId: number; warehouseId: number; unitId: number; quantity_milli: number; factor_milli: number; base_delta_milli: number; unit_cost_cents: number; batchNumber: string | null; expiryDate: string | null }[]).map((l) => ({
     id: l.id,
     productId: l.productId,
     warehouseId: l.warehouseId,
@@ -319,6 +481,9 @@ export function getDocument(db: Db, orgId: number, id: number) {
     quantity: fromMilli(l.quantity_milli),
     factor: fromMilli(l.factor_milli),
     baseChange: fromMilli(l.base_delta_milli),
+    unitCost: fromCents(l.unit_cost_cents),
+    batchNumber: l.batchNumber,
+    expiryDate: l.expiryDate,
   }));
   return { ...doc, lines };
 }
