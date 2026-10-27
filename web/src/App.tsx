@@ -1,0 +1,44 @@
+import type { ReactNode } from 'react';
+import { Navigate, Outlet, Route, Routes } from 'react-router-dom';
+import { portalPath, useAuth } from './auth';
+import type { User } from './api';
+import { Shell } from './components/Shell';
+import { Spinner } from './components/Spinner';
+import { Dashboard } from './pages/Dashboard';
+import { Login } from './pages/Login';
+import { NotFound } from './pages/NotFound';
+
+/** Client-side route guard. The server enforces the same rules; this only provides sensible navigation. */
+export function RequireRole({ roles, children }: { roles: User['role'][]; children?: ReactNode }) {
+  const { user, loading } = useAuth();
+  if (loading) return <Spinner label="Loading" fullPage />;
+  if (!user) return <Navigate to="/login" replace />;
+  if (!roles.includes(user.role)) return <Navigate to={portalPath(user.role)} replace />;
+  return <>{children ?? <Outlet />}</>;
+}
+
+function Home() {
+  const { user, loading } = useAuth();
+  if (loading) return <Spinner label="Loading" fullPage />;
+  return <Navigate to={user ? portalPath(user.role) : '/login'} replace />;
+}
+
+export function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<Home />} />
+      <Route path="/login" element={<Login />} />
+      <Route element={<RequireRole roles={['executive_manager']} />}>
+        <Route path="/executive" element={<Shell portal="executive" />}>
+          <Route index element={<Dashboard />} />
+        </Route>
+      </Route>
+      <Route element={<RequireRole roles={['inventory_manager']} />}>
+        <Route path="/inventory" element={<Shell portal="inventory" />}>
+          <Route index element={<Dashboard />} />
+        </Route>
+      </Route>
+      <Route path="*" element={<NotFound />} />
+    </Routes>
+  );
+}
