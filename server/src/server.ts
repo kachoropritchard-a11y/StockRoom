@@ -7,7 +7,7 @@ import { buildApp } from './app.ts';
 const config = loadConfig();
 const db = openDb(config.DATABASE_PATH);
 migrate(db);
-if (config.NODE_ENV !== 'production') {
+if (config.NODE_ENV !== 'production' && process.env.AUTO_SEED === 'true') {
   try {
     ensureDualDepartmentDemoData(db);
   } catch {

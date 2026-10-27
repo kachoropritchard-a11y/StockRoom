@@ -71,7 +71,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   // ---------- organisation ----------
   app.get('/api/organisation', { preHandler: anyUser }, async (req) => {
     const o = db
-      .prepare('SELECT id, name, allow_negative_stock, enforce_separation_of_duties, po_approval_threshold_cents, currency_code FROM organisations WHERE id = ?')
+      .prepare('SELECT id, name, allow_negative_stock, enforce_separation_of_duties, po_approval_threshold_cents, currency_code, pos_department_id, initialized_at FROM organisations WHERE id = ?')
       .get(req.user!.organisationId) as {
       id: number;
       name: string;
@@ -79,7 +79,14 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       enforce_separation_of_duties: number;
       po_approval_threshold_cents: number;
       currency_code: string;
+      pos_department_id: number | null;
+      initialized_at: string | null;
     };
+    let posDeptName = null;
+    if (o.pos_department_id) {
+      const d = db.prepare('SELECT name FROM departments WHERE id = ?').get(o.pos_department_id) as { name: string } | undefined;
+      posDeptName = d?.name ?? null;
+    }
     return {
       id: o.id,
       name: o.name,
@@ -87,6 +94,9 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       enforceSeparationOfDuties: !!o.enforce_separation_of_duties,
       poApprovalThreshold: fromCents(o.po_approval_threshold_cents ?? 0),
       currencyCode: o.currency_code ?? 'USD',
+      posDepartmentId: o.pos_department_id,
+      posDepartmentName: posDeptName,
+      initializedAt: o.initialized_at,
     };
   });
   app.patch('/api/organisation', { preHandler: exec }, async (req) => {
@@ -97,15 +107,20 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         enforceSeparationOfDuties: z.boolean().optional(),
         poApprovalThreshold: money.optional(),
         currencyCode: z.string().trim().min(3).max(8).optional(),
+        posDepartmentId: id.nullable().optional(),
       })
       .strict()
       .parse(req.body);
+    if (b.posDepartmentId !== undefined && b.posDepartmentId !== null) {
+      owned('departments', b.posDepartmentId, req.user!.organisationId, 'department_not_found');
+    }
     update(db, 'organisations', req.user!.organisationId, {
       name: b.name,
       allow_negative_stock: flag(b.allowNegativeStock),
       enforce_separation_of_duties: flag(b.enforceSeparationOfDuties),
       po_approval_threshold_cents: b.poApprovalThreshold !== undefined ? toCents(b.poApprovalThreshold) : undefined,
       currency_code: b.currencyCode,
+      pos_department_id: b.posDepartmentId,
     });
     recordAudit(db, req.user!, 'org.policy_update', 'organisation', req.user!.organisationId, b);
     return { ok: true };
@@ -1813,18 +1828,45 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     recordAudit(db, req.user!, 'report.export', 'report', q.section, { format: q.format, rowCount: rows.length });
 
     if (q.format === 'json') {
-      return { section: q.section, format: 'json', generatedAt: new Date().toISOString(), items: rows };
+      return {
+        system: 'StockRoom ZW',
+        reportTitle: `Formal Inventory Report - ${q.section.toUpperCase()}`,
+        generatedAt: new Date().toISOString(),
+        generatedBy: req.user!.name,
+        section: q.section,
+        format: 'json',
+        rowCount: rows.length,
+        items: rows,
+      };
     }
 
-    const headers = rows.length > 0 ? Object.keys(rows[0]!) : ['section'];
+    const orgRow = db.prepare('SELECT name FROM organisations WHERE id = ?').get(orgId) as { name: string } | undefined;
+    const orgNameStr = orgRow?.name ?? 'StockRoom Enterprise';
+    const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
     const escapeCsv = (val: unknown) => {
       const s = val === null || val === undefined ? '' : String(val);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const csvLines = [headers.join(','), ...rows.map((r) => headers.map((h) => escapeCsv(r[h])).join(','))];
+
+    const headers = rows.length > 0 ? Object.keys(rows[0]!) : ['section'];
+    const formalBanner = [
+      `"========================================================================================="`,
+      `"ORGANISATION: ${orgNameStr}"`,
+      `"REPORT: StockRoom Formal Audit & Ledger Export (${q.section.toUpperCase()})"`,
+      `"EXPORTED BY: ${req.user!.name} (${req.user!.role})"`,
+      `"GENERATED AT: ${timestamp} CAT"`,
+      `"VERIFICATION: AUTHORISED SYSTEM AUDIT TRAIL RECORDED"`,
+      `"========================================================================================="`,
+      ``,
+    ];
+
+    const dataLines = [headers.join(','), ...rows.map((r) => headers.map((h) => escapeCsv(r[h])).join(','))];
+    const fullCsv = [...formalBanner, ...dataLines].join('\n');
+
     reply.header('content-type', 'text/csv; charset=utf-8');
-    reply.header('content-disposition', `attachment; filename="stockroom-${q.section}.csv"`);
-    return reply.send(csvLines.join('\n'));
+    reply.header('content-disposition', `attachment; filename="StockRoom-${q.section}-${new Date().toISOString().slice(0, 10)}.csv"`);
+    return reply.send(fullCsv);
   });
 
   // ---------- Stage 5: Safe File Uploads (Validated Document Attachments) ----------
@@ -2338,11 +2380,60 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       );
     }
 
+    // Generate ZIMRA Fiscalization record for this sale
+    let fiscalReceipt: Record<string, unknown> | null = null;
+    if (!posted.replayed && posted.documentId) {
+      const fiscalReceiptNo = `FR-${Date.now().toString().slice(-6)}-${Math.floor(100 + Math.random() * 900)}`;
+      const orgRow = db.prepare('SELECT id, name FROM organisations WHERE id = ?').get(orgId) as { id: number; name: string } | undefined;
+      const deviceId = 'ESD-ZW-88421';
+      const tinNumber = '1002948201';
+      const vatNumber = '10029482';
+      const totalCents = totalSaleCents;
+      const tax15Cents = Math.round((totalCents * 15) / 115);
+      const subtotalCents = totalCents - tax15Cents;
+      const verificationUrl = `https://fdms.zimra.co.zw/verify?tin=${tinNumber}&rcpt=${fiscalReceiptNo}&amt=${fromCents(totalCents)}`;
+      const qrPayload = `ZIMRA*${tinNumber}*${vatNumber}*${deviceId}*${fiscalReceiptNo}*${fromCents(totalCents)}*${fromCents(tax15Cents)}*${new Date().toISOString()}`;
+
+      db.prepare(
+        `INSERT INTO fiscal_receipts
+          (organisation_id, document_id, receipt_number, fiscal_day, device_id, vat_number, tin_number, qr_code_payload, verification_url, tax_15_cents, tax_0_cents, subtotal_cents, total_cents, currency_code, cashier_name, department_name)
+         VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'USD', ?, ?)`
+      ).run(
+        orgId,
+        posted.documentId,
+        fiscalReceiptNo,
+        deviceId,
+        vatNumber,
+        tinNumber,
+        qrPayload,
+        verificationUrl,
+        tax15Cents,
+        subtotalCents,
+        totalCents,
+        req.user!.name,
+        b.departmentName,
+      );
+
+      fiscalReceipt = {
+        receiptNumber: fiscalReceiptNo,
+        deviceId,
+        tinNumber,
+        vatNumber,
+        verificationUrl,
+        qrCodePayload: qrPayload,
+        totalUsd: fromCents(totalCents),
+        tax15Usd: fromCents(tax15Cents),
+        subtotalUsd: fromCents(subtotalCents),
+        fiscalTime: new Date().toISOString(),
+      };
+    }
+
     return reply.code(posted.replayed ? 200 : 201).send({
       replayed: posted.replayed,
       document: doc,
       totalSaleUsd: fromCents(totalSaleCents),
       issuedVoucherCode,
+      fiscalReceipt,
     });
   });
 
@@ -2702,5 +2793,259 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       pin_code: b.pinCode,
     });
     return { ok: true };
+  });
+
+  // ---------- Stage 8: System Reset, Quick Setup & POS Fast Catalog ----------
+
+  // Reset entire database to empty scratch state (leaves only structure & executive user)
+  app.post('/api/system/reset', { preHandler: exec }, async (req) => {
+    const orgId = req.user!.organisationId;
+    db.exec('PRAGMA foreign_keys = OFF;');
+    try {
+      // Clear transactional tables
+      db.prepare('DELETE FROM document_attachments WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM fiscal_receipts WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM change_vouchers WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM till_shifts WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM paid_uncollected_items WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM customer_credit_accounts WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM supplier_credit_ledgers WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM yield_batches WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM stock_movements WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM stock_documents WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM purchase_order_receipts').run();
+      db.prepare('DELETE FROM purchase_order_lines').run();
+      db.prepare('DELETE FROM purchase_orders WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM requisitions WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM count_sheet_lines').run();
+      db.prepare('DELETE FROM count_sheets WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM product_packagings').run();
+      db.prepare('DELETE FROM products WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM suppliers WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM categories WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM departments WHERE branch_id IN (SELECT id FROM branches WHERE organisation_id = ?)').run(orgId);
+      db.prepare('DELETE FROM warehouses WHERE branch_id IN (SELECT id FROM branches WHERE organisation_id = ?)').run(orgId);
+      db.prepare('DELETE FROM branches WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM staff_pins WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM system_backups WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM role_permissions WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM audit_logs WHERE organisation_id = ?').run(orgId);
+
+      // Re-create default clean branch, main warehouse, and starter units if needed
+      const branchRes = db.prepare('INSERT INTO branches (organisation_id, name, city) VALUES (?, ?, ?)').run(orgId, 'Main Branch', 'Harare');
+      const branchId = Number(branchRes.lastInsertRowid);
+      db.prepare('INSERT INTO warehouses (branch_id, name) VALUES (?, ?)').run(branchId, 'Main Store & Yard');
+      const deptRes = db.prepare('INSERT INTO departments (branch_id, name) VALUES (?, ?)').run(branchId, 'General Storefloor');
+      const defaultDeptId = Number(deptRes.lastInsertRowid);
+
+      db.prepare("UPDATE organisations SET pos_department_id = ?, initialized_at = NULL WHERE id = ?").run(defaultDeptId, orgId);
+
+      recordAudit(db, req.user!, 'system.reset', 'organisation', orgId, { resetToScratch: true });
+    } finally {
+      db.exec('PRAGMA foreign_keys = ON;');
+    }
+    return { ok: true, message: 'All demo products, orders, sales, and movements have been cleared. Ready to initialize from scratch.' };
+  });
+
+  // Fast Setup Wizard: Initialize organisation name, initial departments, warehouses, and seed starter stock or template products
+  app.post('/api/system/initialize', { preHandler: exec }, async (req) => {
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        organisationName: z.string().trim().min(2).max(120),
+        currencyCode: z.enum(['USD', 'ZiG', 'ZAR']).default('USD'),
+        branchName: z.string().trim().min(2).max(80).default('Main Branch'),
+        city: z.string().trim().max(60).default('Harare'),
+        departments: z.array(z.string().trim().min(1).max(60)).min(1),
+        posDepartmentName: z.string().trim().min(1).max(60),
+        starterProducts: z
+          .array(
+            z.object({
+              sku: z.string().trim().min(1).max(40),
+              name: z.string().trim().min(1).max(120),
+              department: z.string().trim().min(1).max(60),
+              unitCost: money.default(1),
+              sellingPrice: money.default(1.5),
+              vatCategory: z.enum(['standard_15', 'zero_rated', 'exempt']).default('standard_15'),
+              initialStock: qty.min(0).default(0),
+            })
+          )
+          .optional(),
+      })
+      .strict()
+      .parse(req.body);
+
+    db.prepare("UPDATE organisations SET name = ?, currency_code = ?, initialized_at = datetime('now') WHERE id = ?").run(
+      b.organisationName,
+      b.currencyCode,
+      orgId
+    );
+
+    // Ensure branch exists
+    let branchRow = db.prepare('SELECT id FROM branches WHERE organisation_id = ? AND name = ?').get(orgId, b.branchName) as { id: number } | undefined;
+    if (!branchRow) {
+      const br = db.prepare('INSERT INTO branches (organisation_id, name, city) VALUES (?, ?, ?)').run(orgId, b.branchName, b.city);
+      branchRow = { id: Number(br.lastInsertRowid) };
+    }
+    const branchId = branchRow.id;
+
+    // Ensure warehouse exists
+    let whRow = db.prepare('SELECT id FROM warehouses WHERE branch_id = ? AND name = ?').get(branchId, 'Main Store & Yard') as { id: number } | undefined;
+    if (!whRow) {
+      const wh = db.prepare('INSERT INTO warehouses (branch_id, name) VALUES (?, ?)').run(branchId, 'Main Store & Yard');
+      whRow = { id: Number(wh.lastInsertRowid) };
+    }
+    const warehouseId = whRow.id;
+
+    // Ensure units of measure exist
+    const addUnit = db.prepare('INSERT OR IGNORE INTO units_of_measure (organisation_id, code, name) VALUES (?, ?, ?)');
+    for (const [code, label] of [['each', 'Each'], ['kg', 'Kilogram'], ['l', 'Litre'], ['box', 'Box'], ['carton', 'Carton']]) {
+      addUnit.run(orgId, code, label);
+    }
+    const eachUnitRow = db.prepare("SELECT id FROM units_of_measure WHERE organisation_id = ? AND code = 'each'").get(orgId) as { id: number };
+    const eachUnitId = eachUnitRow?.id ?? 1;
+
+    // Insert departments
+    let posDeptId: number | null = null;
+    for (const deptName of b.departments) {
+      let dRow = db.prepare('SELECT id FROM departments WHERE branch_id = ? AND name = ?').get(branchId, deptName) as { id: number } | undefined;
+      if (!dRow) {
+        const dRes = db.prepare('INSERT INTO departments (branch_id, name) VALUES (?, ?)').run(branchId, deptName);
+        dRow = { id: Number(dRes.lastInsertRowid) };
+      }
+      if (deptName === b.posDepartmentName || !posDeptId) {
+        posDeptId = dRow.id;
+      }
+    }
+
+    if (posDeptId) {
+      db.prepare('UPDATE organisations SET pos_department_id = ? WHERE id = ?').run(posDeptId, orgId);
+    }
+
+    // Insert starter products if provided
+    if (b.starterProducts && b.starterProducts.length > 0) {
+      for (const p of b.starterProducts) {
+        const dRow = db.prepare('SELECT id FROM departments WHERE branch_id = ? AND name = ?').get(branchId, p.department) as { id: number } | undefined;
+        const deptId = dRow?.id ?? posDeptId;
+        const pRes = db
+          .prepare(
+            `INSERT OR IGNORE INTO products
+              (organisation_id, sku, name, base_unit_id, unit_cost_cents, selling_price_cents, wholesale_price_cents, vat_category, department_id, active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+          )
+          .run(
+            orgId,
+            p.sku,
+            p.name,
+            eachUnitId,
+            toCents(p.unitCost),
+            toCents(p.sellingPrice),
+            toCents(p.sellingPrice * 0.9),
+            p.vatCategory,
+            deptId
+          );
+
+        const prodId = Number(pRes.lastInsertRowid);
+        if (prodId > 0 && p.initialStock > 0) {
+          postDocument(db, req.user!, {
+            type: 'receipt',
+            reference: 'INIT-STOCK-001',
+            reason: 'Opening stock count during system initialization',
+            idempotencyKey: `init-stock-${prodId}-${Date.now()}`,
+            lines: [
+              {
+                productId: prodId,
+                warehouseId,
+                unitId: eachUnitId,
+                quantityMilli: toMilli(p.initialStock),
+                unitCostCents: toCents(p.unitCost),
+              },
+            ],
+          });
+        }
+      }
+    }
+
+    recordAudit(db, req.user!, 'system.initialize', 'organisation', orgId, {
+      name: b.organisationName,
+      currency: b.currencyCode,
+      departments: b.departments,
+      posDepartmentName: b.posDepartmentName,
+    });
+
+    return { ok: true, posDepartmentId: posDeptId };
+  });
+
+  // Fast POS Catalog endpoint: returns active products for the executive-assigned POS department with real-time stock
+  app.get('/api/pos/catalog', { preHandler: staff }, async (req) => {
+    const orgId = req.user!.organisationId;
+    const orgRow = db.prepare('SELECT pos_department_id, currency_code FROM organisations WHERE id = ?').get(orgId) as {
+      pos_department_id: number | null;
+      currency_code: string;
+    } | undefined;
+
+    const posDeptId = orgRow?.pos_department_id ?? null;
+    let deptName = 'All Departments';
+    if (posDeptId) {
+      const d = db.prepare('SELECT name FROM departments WHERE id = ?').get(posDeptId) as { name: string } | undefined;
+      if (d) deptName = d.name;
+    }
+
+    // Select products filtered by pos_department_id if set, along with current stock balance
+    const whereDept = posDeptId ? 'AND (p.department_id = ? OR p.department_id IS NULL)' : '';
+    const params = posDeptId ? [orgId, posDeptId] : [orgId];
+
+    const rows = db
+      .prepare(
+        `SELECT p.id, p.sku, p.name, p.unit_cost_cents, p.selling_price_cents, p.wholesale_price_cents,
+                p.vat_category AS vatCategory, p.department_id AS departmentId,
+                d.name AS departmentName, u.id AS unitId, u.code AS unitCode,
+                COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS stock_milli
+           FROM products p
+           JOIN units_of_measure u ON u.id = p.base_unit_id
+           LEFT JOIN departments d ON d.id = p.department_id
+          WHERE p.organisation_id = ? AND p.active = 1 ${whereDept}
+          ORDER BY p.name ASC`
+      )
+      .all(...params) as {
+      id: number;
+      sku: string;
+      name: string;
+      unit_cost_cents: number;
+      selling_price_cents: number;
+      wholesale_price_cents: number;
+      vatCategory: string;
+      departmentId: number | null;
+      departmentName: string | null;
+      unitId: number;
+      unitCode: string;
+      stock_milli: number;
+    }[];
+
+    const warehouses = db.prepare('SELECT id, name FROM warehouses WHERE branch_id IN (SELECT id FROM branches WHERE organisation_id = ?) AND active = 1').all(orgId) as { id: number; name: string }[];
+    const allDepartments = db.prepare('SELECT id, name FROM departments WHERE branch_id IN (SELECT id FROM branches WHERE organisation_id = ?) AND active = 1').all(orgId) as { id: number; name: string }[];
+
+    return {
+      posDepartmentId: posDeptId,
+      posDepartmentName: deptName,
+      currencyCode: orgRow?.currency_code ?? 'USD',
+      defaultWarehouseId: warehouses[0]?.id ?? 1,
+      warehouses,
+      departments: allDepartments,
+      products: rows.map((r) => ({
+        id: r.id,
+        sku: r.sku,
+        name: r.name,
+        unitId: r.unitId,
+        unitCode: r.unitCode,
+        unitCost: fromCents(r.unit_cost_cents),
+        sellingPrice: fromCents(r.selling_price_cents || Math.round(r.unit_cost_cents * 1.3)),
+        wholesalePrice: fromCents(r.wholesale_price_cents || r.selling_price_cents),
+        vatCategory: r.vatCategory,
+        departmentId: r.departmentId,
+        departmentName: r.departmentName ?? 'General',
+        currentStock: fromMilli(r.stock_milli),
+      })),
+    };
   });
 }

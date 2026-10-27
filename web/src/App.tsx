@@ -15,6 +15,7 @@ import { Reports } from './pages/Reports';
 import { Transfers } from './pages/Transfers';
 import { Users } from './pages/Users';
 import { Warehouses } from './pages/Warehouses';
+import { Pos } from './pages/Pos';
 import { ZimProvider } from './zimContext';
 
 /** Client-side route guard. The server enforces the same rules; this only provides sensible navigation. */
@@ -41,6 +42,7 @@ export function App() {
         <Route element={<RequireRole roles={['executive_manager']} />}>
           <Route path="/executive" element={<Shell portal="executive" />}>
             <Route index element={<Dashboard />} />
+            <Route path="pos" element={<Pos />} />
             <Route path="products" element={<Products />} />
             <Route path="operations" element={<Operations />} />
             <Route path="procurement" element={<Procurement />} />
@@ -54,6 +56,7 @@ export function App() {
         <Route element={<RequireRole roles={['inventory_manager']} />}>
           <Route path="/inventory" element={<Shell portal="inventory" />}>
             <Route index element={<Dashboard />} />
+            <Route path="pos" element={<Pos />} />
             <Route path="products" element={<Products />} />
             <Route path="operations" element={<Operations />} />
             <Route path="procurement" element={<Procurement />} />

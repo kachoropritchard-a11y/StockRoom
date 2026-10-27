@@ -125,6 +125,9 @@ export function Reports() {
           </span>
         </div>
         <div className="quick-actions">
+          <button type="button" className="btn btn-outline" onClick={() => window.print()} title="Print formal executive report">
+            🖨️ Formal Printout
+          </button>
           <select
             aria-label="Export dataset"
             value={exportSection}
@@ -136,7 +139,7 @@ export function Reports() {
             {user?.role === 'executive_manager' && <option value="audit_logs">Executive Audit Logs</option>}
           </select>
           <button type="button" className="btn btn-outline" onClick={() => handleAuthorisedExport('csv')}>
-            ⬇ Export CSV
+            ⬇ Export Professional CSV
           </button>
           <button type="button" className="btn btn-outline" onClick={() => handleAuthorisedExport('json')}>
             ⬇ Export JSON

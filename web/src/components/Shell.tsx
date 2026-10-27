@@ -4,6 +4,7 @@ import { api, type NotificationItem } from '../api';
 import { portalPath, useAuth } from '../auth';
 import { useZim, type CurrencyCode, type VernacularMode } from '../zimContext';
 import { QuickTransferModal } from './QuickTransferModal';
+import { Logo } from './Logo';
 
 interface NavItem {
   to: string;
@@ -18,14 +19,15 @@ interface NavItem {
 function buildNavItems(base: string): NavItem[] {
   return [
     { to: `${base}`, label: '1. Dashboard', short: 'Dashboard', keyHint: 'Alt+1', end: true, shona: 'Mufananidzo Webhizinesi', ndebele: 'Isimo Sebhizimusi' },
-    { to: `${base}/products`, label: '2. Products', short: 'Products', keyHint: 'Alt+2', end: false, shona: 'Zvinhu Zviri Muchitoro', ndebele: 'Impahla Yesitolo' },
-    { to: `${base}/operations`, label: '3. Stock Movements', short: 'Movements', keyHint: 'Alt+3', end: false, shona: 'Kubuda Nekupinda', ndebele: 'Ukuphuma Lokungena' },
-    { to: `${base}/procurement`, label: '4. Receiving (GRN)', short: 'Receiving', keyHint: 'Alt+4', end: false, shona: 'Kugamuchira Zvinhu', ndebele: 'Ukuthola Impahla' },
-    { to: `${base}/transfers`, label: '5. Transfers & Yield', short: 'Transfers', keyHint: 'Alt+5', end: false, shona: 'Kufambisa & Kupatsanura', ndebele: 'Ukuthutha Impahla' },
-    { to: `${base}/warehouses`, label: '6. Departments & Credit', short: 'Departments', keyHint: 'Alt+6', end: false, shona: 'Matura & Chikwereti', ndebele: 'Izigaba & Izikwelede' },
-    { to: `${base}/reports`, label: '7. Reports & ZIMRA VAT', short: 'Reports', keyHint: 'Alt+7', end: false, shona: 'Magwaro eZIMRA', ndebele: 'Imibiko yeZIMRA' },
-    { to: `${base}/users`, label: '8. Users & Fast PINs', short: 'Users', keyHint: 'Alt+8', end: false, shona: 'Vashandi & maPIN', ndebele: 'Izisebenzi & ama-PIN' },
-    { to: `${base}/organisation`, label: '9. Settings & Governance', short: 'Settings', keyHint: 'Alt+9', end: false, shona: 'Mitemo & Mitengo yeMari', ndebele: 'Izilungiselelo' },
+    { to: `${base}/pos`, label: '2. POS Fast Counter', short: 'POS', keyHint: 'Alt+2', end: false, shona: 'Kutengesa Kwepakaunda', ndebele: 'Ukuthengisa Esitolo' },
+    { to: `${base}/products`, label: '3. Products', short: 'Products', keyHint: 'Alt+3', end: false, shona: 'Zvinhu Zviri Muchitoro', ndebele: 'Impahla Yesitolo' },
+    { to: `${base}/operations`, label: '4. Stock Movements', short: 'Movements', keyHint: 'Alt+4', end: false, shona: 'Kubuda Nekupinda', ndebele: 'Ukuphuma Lokungena' },
+    { to: `${base}/procurement`, label: '5. Receiving (GRN)', short: 'Receiving', keyHint: 'Alt+5', end: false, shona: 'Kugamuchira Zvinhu', ndebele: 'Ukuthola Impahla' },
+    { to: `${base}/transfers`, label: '6. Transfers & Yield', short: 'Transfers', keyHint: 'Alt+6', end: false, shona: 'Kufambisa & Kupatsanura', ndebele: 'Ukuthutha Impahla' },
+    { to: `${base}/warehouses`, label: '7. Departments & Credit', short: 'Departments', keyHint: 'Alt+7', end: false, shona: 'Matura & Chikwereti', ndebele: 'Izigaba & Izikwelede' },
+    { to: `${base}/reports`, label: '8. Reports & ZIMRA VAT', short: 'Reports', keyHint: 'Alt+8', end: false, shona: 'Magwaro eZIMRA', ndebele: 'Imibiko yeZIMRA' },
+    { to: `${base}/users`, label: '9. Users & Fast PINs', short: 'Users', keyHint: 'Alt+9', end: false, shona: 'Vashandi & maPIN', ndebele: 'Izisebenzi & ama-PIN' },
+    { to: `${base}/organisation`, label: '10. Settings & Reset', short: 'Settings', keyHint: 'Alt+0', end: false, shona: 'Mitemo & Kutanga Patsva', ndebele: 'Izilungiselelo' },
   ];
 }
 
@@ -132,14 +134,10 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
     <div className={`shell${collapsed ? ' is-collapsed' : ''}${drawer ? ' drawer-open' : ''}`}>
       <a className="skip-link" href="#main">Skip to main content</a>
 
-      {/* TIER 1: Collapsible Left Sidebar with 9 Core Modules + ZESA Load-Shedding Offline Status Widget */}
+      {/* TIER 1: Collapsible Left Sidebar with 10 Core Modules + ZESA Load-Shedding Offline Status Widget */}
       <aside className="sidebar" aria-label="Primary navigation">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true" />
-          <div className="brand-text-col">
-            <span className="brand-name">GREAT ZIMBABWE</span>
-            <span className="brand-sub">{portalTitle}</span>
-          </div>
+        <div className="brand" style={{ padding: '0.75rem 1rem' }}>
+          <Logo size={36} variant="full" />
         </div>
         <div className="denderedzwa-frieze sidebar-frieze" aria-hidden="true" />
 
@@ -216,7 +214,7 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
             ☰
           </button>
           <div className="topbar-brand-group">
-            <strong className="topbar-ops-title">ZIM-STOCKROOM SME</strong>
+            <strong className="topbar-ops-title">StockRoom ZW</strong>
             <span className="live-pill" aria-label="Live ledger active">● LIVE</span>
           </div>
 

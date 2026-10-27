@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { Navigate } from 'react-router-dom';
 import { ApiError } from '../api';
 import { portalPath, useAuth } from '../auth';
+import { Logo } from '../components/Logo';
 
 const messages: Record<string, string> = {
   invalid_credentials: 'Incorrect email, password, or 4-digit staff PIN.',
@@ -45,10 +46,9 @@ export function Login() {
 
   return (
     <div className="login-page">
-      <form className="card login-card" onSubmit={submit} noValidate>
-        <div className="brand brand-dark">
-          <span className="brand-mark" aria-hidden="true" />
-          <span className="brand-name">Stockroom ZW</span>
+      <form className="card login-card animate-scale-up" onSubmit={submit} noValidate>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1.25rem' }}>
+          <Logo size={48} variant="full" />
         </div>
         <h1>Sign in</h1>
         <p className="muted" style={{ marginTop: '-0.25rem', fontSize: '0.84rem' }}>

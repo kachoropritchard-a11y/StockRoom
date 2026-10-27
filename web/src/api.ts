@@ -84,6 +84,9 @@ export interface OrganisationSettings {
   enforceSeparationOfDuties: boolean;
   poApprovalThreshold: number;
   currencyCode: string;
+  posDepartmentId?: number | null;
+  posDepartmentName?: string | null;
+  initializedAt?: string | null;
 }
 
 export interface GranularPermissionItem {
@@ -635,6 +638,7 @@ export const api = {
     enforceSeparationOfDuties?: boolean;
     poApprovalThreshold?: number;
     currencyCode?: string;
+    posDepartmentId?: number | null;
   }) => request<{ ok: true }>('/api/organisation', { method: 'PATCH', body: JSON.stringify(body) }),
   verifyLedger: () => request<{ ok: boolean; problems: { check: string; detail: string }[] }>('/api/stock/verify'),
 
@@ -862,7 +866,24 @@ export const api = {
     },
     key = newIdempotencyKey(),
   ) =>
-    request<{ replayed: boolean; document: { id: number }; totalSaleUsd: number; issuedVoucherCode: string | null }>(
+    request<{
+      replayed: boolean;
+      document: { id: number };
+      totalSaleUsd: number;
+      issuedVoucherCode: string | null;
+      fiscalReceipt?: {
+        receiptNumber: string;
+        deviceId: string;
+        tinNumber: string;
+        vatNumber: string;
+        verificationUrl: string;
+        qrCodePayload: string;
+        totalUsd: number;
+        tax15Usd: number;
+        subtotalUsd: number;
+        fiscalTime: string;
+      } | null;
+    }>(
       '/api/sme/counter-sale',
       {
         method: 'POST',
@@ -999,4 +1020,47 @@ export const api = {
     request<{ section: string; format: string; generatedAt: string; items: Record<string, unknown>[] }>(
       `/api/reports/export?section=${encodeURIComponent(section)}&format=json`,
     ),
+
+  // Stage 8: System Reset, Quick Setup & POS Fast Catalog
+  resetSystemData: () => request<{ ok: true; message: string }>('/api/system/reset', { method: 'POST', body: JSON.stringify({}) }),
+  initializeSystem: (body: {
+    organisationName: string;
+    currencyCode: 'USD' | 'ZiG' | 'ZAR';
+    branchName: string;
+    city: string;
+    departments: string[];
+    posDepartmentName: string;
+    starterProducts?: {
+      sku: string;
+      name: string;
+      department: string;
+      unitCost: number;
+      sellingPrice: number;
+      vatCategory: 'standard_15' | 'zero_rated' | 'exempt';
+      initialStock: number;
+    }[];
+  }) => request<{ ok: true; posDepartmentId: number | null }>('/api/system/initialize', { method: 'POST', body: JSON.stringify(body) }),
+  posCatalog: () =>
+    request<{
+      posDepartmentId: number | null;
+      posDepartmentName: string;
+      currencyCode: string;
+      defaultWarehouseId: number;
+      warehouses: { id: number; name: string }[];
+      departments: { id: number; name: string }[];
+      products: {
+        id: number;
+        sku: string;
+        name: string;
+        unitId: number;
+        unitCode: string;
+        unitCost: number;
+        sellingPrice: number;
+        wholesalePrice: number;
+        vatCategory: 'standard_15' | 'zero_rated' | 'exempt';
+        departmentId: number | null;
+        departmentName: string;
+        currentStock: number;
+      }[];
+    }>('/api/pos/catalog'),
 };

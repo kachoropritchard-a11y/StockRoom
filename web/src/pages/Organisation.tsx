@@ -13,7 +13,9 @@ import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs
 import { Spinner } from '../components/Spinner';
 import { useZim, type VernacularMode } from '../zimContext';
 
-type SettingsSubTab = 'rates' | 'fdms' | 'offline';
+import { SetupWizardModal } from '../components/SetupWizardModal';
+
+type SettingsSubTab = 'rates' | 'fdms' | 'offline' | 'reset';
 
 export function Organisation() {
   const { user: currentUser } = useAuth();
@@ -62,16 +64,27 @@ export function Organisation() {
   const [serialInput, setSerialInput] = useState(fdms.serialNo);
   const [vatPctInput, setVatPctInput] = useState(String(fdms.standardVatPct));
 
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [resetConfirm, setResetConfirm] = useState('');
+  const [busyReset, setBusyReset] = useState(false);
+  const [departmentsList, setDepartmentsList] = useState<{ id: number; name: string }[]>([]);
+  const [selectedPosDeptId, setSelectedPosDeptId] = useState<number | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const oRes = await api.organisation().catch(() => null);
+      const [oRes, deptRes] = await Promise.all([
+        api.organisation().catch(() => null),
+        api.departments().catch(() => []),
+      ]);
       if (oRes) {
         setOrg(oRes);
         setOrgName(oRes.name);
         setOrgCurrency(oRes.currencyCode || 'USD');
         setPoThreshold(String(oRes.poApprovalThreshold ?? 0));
+        setSelectedPosDeptId(oRes.posDepartmentId ?? null);
       }
+      setDepartmentsList(deptRes);
       if (isExec) {
         const [appRes, permRes, logRes, hRes, bkRes] = await Promise.all([
           api.approvals(),
@@ -182,6 +195,11 @@ export function Organisation() {
       label: '3. Offline Sync & Vernacular Preferences',
       badge: backups.length || undefined,
       purpose: 'Configure ChiShona / IsiNdebele subtitles, Visual Easy Mode, ZESA load-shedding offline resilience, and SHA-256 backups.',
+    },
+    {
+      key: 'reset',
+      label: '4. System Setup & Reset to Scratch',
+      purpose: 'Initialize business profile with the Setup Wizard, bind POS department, or clear all data to test from scratch.',
     },
   ];
 
@@ -515,8 +533,132 @@ export function Organisation() {
               </div>
             </div>
           )}
+
+          {/* SUB-MENU 4: System Setup & Reset to Scratch */}
+          {activeTab === 'reset' && (
+            <div id="organisation-panel-reset" role="tabpanel" aria-labelledby="organisation-tab-reset">
+              <div className="dashboard-panels">
+                {/* Linked POS Department Control */}
+                <div className="subcard" style={{ borderLeft: '4px solid var(--zim-green-700)' }}>
+                  <h3>POS Department Binding (Executive Selection)</h3>
+                  <p className="muted" style={{ fontSize: '0.84rem' }}>
+                    Select which department the storefloor counter POS is assigned to. Counter staff opening the POS will automatically load items and issue fiscal receipts for this department.
+                  </p>
+                  <div className="form-grid">
+                    <label>
+                      Active POS Department
+                      <select
+                        value={selectedPosDeptId ?? ''}
+                        onChange={async (e) => {
+                          const val = e.target.value ? Number(e.target.value) : null;
+                          setSelectedPosDeptId(val);
+                          try {
+                            await api.updateOrganisation({ posDepartmentId: val });
+                            setMsg('✓ POS Counter linked to selected department.');
+                            await load();
+                          } catch (err) {
+                            setError((err as Error).message);
+                          }
+                        }}
+                      >
+                        <option value="">-- All Departments (Storewide POS) --</option>
+                        {departmentsList.map((d) => (
+                          <option key={d.id} value={d.id}>
+                            {d.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div style={{ marginTop: '0.75rem', fontSize: '0.82rem' }}>
+                    Current Binding: <strong>{org?.posDepartmentName ?? 'All Departments'}</strong>
+                  </div>
+                </div>
+
+                {/* System Initialization Wizard Trigger */}
+                <div className="subcard" style={{ borderLeft: '4px solid var(--zim-gold-500)' }}>
+                  <h3>System Initialization &amp; Setup Wizard</h3>
+                  <p className="muted" style={{ fontSize: '0.84rem' }}>
+                    Launch the guided step-by-step Setup Wizard to configure business name, branch locations, departments, and seed verified starter products.
+                  </p>
+                  <div style={{ marginTop: '1rem' }}>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => setWizardOpen(true)}
+                      style={{ padding: '0.65rem 1.25rem', fontWeight: 700 }}
+                    >
+                      🚀 Launch StockRoom Setup Wizard
+                    </button>
+                  </div>
+                </div>
+
+                {/* Danger Zone: Reset to Scratch */}
+                {isExec && (
+                  <div className="subcard" style={{ borderLeft: '4px solid var(--danger)', gridColumn: '1 / -1' }}>
+                    <h3 style={{ color: 'var(--danger)' }}>⚠️ Factory Reset: Clear All Information to Scratch</h3>
+                    <p className="muted" style={{ fontSize: '0.84rem' }}>
+                      Wipe all demo inventory items, orders, sales transactions, movements, debtors, and backups so you can test the system completely from a clean scratch slate.
+                    </p>
+                    <div style={{ maxWidth: '480px', marginTop: '0.75rem' }}>
+                      <label style={{ fontSize: '0.82rem', display: 'block', marginBottom: '0.5rem' }}>
+                        Type <code>RESET-SCRATCH</code> below to confirm wiping all data:
+                        <input
+                          type="text"
+                          value={resetConfirm}
+                          onChange={(e) => setResetConfirm(e.target.value)}
+                          placeholder="RESET-SCRATCH"
+                          style={{ marginTop: '0.25rem' }}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="btn btn-sm"
+                        disabled={resetConfirm !== 'RESET-SCRATCH' || busyReset}
+                        style={{
+                          background: 'var(--danger)',
+                          color: '#fff',
+                          fontWeight: 700,
+                          cursor: resetConfirm === 'RESET-SCRATCH' ? 'pointer' : 'not-allowed',
+                          opacity: resetConfirm === 'RESET-SCRATCH' ? 1 : 0.5,
+                        }}
+                        onClick={async () => {
+                          if (!window.confirm('Are you ABSOLUTELY SURE you want to clear all data and test from scratch?')) return;
+                          setBusyReset(true);
+                          setError('');
+                          setMsg('');
+                          try {
+                            const res = await api.resetSystemData();
+                            setResetConfirm('');
+                            setMsg(`✓ ${res.message}`);
+                            await load();
+                          } catch (err) {
+                            setError((err as Error).message);
+                          } finally {
+                            setBusyReset(false);
+                          }
+                        }}
+                      >
+                        {busyReset ? 'Wiping Database…' : '💥 Confirm Factory Reset & Test from Scratch'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </section>
       )}
+
+      {/* Setup Wizard Modal */}
+      <SetupWizardModal
+        isOpen={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+        onSuccess={async () => {
+          setMsg('✓ System initialized successfully!');
+          await load();
+        }}
+      />
     </>
   );
 }
