@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
@@ -187,10 +188,14 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     return { ok: true };
   });
 
-  // ---------- organisation structure (executive manages; everyone signed in can read) ----------
-  app.get('/api/branches', { preHandler: anyUser }, async (req) =>
-    db.prepare('SELECT id, name, city, active FROM branches WHERE organisation_id = ? ORDER BY name').all(req.user!.organisationId),
-  );
+  // ---------- organisation structure (executive manages; everyone signed in can read within their branch scope) ----------
+  app.get('/api/branches', { preHandler: anyUser }, async (req) => {
+    const u = req.user!;
+    if (u.role === 'inventory_manager' && u.branchId !== null) {
+      return db.prepare('SELECT id, name, city, active FROM branches WHERE organisation_id = ? AND id = ? ORDER BY name').all(u.organisationId, u.branchId);
+    }
+    return db.prepare('SELECT id, name, city, active FROM branches WHERE organisation_id = ? ORDER BY name').all(u.organisationId);
+  });
   app.post('/api/branches', { preHandler: exec }, async (req, reply) => {
     const b = z.object({ name, city: text(80) }).strict().parse(req.body);
     const r = db.prepare('INSERT INTO branches (organisation_id, name, city) VALUES (?, ?, ?)').run(req.user!.organisationId, b.name, b.city);
@@ -208,11 +213,21 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   });
 
   for (const table of ['warehouses', 'departments'] as const) {
-    app.get(`/api/${table}`, { preHandler: anyUser }, async (req) =>
-      db
+    app.get(`/api/${table}`, { preHandler: anyUser }, async (req) => {
+      const u = req.user!;
+      if (u.role === 'inventory_manager' && u.branchId !== null) {
+        return db
+          .prepare(
+            `SELECT t.id, t.branch_id AS branchId, b.name AS branchName, t.name, t.active
+               FROM ${table} t JOIN branches b ON b.id = t.branch_id
+              WHERE b.organisation_id = ? AND t.branch_id = ? ORDER BY t.name`,
+          )
+          .all(u.organisationId, u.branchId);
+      }
+      return db
         .prepare(`SELECT t.id, t.branch_id AS branchId, b.name AS branchName, t.name, t.active FROM ${table} t JOIN branches b ON b.id = t.branch_id WHERE b.organisation_id = ? ORDER BY t.name`)
-        .all(req.user!.organisationId),
-    );
+        .all(u.organisationId);
+    });
     app.post(`/api/${table}`, { preHandler: exec }, async (req, reply) => {
       const b = z.object({ branchId: id, name }).strict().parse(req.body);
       ownedBranch(b.branchId, req.user!.organisationId);
@@ -439,23 +454,38 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     });
   }
 
+  // Branch-scoped inventory managers only see their own branch's warehouses.
+  const scope = (req: FastifyRequest, column: string, params: (string | number)[]) => {
+    const u = req.user!;
+    if (u.role === 'inventory_manager' && u.branchId !== null) { params.push(u.branchId); return ` AND ${column} = ?`; }
+    return '';
+  };
+
   // ---------- count-sheet workflow ----------
   app.get('/api/stock/count-sheets', { preHandler: anyUser }, async (req) => {
+    const params: (string | number)[] = [req.user!.organisationId];
+    const branchWhere = scope(req, 'w.branch_id', params);
     const rows = db
       .prepare(
         `SELECT cs.id, cs.warehouse_id AS warehouseId, w.name AS warehouseName, cs.reference, cs.notes, cs.status,
-                cs.posted_document_id AS postedDocumentId, cs.created_at AS createdAt, cs.approved_at AS approvedAt,
+                cs.posted_document_id AS postedDocumentId, cs.created_by AS createdBy, cs.approved_by AS approvedBy,
+                cs.decided_by AS decidedBy, cs.decision_reason AS decisionReason,
+                cs.created_at AS createdAt, cs.approved_at AS approvedAt, cs.decided_at AS decidedAt,
                 (SELECT COUNT(*) FROM count_sheet_lines l WHERE l.count_sheet_id = cs.id) AS lineCount
            FROM count_sheets cs JOIN warehouses w ON w.id = cs.warehouse_id
-          WHERE cs.organisation_id = ? ORDER BY cs.id DESC LIMIT 100`,
+          WHERE cs.organisation_id = ?${branchWhere} ORDER BY cs.id DESC LIMIT 100`,
       )
-      .all(req.user!.organisationId);
+      .all(...params);
     return { items: rows };
   });
   app.get('/api/stock/count-sheets/:id', { preHandler: anyUser }, async (req) => {
     const { id: sheetId } = idParam.parse(req.params);
     const sheet = getCountSheet(db, req.user!.organisationId, sheetId);
     if (!sheet) throw new AppError(404, 'not_found');
+    if (req.user!.role === 'inventory_manager' && req.user!.branchId !== null) {
+      const wh = db.prepare('SELECT branch_id FROM warehouses WHERE id = ?').get(sheet.warehouseId) as { branch_id: number } | undefined;
+      if (!wh || wh.branch_id !== req.user!.branchId) throw new AppError(403, 'forbidden_warehouse');
+    }
     return sheet;
   });
   app.post('/api/stock/count-sheets', { preHandler: staff }, async (req, reply) => {
@@ -473,7 +503,8 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   });
   app.post('/api/stock/count-sheets/:id/approve', { preHandler: exec }, async (req, reply) => {
     const { id: sheetId } = idParam.parse(req.params);
-    const result = approveCountSheet(db, req.user!, sheetId, idemKey(req));
+    const b = z.object({ reason: text(300) }).strict().parse(req.body ?? {});
+    const result = approveCountSheet(db, req.user!, sheetId, idemKey(req), b.reason);
     return reply.code(result.replayed ? 200 : 201).send({
       replayed: result.replayed,
       sheet: getCountSheet(db, req.user!.organisationId, sheetId),
@@ -482,7 +513,8 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   });
   app.post('/api/stock/count-sheets/:id/cancel', { preHandler: staff }, async (req) => {
     const { id: sheetId } = idParam.parse(req.params);
-    cancelCountSheet(db, req.user!, sheetId);
+    const b = z.object({ reason: text(300) }).strict().parse(req.body ?? {});
+    cancelCountSheet(db, req.user!, sheetId, b.reason);
     return getCountSheet(db, req.user!.organisationId, sheetId);
   });
 
@@ -500,11 +532,17 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     if (q.status) { where.push('po.status = ?'); params.push(q.status); }
     if (q.supplierId) { where.push('po.supplier_id = ?'); params.push(q.supplierId); }
     if (q.warehouseId) { where.push('po.warehouse_id = ?'); params.push(q.warehouseId); }
+    if (req.user!.role === 'inventory_manager' && req.user!.branchId !== null) {
+      where.push('w.branch_id = ?');
+      params.push(req.user!.branchId);
+    }
     const rows = (db
       .prepare(
         `SELECT po.id, po.supplier_id AS supplierId, s.name AS supplierName,
                 po.warehouse_id AS warehouseId, w.name AS warehouseName,
-                po.reference, po.notes, po.status, po.created_at AS createdAt, po.approved_at AS approvedAt,
+                po.reference, po.notes, po.status, po.created_by AS createdBy, po.approved_by AS approvedBy,
+                po.decided_by AS decidedBy, po.decision_reason AS decisionReason,
+                po.created_at AS createdAt, po.approved_at AS approvedAt, po.decided_at AS decidedAt,
                 (SELECT COUNT(*) FROM purchase_order_lines l WHERE l.purchase_order_id = po.id) AS lineCount,
                 COALESCE((SELECT SUM((l.ordered_milli / 1000.0) * l.unit_cost_cents) FROM purchase_order_lines l WHERE l.purchase_order_id = po.id), 0) AS total_cents
            FROM purchase_orders po
@@ -522,6 +560,10 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     const { id: poId } = idParam.parse(req.params);
     const po = getPurchaseOrder(db, req.user!.organisationId, poId);
     if (!po) throw new AppError(404, 'not_found');
+    if (req.user!.role === 'inventory_manager' && req.user!.branchId !== null) {
+      const wh = db.prepare('SELECT branch_id FROM warehouses WHERE id = ?').get(po.warehouseId) as { branch_id: number } | undefined;
+      if (!wh || wh.branch_id !== req.user!.branchId) throw new AppError(403, 'forbidden_warehouse');
+    }
     return po;
   });
   app.post('/api/purchase-orders', { preHandler: staff }, async (req, reply) => {
@@ -553,12 +595,14 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   });
   app.post('/api/purchase-orders/:id/approve', { preHandler: staff }, async (req) => {
     const { id: poId } = idParam.parse(req.params);
-    approvePurchaseOrder(db, req.user!, poId);
+    const b = z.object({ reason: text(300) }).strict().parse(req.body ?? {});
+    approvePurchaseOrder(db, req.user!, poId, b.reason);
     return getPurchaseOrder(db, req.user!.organisationId, poId);
   });
   app.post('/api/purchase-orders/:id/cancel', { preHandler: staff }, async (req) => {
     const { id: poId } = idParam.parse(req.params);
-    cancelPurchaseOrder(db, req.user!, poId);
+    const b = z.object({ reason: text(300) }).strict().parse(req.body ?? {});
+    cancelPurchaseOrder(db, req.user!, poId, b.reason);
     return getPurchaseOrder(db, req.user!.organisationId, poId);
   });
   app.post('/api/purchase-orders/:id/receive', { preHandler: staff }, async (req, reply) => {
@@ -602,12 +646,17 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     const params: (string | number)[] = [req.user!.organisationId];
     if (q.status) { where.push('r.status = ?'); params.push(q.status); }
     if (q.kind) { where.push('r.kind = ?'); params.push(q.kind); }
+    if (req.user!.role === 'inventory_manager' && req.user!.branchId !== null) {
+      where.push('w.branch_id = ?');
+      params.push(req.user!.branchId);
+    }
     const rows = db
       .prepare(
         `SELECT r.id, r.kind, r.warehouse_id AS warehouseId, w.name AS warehouseName,
                 r.department_id AS departmentId, d.name AS departmentName,
                 r.to_warehouse_id AS toWarehouseId, tw.name AS toWarehouseName,
                 r.reference, r.notes, r.status, r.posted_document_id AS postedDocumentId,
+                r.created_by AS createdBy, r.fulfilled_by AS fulfilledBy, r.decision_reason AS decisionReason,
                 r.created_at AS createdAt, r.fulfilled_at AS fulfilledAt,
                 (SELECT COUNT(*) FROM requisition_lines l WHERE l.requisition_id = r.id) AS lineCount
            FROM requisitions r
@@ -623,6 +672,10 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     const { id: reqId } = idParam.parse(req.params);
     const r = getRequisition(db, req.user!.organisationId, reqId);
     if (!r) throw new AppError(404, 'not_found');
+    if (req.user!.role === 'inventory_manager' && req.user!.branchId !== null) {
+      const wh = db.prepare('SELECT branch_id FROM warehouses WHERE id = ?').get(r.warehouseId) as { branch_id: number } | undefined;
+      if (!wh || wh.branch_id !== req.user!.branchId) throw new AppError(403, 'forbidden_warehouse');
+    }
     return r;
   });
   app.post('/api/requisitions', { preHandler: staff }, async (req, reply) => {
@@ -643,7 +696,8 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   });
   app.post('/api/requisitions/:id/fulfill', { preHandler: staff }, async (req, reply) => {
     const { id: reqId } = idParam.parse(req.params);
-    const result = fulfillRequisition(db, req.user!, reqId, idemKey(req));
+    const b = z.object({ reason: text(300) }).strict().parse(req.body ?? {});
+    const result = fulfillRequisition(db, req.user!, reqId, idemKey(req), b.reason);
     return reply.code(result.replayed ? 200 : 201).send({
       replayed: result.replayed,
       requisition: getRequisition(db, req.user!.organisationId, reqId),
@@ -701,15 +755,14 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     const { id: docId } = idParam.parse(req.params);
     const doc = getDocument(db, req.user!.organisationId, docId);
     if (!doc) throw new AppError(404, 'not_found');
+    if (req.user!.role === 'inventory_manager' && req.user!.branchId !== null) {
+      const allowed = db
+        .prepare('SELECT 1 FROM stock_movements m JOIN warehouses w ON w.id = m.warehouse_id WHERE m.document_id = ? AND w.branch_id = ?')
+        .get(docId, req.user!.branchId);
+      if (!allowed) throw new AppError(403, 'forbidden_warehouse');
+    }
     return doc;
   });
-
-  // Branch-scoped inventory managers only see their own branch's warehouses.
-  const scope = (req: FastifyRequest, column: string, params: (string | number)[]) => {
-    const u = req.user!;
-    if (u.role === 'inventory_manager' && u.branchId !== null) { params.push(u.branchId); return ` AND ${column} = ?`; }
-    return '';
-  };
 
   app.get('/api/stock/balances', { preHandler: anyUser }, async (req) => {
     const q = paging.extend({ productId: z.coerce.number().int().positive().optional(), warehouseId: z.coerce.number().int().positive().optional() }).parse(req.query);
@@ -1357,5 +1410,158 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     reply.header('content-type', 'text/csv; charset=utf-8');
     reply.header('content-disposition', `attachment; filename="stockroom-${q.section}.csv"`);
     return reply.send(csvLines.join('\n'));
+  });
+
+  // ---------- Stage 5: Safe File Uploads (Validated Document Attachments) ----------
+  const ALLOWED_MIMES = ['application/pdf', 'image/png', 'image/jpeg', 'text/csv'] as const;
+  const MAX_UPLOAD_BYTES = 2 * 1024 * 1024; // 2 MB
+
+  function sanitizeFilename(raw: string): string {
+    if (raw.includes('\0') || raw.includes('..') || raw.includes('/') || raw.includes('\\')) {
+      throw new AppError(400, 'invalid_filename');
+    }
+    const clean = raw.replace(/[^a-zA-Z0-9._-]/g, '_').trim();
+    if (!clean || clean.length > 120) throw new AppError(400, 'invalid_filename');
+    if (/\.(exe|bat|cmd|sh|ps1|js|mjs|cjs|html|htm|svg|php|py|dll)$/i.test(clean)) {
+      throw new AppError(400, 'forbidden_file_extension');
+    }
+    return clean;
+  }
+
+  function verifyMagicBytes(mime: (typeof ALLOWED_MIMES)[number], buf: Buffer): void {
+    if (buf.length === 0) throw new AppError(400, 'empty_file');
+    if (buf.length > MAX_UPLOAD_BYTES) throw new AppError(413, 'file_too_large');
+    if (mime === 'application/pdf') {
+      if (buf.length < 4 || buf.subarray(0, 4).toString('ascii') !== '%PDF') {
+        throw new AppError(400, 'file_signature_mismatch');
+      }
+    } else if (mime === 'image/png') {
+      const pngMagic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      if (buf.length < 8 || !buf.subarray(0, 8).equals(pngMagic)) {
+        throw new AppError(400, 'file_signature_mismatch');
+      }
+    } else if (mime === 'image/jpeg') {
+      if (buf.length < 3 || buf[0] !== 0xff || buf[1] !== 0xd8 || buf[2] !== 0xff) {
+        throw new AppError(400, 'file_signature_mismatch');
+      }
+    } else if (mime === 'text/csv') {
+      // Reject binary files masquerading as CSV
+      for (let i = 0; i < Math.min(buf.length, 4096); i++) {
+        const b = buf[i]!;
+        if (b === 0x00 || (b < 0x09 && b !== 0x0a && b !== 0x0d)) {
+          throw new AppError(400, 'file_signature_mismatch');
+        }
+      }
+    }
+  }
+
+  function assertTargetOwned(orgId: number, targetType: 'stock_document' | 'purchase_order' | 'requisition' | 'count_sheet', targetId: number) {
+    const tableMap = {
+      stock_document: 'stock_documents',
+      purchase_order: 'purchase_orders',
+      requisition: 'requisitions',
+      count_sheet: 'count_sheets',
+    } as const;
+    const row = db.prepare(`SELECT id FROM ${tableMap[targetType]} WHERE id = ? AND organisation_id = ?`).get(targetId, orgId);
+    if (!row) throw new AppError(404, 'target_not_found');
+  }
+
+  app.post(
+    '/api/attachments',
+    { preHandler: staff, config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const orgId = req.user!.organisationId;
+      const b = z
+        .object({
+          targetType: z.enum(['stock_document', 'purchase_order', 'requisition', 'count_sheet']),
+          targetId: id,
+          filename: z.string().trim().min(1).max(120),
+          mimeType: z.enum(ALLOWED_MIMES),
+          contentBase64: z.string().trim().min(4).max(3_000_000),
+        })
+        .strict()
+        .parse(req.body);
+
+      const safeFilename = sanitizeFilename(b.filename);
+      assertTargetOwned(orgId, b.targetType, b.targetId);
+
+      // Validate strict base64 encoding
+      const normalizedB64 = b.contentBase64.replace(/\s+/g, '');
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(normalizedB64) || normalizedB64.length % 4 !== 0) {
+        throw new AppError(400, 'invalid_base64');
+      }
+      const buf = Buffer.from(normalizedB64, 'base64');
+      verifyMagicBytes(b.mimeType, buf);
+
+      const checksum = createHash('sha256').update(buf).digest('hex');
+      const r = db
+        .prepare(
+          `INSERT INTO document_attachments
+            (organisation_id, target_type, target_id, filename, mime_type, size_bytes, checksum_sha256, content_base64, uploaded_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(orgId, b.targetType, b.targetId, safeFilename, b.mimeType, buf.length, checksum, normalizedB64, req.user!.id);
+
+      const attachmentId = Number(r.lastInsertRowid);
+      recordAudit(db, req.user!, 'attachment.upload', b.targetType, b.targetId, {
+        attachmentId,
+        filename: safeFilename,
+        mimeType: b.mimeType,
+        sizeBytes: buf.length,
+        checksumSha256: checksum,
+      });
+
+      return reply.code(201).send({
+        id: attachmentId,
+        targetType: b.targetType,
+        targetId: b.targetId,
+        filename: safeFilename,
+        mimeType: b.mimeType,
+        sizeBytes: buf.length,
+        checksumSha256: checksum,
+      });
+    },
+  );
+
+  app.get('/api/attachments', { preHandler: anyUser }, async (req) => {
+    const q = z
+      .object({
+        targetType: z.enum(['stock_document', 'purchase_order', 'requisition', 'count_sheet']),
+        targetId: z.coerce.number().int().positive(),
+      })
+      .parse(req.query);
+    const orgId = req.user!.organisationId;
+    assertTargetOwned(orgId, q.targetType, q.targetId);
+    const items = db
+      .prepare(
+        `SELECT a.id, a.target_type AS targetType, a.target_id AS targetId, a.filename,
+                a.mime_type AS mimeType, a.size_bytes AS sizeBytes, a.checksum_sha256 AS checksumSha256,
+                a.uploaded_by AS uploadedBy, u.name AS uploadedByName, a.created_at AS createdAt
+           FROM document_attachments a
+           LEFT JOIN users u ON u.id = a.uploaded_by
+          WHERE a.organisation_id = ? AND a.target_type = ? AND a.target_id = ?
+          ORDER BY a.id DESC`,
+      )
+      .all(orgId, q.targetType, q.targetId);
+    return { items };
+  });
+
+  app.get('/api/attachments/:id/download', { preHandler: anyUser }, async (req, reply) => {
+    const { id: attId } = idParam.parse(req.params);
+    const row = db
+      .prepare(
+        `SELECT id, filename, mime_type, size_bytes, checksum_sha256, content_base64
+           FROM document_attachments WHERE id = ? AND organisation_id = ?`,
+      )
+      .get(attId, req.user!.organisationId) as
+      | { id: number; filename: string; mime_type: string; size_bytes: number; checksum_sha256: string; content_base64: string }
+      | undefined;
+    if (!row) throw new AppError(404, 'not_found');
+    const buf = Buffer.from(row.content_base64, 'base64');
+    reply.header('content-type', row.mime_type);
+    reply.header('content-disposition', `attachment; filename="${row.filename}"`);
+    reply.header('x-content-type-options', 'nosniff');
+    reply.header('content-security-policy', "default-src 'none'");
+    return reply.send(buf);
   });
 }

@@ -9,6 +9,7 @@ export function openDb(path: string): Db {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec('PRAGMA foreign_keys = ON;');
+  db.exec('PRAGMA busy_timeout = 5000;');
   if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL;');
   return db;
 }

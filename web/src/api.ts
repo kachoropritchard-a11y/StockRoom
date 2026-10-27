@@ -363,6 +363,19 @@ export interface InventoryReports {
   }[];
 }
 
+export interface DocumentAttachmentItem {
+  id: number;
+  targetType: 'stock_document' | 'purchase_order' | 'requisition' | 'count_sheet';
+  targetId: number;
+  filename: string;
+  mimeType: 'application/pdf' | 'image/png' | 'image/jpeg' | 'text/csv';
+  sizeBytes: number;
+  checksumSha256: string;
+  uploadedBy?: number;
+  uploadedByName?: string | null;
+  createdAt?: string;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -516,14 +529,14 @@ export const api = {
   countSheet: (id: number) => request<CountSheetDetail>(`/api/stock/count-sheets/${id}`),
   createCountSheet: (body: { warehouseId: number; reference?: string; notes?: string; lines: { productId: number; unitId: number; countedQuantity: number }[] }) =>
     request<CountSheetDetail>('/api/stock/count-sheets', { method: 'POST', body: JSON.stringify(body) }),
-  approveCountSheet: (id: number, key = newIdempotencyKey()) =>
+  approveCountSheet: (id: number, reason?: string, key = newIdempotencyKey()) =>
     request<{ replayed: boolean; sheet: CountSheetDetail }>(`/api/stock/count-sheets/${id}/approve`, {
       method: 'POST',
       headers: { 'Idempotency-Key': key },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ reason }),
     }),
-  cancelCountSheet: (id: number) =>
-    request<CountSheetDetail>(`/api/stock/count-sheets/${id}/cancel`, { method: 'POST', body: JSON.stringify({}) }),
+  cancelCountSheet: (id: number, reason?: string) =>
+    request<CountSheetDetail>(`/api/stock/count-sheets/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }),
 
   purchaseOrders: (status?: string) =>
     request<{ items: PurchaseOrderSummary[] }>(`/api/purchase-orders${status ? `?status=${encodeURIComponent(status)}` : ''}`),
@@ -536,10 +549,10 @@ export const api = {
     approveImmediately?: boolean;
     lines: { productId: number; unitId: number; orderedQuantity: number; unitCost: number }[];
   }) => request<PurchaseOrderDetail>('/api/purchase-orders', { method: 'POST', body: JSON.stringify(body) }),
-  approvePurchaseOrder: (id: number) =>
-    request<PurchaseOrderDetail>(`/api/purchase-orders/${id}/approve`, { method: 'POST', body: JSON.stringify({}) }),
-  cancelPurchaseOrder: (id: number) =>
-    request<PurchaseOrderDetail>(`/api/purchase-orders/${id}/cancel`, { method: 'POST', body: JSON.stringify({}) }),
+  approvePurchaseOrder: (id: number, reason?: string) =>
+    request<PurchaseOrderDetail>(`/api/purchase-orders/${id}/approve`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  cancelPurchaseOrder: (id: number, reason?: string) =>
+    request<PurchaseOrderDetail>(`/api/purchase-orders/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }),
   receivePurchaseOrder: (
     id: number,
     body: {
@@ -566,14 +579,26 @@ export const api = {
     notes?: string;
     lines: { productId: number; unitId: number; requestedQuantity: number }[];
   }) => request<RequisitionDetail>('/api/requisitions', { method: 'POST', body: JSON.stringify(body) }),
-  fulfillRequisition: (id: number, key = newIdempotencyKey()) =>
+  fulfillRequisition: (id: number, reason?: string, key = newIdempotencyKey()) =>
     request<{ replayed: boolean; requisition: RequisitionDetail; document: { id: number } }>(`/api/requisitions/${id}/fulfill`, {
       method: 'POST',
       headers: { 'Idempotency-Key': key },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ reason }),
     }),
   rejectRequisition: (id: number, reason?: string) =>
     request<RequisitionDetail>(`/api/requisitions/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
+
+  attachments: (targetType: DocumentAttachmentItem['targetType'], targetId: number) =>
+    request<{ items: DocumentAttachmentItem[] }>(
+      `/api/attachments?targetType=${encodeURIComponent(targetType)}&targetId=${targetId}`,
+    ),
+  uploadAttachment: (body: {
+    targetType: DocumentAttachmentItem['targetType'];
+    targetId: number;
+    filename: string;
+    mimeType: DocumentAttachmentItem['mimeType'];
+    contentBase64: string;
+  }) => request<DocumentAttachmentItem>('/api/attachments', { method: 'POST', body: JSON.stringify(body) }),
 
   inventoryReports: () => request<InventoryReports>('/api/reports/inventory'),
 

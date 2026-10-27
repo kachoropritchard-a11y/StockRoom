@@ -35,6 +35,7 @@ export function Organisation() {
   const [backupLabel, setBackupLabel] = useState('');
   const [restoreTarget, setRestoreTarget] = useState<SystemBackupItem | null>(null);
   const [restorePhrase, setRestorePhrase] = useState('');
+  const [decisionNote, setDecisionNote] = useState('');
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
@@ -162,7 +163,7 @@ export function Organisation() {
     setError('');
     setMsg('');
     try {
-      await api.approvePurchaseOrder(id);
+      await api.approvePurchaseOrder(id, decisionNote.trim() || undefined);
       setMsg(`Purchase Order #${id} approved.`);
       await load();
     } catch (err) {
@@ -174,7 +175,7 @@ export function Organisation() {
     setError('');
     setMsg('');
     try {
-      await api.cancelPurchaseOrder(id);
+      await api.cancelPurchaseOrder(id, decisionNote.trim() || undefined);
       setMsg(`Purchase Order #${id} cancelled.`);
       await load();
     } catch (err) {
@@ -186,7 +187,7 @@ export function Organisation() {
     setError('');
     setMsg('');
     try {
-      await api.fulfillRequisition(id);
+      await api.fulfillRequisition(id, decisionNote.trim() || undefined);
       setMsg(`Requisition #${id} fulfilled and posted to the stock ledger.`);
       await load();
     } catch (err) {
@@ -198,7 +199,7 @@ export function Organisation() {
     setError('');
     setMsg('');
     try {
-      await api.rejectRequisition(id, 'Rejected from Executive Approval Queue');
+      await api.rejectRequisition(id, decisionNote.trim() || 'Rejected from Executive Approval Queue');
       setMsg(`Requisition #${id} rejected.`);
       await load();
     } catch (err) {
@@ -210,7 +211,7 @@ export function Organisation() {
     setError('');
     setMsg('');
     try {
-      await api.approveCountSheet(id);
+      await api.approveCountSheet(id, decisionNote.trim() || undefined);
       setMsg(`Stocktake Sheet #${id} approved and variances posted to ledger.`);
       await load();
     } catch (err) {
@@ -222,7 +223,7 @@ export function Organisation() {
     setError('');
     setMsg('');
     try {
-      await api.cancelCountSheet(id);
+      await api.cancelCountSheet(id, decisionNote.trim() || undefined);
       setMsg(`Stocktake Sheet #${id} cancelled.`);
       await load();
     } catch (err) {
@@ -474,6 +475,17 @@ export function Organisation() {
                   <strong className="kpi-value">{org?.enforceSeparationOfDuties ? 'ENFORCED' : 'STANDARD'}</strong>
                   <span className="kpi-hint">PO Threshold: ${org?.poApprovalThreshold.toFixed(2) ?? '0.00'}</span>
                 </article>
+              </div>
+
+              <div className="subcard" style={{ marginBottom: '1rem' }}>
+                <label>
+                  <strong>Decision / Approval Reason (recorded on the document &amp; immutable audit log)</strong>
+                  <input
+                    value={decisionNote}
+                    onChange={(e) => setDecisionNote(e.target.value)}
+                    placeholder="Optional note or reason for approving, fulfilling, or rejecting items below…"
+                  />
+                </label>
               </div>
 
               <div className="subcard" style={{ marginBottom: '1rem' }}>

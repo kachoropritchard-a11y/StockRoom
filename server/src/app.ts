@@ -46,7 +46,21 @@ export function buildApp(db: Db, config: Config) {
   const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', config.BCRYPT_COST);
   const allowedOrigins = config.CORS_ORIGIN.split(',');
   const app = Fastify({
-    logger: config.NODE_ENV === 'test' ? false : { redact: ['req.headers.authorization', 'req.headers.cookie'] },
+    bodyLimit: 4 * 1024 * 1024, // 4 MB max request payload
+    logger:
+      config.NODE_ENV === 'test'
+        ? false
+        : {
+            redact: [
+              'req.headers.authorization',
+              'req.headers.cookie',
+              'res.headers["set-cookie"]',
+              'body.password',
+              'body.currentPassword',
+              'body.newPassword',
+              'body.token',
+            ],
+          },
     trustProxy: config.NODE_ENV === 'production',
   });
 
@@ -76,9 +90,26 @@ export function buildApp(db: Db, config: Config) {
     // Database constraint violations that slipped past explicit checks are still client errors, not crashes.
     if (/UNIQUE constraint failed/.test(err.message)) return reply.code(409).send({ error: 'duplicate' });
     if (/FOREIGN KEY constraint failed|CHECK constraint failed/.test(err.message)) return reply.code(409).send({ error: 'constraint_violation' });
-    const status = err.statusCode && err.statusCode < 500 ? err.statusCode : 500;
+    if (/stock_movements is append-only|stock_documents is append-only|audit_logs_are_immutable/.test(err.message)) {
+      return reply.code(409).send({ error: 'immutable_record' });
+    }
+    const status = err.statusCode && err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 500;
     if (status === 500) req.log.error(err);
-    reply.code(status).send({ error: status === 500 ? 'internal_error' : err.message });
+    const safeCode =
+      status === 429
+        ? 'rate_limit_exceeded'
+        : status === 413
+          ? 'payload_too_large'
+          : status === 400
+            ? 'bad_request'
+            : status === 401
+              ? 'unauthenticated'
+              : status === 403
+                ? 'forbidden'
+                : status === 404
+                  ? 'not_found'
+                  : 'internal_error';
+    reply.code(status).send({ error: safeCode });
   });
 
   app.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: 'not_found' }));
@@ -215,17 +246,21 @@ export function buildApp(db: Db, config: Config) {
     return { ok: true };
   });
 
-  // Dashboard summary, scoped to the caller's organisation, combining structure and live ledger metrics.
+  // Dashboard summary, scoped to the caller's organisation (and branch for branch-scoped inventory managers), combining structure and live ledger metrics.
   app.get('/api/dashboard/summary', { preHandler: requireAuth() }, async (req) => {
     const org = req.user!.organisationId;
+    const branchId = req.user!.role === 'inventory_manager' ? req.user!.branchId : null;
+    const branchFilter = branchId !== null ? ` AND w.branch_id = ${Number(branchId)}` : '';
     const count = (sql: string) => (db.prepare(sql).get(org) as { n: number }).n;
 
     const valueRow = db
       .prepare(
         `SELECT COALESCE(SUM(b.quantity_milli), 0) AS total_units_milli,
                 COALESCE(SUM(b.quantity_milli * p.unit_cost_cents), 0) AS total_milli_cents
-           FROM stock_balances b JOIN products p ON p.id = b.product_id
-          WHERE b.organisation_id = ? AND b.quantity_milli > 0`,
+           FROM stock_balances b
+           JOIN products p ON p.id = b.product_id
+           JOIN warehouses w ON w.id = b.warehouse_id
+          WHERE b.organisation_id = ? AND b.quantity_milli > 0${branchFilter}`,
       )
       .get(org) as { total_units_milli: number; total_milli_cents: number };
     const totalStockUnits = fromMilli(valueRow.total_units_milli);
@@ -238,7 +273,8 @@ export function buildApp(db: Db, config: Config) {
                 COALESCE(SUM(CASE WHEN d.type = 'transfer' THEN (CASE WHEN m.base_delta_milli > 0 THEN m.base_delta_milli ELSE 0 END) ELSE abs(m.base_delta_milli) END), 0) AS units_milli
            FROM stock_documents d
            JOIN stock_movements m ON m.document_id = d.id
-          WHERE d.organisation_id = ?
+           JOIN warehouses w ON w.id = m.warehouse_id
+          WHERE d.organisation_id = ?${branchFilter}
             AND NOT EXISTS (SELECT 1 FROM stock_documents rev WHERE rev.reverses_document_id = d.id)
           GROUP BY d.type`,
       )
@@ -254,10 +290,10 @@ export function buildApp(db: Db, config: Config) {
     const lowStockItems = (db
       .prepare(
         `SELECT p.id AS productId, p.sku, p.name AS productName, u.code AS unit, p.reorder_level_milli,
-                COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS qty_milli
+                COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b JOIN warehouses w ON w.id = b.warehouse_id WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id${branchFilter}), 0) AS qty_milli
            FROM products p JOIN units_of_measure u ON u.id = p.base_unit_id
           WHERE p.organisation_id = ? AND p.active = 1 AND p.reorder_level_milli > 0
-            AND COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) <= p.reorder_level_milli
+            AND COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b JOIN warehouses w ON w.id = b.warehouse_id WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id${branchFilter}), 0) <= p.reorder_level_milli
           ORDER BY p.name LIMIT 20`,
       )
       .all(org) as { productId: number; sku: string; productName: string; unit: string; reorder_level_milli: number; qty_milli: number }[]).map((r) => ({
@@ -278,7 +314,7 @@ export function buildApp(db: Db, config: Config) {
            JOIN branches br ON br.id = w.branch_id
            LEFT JOIN stock_balances b ON b.warehouse_id = w.id AND b.organisation_id = br.organisation_id
            LEFT JOIN products p ON p.id = b.product_id
-          WHERE br.organisation_id = ? AND w.active = 1
+          WHERE br.organisation_id = ? AND w.active = 1${branchFilter}
           GROUP BY w.id, w.name, br.name
           ORDER BY w.name`,
       )
@@ -300,7 +336,7 @@ export function buildApp(db: Db, config: Config) {
            JOIN products p ON p.id = m.product_id
            JOIN warehouses w ON w.id = m.warehouse_id
            JOIN units_of_measure u ON u.id = m.unit_id
-          WHERE m.organisation_id = ?
+          WHERE m.organisation_id = ?${branchFilter}
           ORDER BY m.id DESC LIMIT 10`,
       )
       .all(org) as { id: number; documentId: number; type: string; reference: string | null; createdAt: string; sku: string; productName: string; warehouseName: string; unit: string; quantity_milli: number; base_delta_milli: number; unit_cost_cents: number }[]).map((m) => ({

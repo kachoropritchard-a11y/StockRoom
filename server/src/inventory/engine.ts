@@ -354,6 +354,13 @@ export function postDocument(db: Db, actor: AuthUser, input: PostInput): PostRes
     const documentId = Number(doc.lastInsertRowid);
     for (const r of rows) insertRow(db, documentId, orgId, r);
     assertNonNegative(db, orgId, new Set(rows.filter((r) => r.deltaMilli < 0).map((r) => `${r.productId}:${r.warehouseId}`)));
+    if (type === 'adjustment' || type === 'write_off' || type === 'count') {
+      recordAudit(db, actor, `document.${type}`, 'stock_document', documentId, {
+        reference: input.reference?.trim() || null,
+        reason,
+        lineCount: rows.length,
+      });
+    }
     return { documentId, replayed: false };
   });
 }
@@ -431,12 +438,28 @@ export function getCountSheet(db: Db, orgId: number, sheetId: number) {
     .prepare(
       `SELECT cs.id, cs.warehouse_id AS warehouseId, w.name AS warehouseName, cs.reference, cs.notes, cs.status,
               cs.posted_document_id AS postedDocumentId, cs.created_by AS createdBy, cs.approved_by AS approvedBy,
-              cs.created_at AS createdAt, cs.approved_at AS approvedAt
+              cs.decided_by AS decidedBy, cs.decision_reason AS decisionReason,
+              cs.created_at AS createdAt, cs.approved_at AS approvedAt, cs.decided_at AS decidedAt
          FROM count_sheets cs JOIN warehouses w ON w.id = cs.warehouse_id
         WHERE cs.id = ? AND cs.organisation_id = ?`,
     )
     .get(sheetId, orgId) as
-    | { id: number; warehouseId: number; warehouseName: string; reference: string | null; notes: string | null; status: string; postedDocumentId: number | null; createdBy: number; approvedBy: number | null; createdAt: string; approvedAt: string | null }
+    | {
+        id: number;
+        warehouseId: number;
+        warehouseName: string;
+        reference: string | null;
+        notes: string | null;
+        status: string;
+        postedDocumentId: number | null;
+        createdBy: number;
+        approvedBy: number | null;
+        decidedBy: number | null;
+        decisionReason: string | null;
+        createdAt: string;
+        approvedAt: string | null;
+        decidedAt: string | null;
+      }
     | undefined;
   if (!sheet) return null;
   const rawLines = db
@@ -468,9 +491,10 @@ export function getCountSheet(db: Db, orgId: number, sheetId: number) {
 }
 
 /** Approves a draft count sheet by posting an authoritative 'count' document via postDocument. */
-export function approveCountSheet(db: Db, actor: AuthUser, sheetId: number, idempotencyKey: string): PostResult {
+export function approveCountSheet(db: Db, actor: AuthUser, sheetId: number, idempotencyKey: string, reason?: string | null): PostResult {
   if (actor.role !== 'executive_manager') throw new AppError(403, 'forbidden');
   const orgId = actor.organisationId;
+  const decisionReason = reason?.trim() || 'Approved stocktake reconciliation';
   return tx(db, () => {
     const sheet = db
       .prepare('SELECT id, warehouse_id, reference, status, posted_document_id, created_by FROM count_sheets WHERE id = ? AND organisation_id = ?')
@@ -490,6 +514,7 @@ export function approveCountSheet(db: Db, actor: AuthUser, sheetId: number, idem
     const posted = postDocument(db, actor, {
       type: 'count',
       reference: sheet.reference ?? `CS-${sheet.id}`,
+      reason: decisionReason,
       idempotencyKey,
       lines: lines.map((l) => ({
         productId: l.product_id,
@@ -498,18 +523,21 @@ export function approveCountSheet(db: Db, actor: AuthUser, sheetId: number, idem
         quantityMilli: l.counted_milli,
       })),
     });
-    db.prepare("UPDATE count_sheets SET status = 'approved', posted_document_id = ?, approved_by = ?, approved_at = datetime('now') WHERE id = ?").run(
-      posted.documentId,
-      actor.id,
-      sheetId,
-    );
-    recordAudit(db, actor, 'count_sheet.approve', 'count_sheet', sheetId, { documentId: posted.documentId });
+    db.prepare(
+      "UPDATE count_sheets SET status = 'approved', posted_document_id = ?, approved_by = ?, approved_at = datetime('now'), decided_by = ?, decided_at = datetime('now'), decision_reason = ? WHERE id = ?",
+    ).run(posted.documentId, actor.id, actor.id, decisionReason, sheetId);
+    recordAudit(db, actor, 'count_sheet.approve', 'count_sheet', sheetId, {
+      decision: 'approved',
+      reason: decisionReason,
+      documentId: posted.documentId,
+    });
     return posted;
   });
 }
 
-export function cancelCountSheet(db: Db, actor: AuthUser, sheetId: number): void {
+export function cancelCountSheet(db: Db, actor: AuthUser, sheetId: number, reason?: string | null): void {
   const orgId = actor.organisationId;
+  const decisionReason = reason?.trim() || 'Cancelled draft count sheet';
   const sheet = db.prepare('SELECT id, warehouse_id, status FROM count_sheets WHERE id = ? AND organisation_id = ?').get(sheetId, orgId) as
     | { id: number; warehouse_id: number; status: string }
     | undefined;
@@ -517,7 +545,10 @@ export function cancelCountSheet(db: Db, actor: AuthUser, sheetId: number): void
   const wh = loadWarehouse(db, orgId, sheet.warehouse_id);
   if (!canAccessWarehouse(actor, wh.branch_id)) throw new AppError(403, 'forbidden_warehouse');
   if (sheet.status !== 'draft') throw new AppError(409, 'count_sheet_not_draft');
-  db.prepare("UPDATE count_sheets SET status = 'cancelled' WHERE id = ?").run(sheetId);
+  db.prepare(
+    "UPDATE count_sheets SET status = 'cancelled', decided_by = ?, decided_at = datetime('now'), decision_reason = ? WHERE id = ?",
+  ).run(actor.id, decisionReason, sheetId);
+  recordAudit(db, actor, 'count_sheet.cancel', 'count_sheet', sheetId, { decision: 'cancelled', reason: decisionReason });
 }
 
 // ---------- purchase orders & partial deliveries ----------
@@ -584,9 +615,10 @@ export function createPurchaseOrder(db: Db, actor: AuthUser, input: PurchaseOrde
   });
 }
 
-export function approvePurchaseOrder(db: Db, actor: AuthUser, poId: number): void {
+export function approvePurchaseOrder(db: Db, actor: AuthUser, poId: number, reason?: string | null): void {
   const orgId = actor.organisationId;
   if (!hasPermission(db, actor, 'can_approve_po')) throw new AppError(403, 'forbidden_permission');
+  const decisionReason = reason?.trim() || 'Approved purchase order';
   const po = db.prepare('SELECT id, warehouse_id, reference, status, created_by FROM purchase_orders WHERE id = ? AND organisation_id = ?').get(poId, orgId) as
     | { id: number; warehouse_id: number; reference: string; status: string; created_by: number }
     | undefined;
@@ -607,12 +639,15 @@ export function approvePurchaseOrder(db: Db, actor: AuthUser, poId: number): voi
     throw new AppError(403, 'executive_approval_required');
   }
 
-  db.prepare("UPDATE purchase_orders SET status = 'approved', approved_by = ?, approved_at = datetime('now') WHERE id = ?").run(actor.id, poId);
-  recordAudit(db, actor, 'po.approve', 'purchase_order', poId, { reference: po.reference });
+  db.prepare(
+    "UPDATE purchase_orders SET status = 'approved', approved_by = ?, approved_at = datetime('now'), decided_by = ?, decided_at = datetime('now'), decision_reason = ? WHERE id = ?",
+  ).run(actor.id, actor.id, decisionReason, poId);
+  recordAudit(db, actor, 'po.approve', 'purchase_order', poId, { decision: 'approved', reason: decisionReason, reference: po.reference });
 }
 
-export function cancelPurchaseOrder(db: Db, actor: AuthUser, poId: number): void {
+export function cancelPurchaseOrder(db: Db, actor: AuthUser, poId: number, reason?: string | null): void {
   const orgId = actor.organisationId;
+  const decisionReason = reason?.trim() || 'Cancelled purchase order';
   const po = db.prepare('SELECT id, warehouse_id, reference, status FROM purchase_orders WHERE id = ? AND organisation_id = ?').get(poId, orgId) as
     | { id: number; warehouse_id: number; reference: string; status: string }
     | undefined;
@@ -620,8 +655,10 @@ export function cancelPurchaseOrder(db: Db, actor: AuthUser, poId: number): void
   const wh = loadWarehouse(db, orgId, po.warehouse_id);
   if (!canAccessWarehouse(actor, wh.branch_id)) throw new AppError(403, 'forbidden_warehouse');
   if (po.status !== 'draft' && po.status !== 'approved') throw new AppError(409, 'po_cannot_be_cancelled');
-  db.prepare("UPDATE purchase_orders SET status = 'cancelled' WHERE id = ?").run(poId);
-  recordAudit(db, actor, 'po.cancel', 'purchase_order', poId, { reference: po.reference });
+  db.prepare(
+    "UPDATE purchase_orders SET status = 'cancelled', decided_by = ?, decided_at = datetime('now'), decision_reason = ? WHERE id = ?",
+  ).run(actor.id, decisionReason, poId);
+  recordAudit(db, actor, 'po.cancel', 'purchase_order', poId, { decision: 'cancelled', reason: decisionReason, reference: po.reference });
 }
 
 export interface ReceivePurchaseOrderInput {
@@ -716,7 +753,9 @@ export function getPurchaseOrder(db: Db, orgId: number, poId: number) {
       `SELECT po.id, po.supplier_id AS supplierId, s.name AS supplierName,
               po.warehouse_id AS warehouseId, w.name AS warehouseName,
               po.reference, po.notes, po.status, po.created_by AS createdBy,
-              po.approved_by AS approvedBy, po.created_at AS createdAt, po.approved_at AS approvedAt
+              po.approved_by AS approvedBy, po.decided_by AS decidedBy,
+              po.decision_reason AS decisionReason,
+              po.created_at AS createdAt, po.approved_at AS approvedAt, po.decided_at AS decidedAt
          FROM purchase_orders po
          JOIN suppliers s ON s.id = po.supplier_id
          JOIN warehouses w ON w.id = po.warehouse_id
@@ -734,8 +773,11 @@ export function getPurchaseOrder(db: Db, orgId: number, poId: number) {
         status: string;
         createdBy: number;
         approvedBy: number | null;
+        decidedBy: number | null;
+        decisionReason: string | null;
         createdAt: string;
         approvedAt: string | null;
+        decidedAt: string | null;
       }
     | undefined;
   if (!po) return null;
@@ -855,9 +897,10 @@ export function createRequisition(db: Db, actor: AuthUser, input: RequisitionInp
   });
 }
 
-export function fulfillRequisition(db: Db, actor: AuthUser, reqId: number, idempotencyKey: string): PostResult {
+export function fulfillRequisition(db: Db, actor: AuthUser, reqId: number, idempotencyKey: string, reason?: string | null): PostResult {
   const orgId = actor.organisationId;
   if (!hasPermission(db, actor, 'can_fulfill_requisitions')) throw new AppError(403, 'forbidden_permission');
+  const decisionReason = reason?.trim() || 'Fulfilled requisition';
   return tx(db, () => {
     const req = db
       .prepare(
@@ -894,6 +937,7 @@ export function fulfillRequisition(db: Db, actor: AuthUser, reqId: number, idemp
       type: req.kind === 'department_issue' ? 'issue' : 'transfer',
       departmentId: req.kind === 'department_issue' ? req.department_id : null,
       reference: req.reference ?? `REQ-${req.id}`,
+      reason: decisionReason,
       idempotencyKey,
       lines: lines.map((l) => ({
         productId: l.product_id,
@@ -905,9 +949,14 @@ export function fulfillRequisition(db: Db, actor: AuthUser, reqId: number, idemp
     });
 
     db.prepare(
-      "UPDATE requisitions SET status = 'fulfilled', posted_document_id = ?, fulfilled_by = ?, fulfilled_at = datetime('now') WHERE id = ?",
-    ).run(posted.documentId, actor.id, reqId);
-    recordAudit(db, actor, 'requisition.fulfill', 'requisition', reqId, { documentId: posted.documentId, kind: req.kind });
+      "UPDATE requisitions SET status = 'fulfilled', posted_document_id = ?, fulfilled_by = ?, fulfilled_at = datetime('now'), decision_reason = ? WHERE id = ?",
+    ).run(posted.documentId, actor.id, decisionReason, reqId);
+    recordAudit(db, actor, 'requisition.fulfill', 'requisition', reqId, {
+      decision: 'fulfilled',
+      reason: decisionReason,
+      documentId: posted.documentId,
+      kind: req.kind,
+    });
 
     return posted;
   });
@@ -915,6 +964,7 @@ export function fulfillRequisition(db: Db, actor: AuthUser, reqId: number, idemp
 
 export function rejectRequisition(db: Db, actor: AuthUser, reqId: number, reason?: string | null): void {
   const orgId = actor.organisationId;
+  const decisionReason = reason?.trim() || 'Rejected requisition';
   const req = db
     .prepare('SELECT id, warehouse_id, notes, status FROM requisitions WHERE id = ? AND organisation_id = ?')
     .get(reqId, orgId) as { id: number; warehouse_id: number; notes: string | null; status: string } | undefined;
@@ -923,12 +973,10 @@ export function rejectRequisition(db: Db, actor: AuthUser, reqId: number, reason
   if (!canAccessWarehouse(actor, wh.branch_id)) throw new AppError(403, 'forbidden_warehouse');
   if (req.status !== 'pending') throw new AppError(409, 'requisition_not_pending');
   const updatedNotes = reason?.trim() ? (req.notes ? `${req.notes} | Rejected: ${reason.trim()}` : `Rejected: ${reason.trim()}`) : req.notes;
-  db.prepare("UPDATE requisitions SET status = 'rejected', notes = ?, fulfilled_by = ?, fulfilled_at = datetime('now') WHERE id = ?").run(
-    updatedNotes,
-    actor.id,
-    reqId,
-  );
-  recordAudit(db, actor, 'requisition.reject', 'requisition', reqId, { reason: reason?.trim() || null });
+  db.prepare(
+    "UPDATE requisitions SET status = 'rejected', notes = ?, fulfilled_by = ?, fulfilled_at = datetime('now'), decision_reason = ? WHERE id = ?",
+  ).run(updatedNotes, actor.id, decisionReason, reqId);
+  recordAudit(db, actor, 'requisition.reject', 'requisition', reqId, { decision: 'rejected', reason: decisionReason });
 }
 
 export function getRequisition(db: Db, orgId: number, reqId: number) {
@@ -939,6 +987,7 @@ export function getRequisition(db: Db, orgId: number, reqId: number) {
               r.to_warehouse_id AS toWarehouseId, tw.name AS toWarehouseName,
               r.reference, r.notes, r.status, r.posted_document_id AS postedDocumentId,
               r.created_by AS createdBy, r.fulfilled_by AS fulfilledBy,
+              r.decision_reason AS decisionReason,
               r.created_at AS createdAt, r.fulfilled_at AS fulfilledAt
          FROM requisitions r
          JOIN warehouses w ON w.id = r.warehouse_id
@@ -962,6 +1011,7 @@ export function getRequisition(db: Db, orgId: number, reqId: number) {
         postedDocumentId: number | null;
         createdBy: number;
         fulfilledBy: number | null;
+        decisionReason: string | null;
         createdAt: string;
         fulfilledAt: string | null;
       }

@@ -690,3 +690,195 @@ test('Stage 4 executive portal: audit logs immutability, backup/restore lifecycl
   assert.equal(health.body.ledgerIntegrity.ok, true);
   assert.ok(health.body.tableCounts.backups >= 1);
 });
+
+test('Stage 5 concurrency & atomicity: concurrent stock issues and requisition fulfillments cannot oversell', async () => {
+  const t = await setup();
+  await t.receive(10); // 10 base units available in wh1
+
+  // Fire 5 concurrent stock issues of 6 units each against 10 available units
+  const attempts = await Promise.all(
+    Array.from({ length: 5 }, (_, i) =>
+      t.call('POST', '/api/stock/issues', t.inv, {
+        reference: `CONC-ISS-${i + 1}`,
+        lines: [{ productId: t.product, warehouseId: t.wh1, unitId: t.units.each, quantity: 6 }],
+      }),
+    ),
+  );
+
+  const succeeded = attempts.filter((r) => r.status === 201);
+  const rejected = attempts.filter((r) => r.status === 409 && r.body.error === 'insufficient_stock');
+  assert.equal(succeeded.length, 1);
+  assert.equal(rejected.length, 4);
+  assert.equal(await t.balance(), 4);
+
+  // Fire 5 concurrent requests with the EXACT same idempotency key and payload -> only 1 document created, others replay
+  const sharedKey = 'idem-concurrent-key-99999';
+  const body = {
+    reference: 'IDEM-ISS-1',
+    lines: [{ productId: t.product, warehouseId: t.wh1, unitId: t.units.each, quantity: 2 }],
+  };
+  const idemResponses = await Promise.all(
+    Array.from({ length: 5 }, () =>
+      t.app.inject({
+        method: 'POST',
+        url: '/api/stock/issues',
+        headers: { authorization: `Bearer ${t.inv}`, 'idempotency-key': sharedKey },
+        payload: body,
+      }),
+    ),
+  );
+  const docIds = new Set(idemResponses.map((r) => r.json().document.id));
+  assert.equal(docIds.size, 1);
+  assert.equal(await t.balance(), 2);
+  assert.deepEqual(verifyLedger(t.db), { ok: true, problems: [] });
+});
+
+test('Stage 5 approval auditability: approvals and rejections record user, decision, reason, and timestamp', async () => {
+  const t = await setup();
+  await t.receive(30);
+
+  // 1. Purchase order approval records user, decision, reason, and timestamp
+  const po = await t.call('POST', '/api/purchase-orders', t.inv, {
+    supplierId: t.supplier,
+    warehouseId: t.wh1,
+    reference: 'PO-DECISION-1',
+    lines: [{ productId: t.product, unitId: t.units.each, orderedQuantity: 10, unitCost: 5 }],
+  });
+  assert.equal(po.status, 201);
+
+  const poApproved = await t.call('POST', `/api/purchase-orders/${po.body.id}/approve`, t.exec, {
+    reason: 'Approved for Q4 seasonal stock replenishment',
+  });
+  assert.equal(poApproved.status, 200);
+  assert.equal(poApproved.body.status, 'approved');
+  assert.equal(poApproved.body.decisionReason, 'Approved for Q4 seasonal stock replenishment');
+  assert.ok(poApproved.body.approvedBy);
+  assert.ok(poApproved.body.decidedBy);
+  assert.ok(poApproved.body.approvedAt);
+  assert.ok(poApproved.body.decidedAt);
+
+  // 2. Requisition fulfillment records user, decision, reason, and timestamp
+  const reqDoc = await t.call('POST', '/api/requisitions', t.inv, {
+    kind: 'department_issue',
+    warehouseId: t.wh1,
+    departmentId: t.dept,
+    reference: 'REQ-DECISION-1',
+    lines: [{ productId: t.product, unitId: t.units.each, requestedQuantity: 5 }],
+  });
+  assert.equal(reqDoc.status, 201);
+
+  const reqFulfilled = await t.call('POST', `/api/requisitions/${reqDoc.body.id}/fulfill`, t.exec, {
+    reason: 'Dispatched to retail floor shift lead',
+  });
+  assert.equal(reqFulfilled.status, 201);
+  assert.equal(reqFulfilled.body.requisition.status, 'fulfilled');
+  assert.equal(reqFulfilled.body.requisition.decisionReason, 'Dispatched to retail floor shift lead');
+  assert.ok(reqFulfilled.body.requisition.fulfilledBy);
+  assert.ok(reqFulfilled.body.requisition.fulfilledAt);
+
+  // 3. Count sheet approval records user, decision, reason, and timestamp
+  const cs = await t.call('POST', '/api/stock/count-sheets', t.inv, {
+    warehouseId: t.wh1,
+    reference: 'CS-DECISION-1',
+    lines: [{ productId: t.product, unitId: t.units.each, countedQuantity: 24 }],
+  });
+  assert.equal(cs.status, 201);
+
+  const csApproved = await t.call('POST', `/api/stock/count-sheets/${cs.body.id}/approve`, t.exec, {
+    reason: 'Verified physical count variance of -1 unit',
+  });
+  assert.equal(csApproved.status, 201);
+  assert.equal(csApproved.body.sheet.status, 'approved');
+  assert.equal(csApproved.body.sheet.decisionReason, 'Verified physical count variance of -1 unit');
+  assert.ok(csApproved.body.sheet.approvedBy);
+  assert.ok(csApproved.body.sheet.decidedBy);
+  assert.ok(csApproved.body.sheet.approvedAt);
+  assert.ok(csApproved.body.sheet.decidedAt);
+});
+
+test('Stage 5 branch isolation & safe file uploads: branch-scoped managers cannot read other branches; file uploads enforce MIME, magic bytes, and path safety', async () => {
+  const t = await setup();
+  const rcv = await t.receive(20); // posts into wh1 (branch 1)
+
+  // Create Branch 2 and Warehouse 3 in Branch 2, plus a branch-scoped Inventory Manager assigned to Branch 2
+  const b2 = (await t.call('POST', '/api/branches', t.exec, { name: 'Bulawayo Branch', city: 'Bulawayo' })).body.id;
+  const wh3 = (await t.call('POST', '/api/warehouses', t.exec, { branchId: b2, name: 'Bulawayo Depot' })).body.id;
+  await t.call('POST', '/api/users', t.exec, {
+    email: 'byo@demo.local',
+    name: 'Bulawayo Manager',
+    password: 'Password123!',
+    role: 'inventory_manager',
+    branchId: b2,
+  });
+  const byoLogin = await t.app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    headers: { 'x-requested-with': 'stockroom' },
+    payload: { email: 'byo@demo.local', password: 'Password123!' },
+  });
+  const byoToken = byoLogin.json().token as string;
+
+  // Branch 2 manager only sees Branch 2 and Warehouse 3, and cannot read Branch 1's stock document
+  const branchesVisible = await t.call('GET', '/api/branches', byoToken);
+  assert.equal(branchesVisible.status, 200);
+  assert.equal(branchesVisible.body.length, 1);
+  assert.equal(branchesVisible.body[0].id, b2);
+
+  const warehousesVisible = await t.call('GET', '/api/warehouses', byoToken);
+  assert.equal(warehousesVisible.status, 200);
+  assert.equal(warehousesVisible.body.length, 1);
+  assert.equal(warehousesVisible.body[0].id, wh3);
+
+  const crossBranchDoc = await t.call('GET', `/api/stock/documents/${rcv.body.document.id}`, byoToken);
+  assert.equal(crossBranchDoc.status, 403);
+  assert.equal(crossBranchDoc.body.error, 'forbidden_warehouse');
+
+  // Safe file uploads: valid PDF succeeds
+  const validPdfBase64 = Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF', 'utf8').toString('base64');
+  const uploadOk = await t.call('POST', '/api/attachments', t.inv, {
+    targetType: 'stock_document',
+    targetId: rcv.body.document.id,
+    filename: 'delivery-note-001.pdf',
+    mimeType: 'application/pdf',
+    contentBase64: validPdfBase64,
+  });
+  assert.equal(uploadOk.status, 201);
+  assert.equal(uploadOk.body.filename, 'delivery-note-001.pdf');
+
+  // Download attachment verifies CSP & nosniff headers
+  const dl = await t.app.inject({
+    method: 'GET',
+    url: `/api/attachments/${uploadOk.body.id}/download`,
+    headers: { authorization: `Bearer ${t.inv}` },
+  });
+  assert.equal(dl.statusCode, 200);
+  assert.equal(dl.headers['x-content-type-options'], 'nosniff');
+  assert.equal(dl.headers['content-security-policy'], "default-src 'none'");
+
+  // Path traversal in filename is rejected
+  const badPath = await t.call('POST', '/api/attachments', t.inv, {
+    targetType: 'stock_document',
+    targetId: rcv.body.document.id,
+    filename: '../../etc/passwd',
+    mimeType: 'application/pdf',
+    contentBase64: validPdfBase64,
+  });
+  assert.equal(badPath.status, 400);
+  assert.equal(badPath.body.error, 'invalid_filename');
+
+  // Spoofed magic bytes (claiming application/pdf but sending executable/script content) is rejected
+  const spoofedPdf = await t.call('POST', '/api/attachments', t.inv, {
+    targetType: 'stock_document',
+    targetId: rcv.body.document.id,
+    filename: 'invoice.pdf',
+    mimeType: 'application/pdf',
+    contentBase64: Buffer.from('<script>alert(1)</script>', 'utf8').toString('base64'),
+  });
+  assert.equal(spoofedPdf.status, 400);
+  assert.equal(spoofedPdf.body.error, 'file_signature_mismatch');
+
+  // Errors never leak stack traces or internal SQL paths
+  const notFoundRes = await t.call('GET', '/api/non-existent-endpoint', t.inv);
+  assert.equal(notFoundRes.status, 404);
+  assert.equal(notFoundRes.body.stack, undefined);
+});
