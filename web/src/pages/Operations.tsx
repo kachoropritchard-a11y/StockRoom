@@ -119,32 +119,47 @@ export function Operations() {
       setCountSheets(csRes.items);
       setRequisitions(rqRes.items);
 
-      if (!productId && pRes.items[0]) {
-        setProductId(String(pRes.items[0].id));
-        setUnitId(String(pRes.items[0].baseUnitId));
+      if (pRes.items[0]) {
+        const firstProd = pRes.items[0];
+        setProductId((prev) => {
+          if (prev) return prev;
+          setUnitId(String(firstProd.baseUnitId));
+          return String(firstProd.id);
+        });
+        setCsProductId((prev) => {
+          if (prev) return prev;
+          setCsUnitId(String(firstProd.baseUnitId));
+          return String(firstProd.id);
+        });
+        setReqProductId((prev) => {
+          if (prev) return prev;
+          setReqUnitId(String(firstProd.baseUnitId));
+          return String(firstProd.id);
+        });
       }
-      if (!csProductId && pRes.items[0]) {
-        setCsProductId(String(pRes.items[0].id));
-        setCsUnitId(String(pRes.items[0].baseUnitId));
+      if (wRes[0]) {
+        const defaultWh = String(wRes[0].id);
+        setWarehouseId((prev) => prev || defaultWh);
+        setCsWhId((prev) => prev || defaultWh);
+        setReqWarehouseId((prev) => prev || defaultWh);
       }
-      if (!reqProductId && pRes.items[0]) {
-        setReqProductId(String(pRes.items[0].id));
-        setReqUnitId(String(pRes.items[0].baseUnitId));
+      if (wRes[1]) {
+        const secondWh = String(wRes[1].id);
+        setToWarehouseId((prev) => prev || secondWh);
+        setReqToWhId((prev) => prev || secondWh);
       }
-      if (!warehouseId && wRes[0]) setWarehouseId(String(wRes[0].id));
-      if (!csWhId && wRes[0]) setCsWhId(String(wRes[0].id));
-      if (!reqWarehouseId && wRes[0]) setReqWarehouseId(String(wRes[0].id));
-      if (!toWarehouseId && wRes[1]) setToWarehouseId(String(wRes[1].id));
-      if (!reqToWhId && wRes[1]) setReqToWhId(String(wRes[1].id));
-      if (!departmentId && dRes[0]) setDepartmentId(String(dRes[0].id));
-      if (!reqDeptId && dRes[0]) setReqDeptId(String(dRes[0].id));
-      if (!supplierId && sRes[0]) setSupplierId(String(sRes[0].id));
+      if (dRes[0]) {
+        const defaultDept = String(dRes[0].id);
+        setDepartmentId((prev) => prev || defaultDept);
+        setReqDeptId((prev) => prev || defaultDept);
+      }
+      if (sRes[0]) setSupplierId((prev) => prev || String(sRes[0].id));
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [typeFilter, whLedgerFilter, ledgerPage, productId, csProductId, reqProductId, warehouseId, csWhId, reqWarehouseId, toWarehouseId, reqToWhId, departmentId, reqDeptId, supplierId]);
+  }, [typeFilter, whLedgerFilter, ledgerPage]);
 
   useEffect(() => {
     load();

@@ -71,15 +71,15 @@ export function Products() {
       setCategories(cRes);
       setUnits(uRes);
       setWarehouses(wRes);
-      if (!baseUnitId && uRes[0]) setBaseUnitId(String(uRes[0].id));
-      if (!pkgProductId && pRes.items[0]) setPkgProductId(String(pRes.items[0].id));
-      if (!pkgUnitId && uRes[1]) setPkgUnitId(String(uRes[1].id));
+      if (uRes[0]) setBaseUnitId((prev) => prev || String(uRes[0].id));
+      if (pRes.items[0]) setPkgProductId((prev) => prev || String(pRes.items[0].id));
+      if (uRes[1]) setPkgUnitId((prev) => prev || String(uRes[1].id));
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [search, catFilter, page, whFilter, baseUnitId, pkgProductId, pkgUnitId]);
+  }, [search, catFilter, page, whFilter]);
 
   useEffect(() => {
     load();

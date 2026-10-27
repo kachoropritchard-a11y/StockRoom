@@ -46,14 +46,17 @@ export function Warehouses() {
       setDepartments(dpRes);
       setReports(repRes);
       setBalances(balRes.items);
-      if (!whBranchId && brRes[0]) setWhBranchId(String(brRes[0].id));
-      if (!deptBranchId && brRes[0]) setDeptBranchId(String(brRes[0].id));
+      if (brRes[0]) {
+        const defaultBr = String(brRes[0].id);
+        setWhBranchId((prev) => prev || defaultBr);
+        setDeptBranchId((prev) => prev || defaultBr);
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [selectedWhId, whBranchId, deptBranchId]);
+  }, [selectedWhId]);
 
   useEffect(() => {
     load();

@@ -898,6 +898,10 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     }));
 
     // 3. Warehouse stock summary (from authoritative stock_balances view)
+    const whScope =
+      req.user!.role === 'inventory_manager' && req.user!.branchId !== null ? ' AND w.branch_id = ?' : '';
+    const whParams: (number | string)[] =
+      req.user!.role === 'inventory_manager' && req.user!.branchId !== null ? [orgId, req.user!.branchId] : [orgId];
     const warehouseStockSummary = (db
       .prepare(
         `SELECT w.id AS warehouseId, w.name AS warehouseName, br.name AS branchName,
@@ -908,11 +912,11 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
            JOIN branches br ON br.id = w.branch_id
            LEFT JOIN stock_balances b ON b.warehouse_id = w.id AND b.organisation_id = br.organisation_id
            LEFT JOIN products p ON p.id = b.product_id
-          WHERE br.organisation_id = ?
+          WHERE br.organisation_id = ?${whScope}
           GROUP BY w.id, w.name, br.name
           ORDER BY total_cents DESC, w.name ASC`,
       )
-      .all(orgId) as { warehouseId: number; warehouseName: string; branchName: string; skuCount: number; total_milli: number; total_cents: number }[]).map(
+      .all(...whParams) as { warehouseId: number; warehouseName: string; branchName: string; skuCount: number; total_milli: number; total_cents: number }[]).map(
       (r) => ({
         warehouseId: r.warehouseId,
         warehouseName: r.warehouseName,
@@ -924,6 +928,8 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     );
 
     // 4. Department consumption report (from non-reversed issue & write_off documents)
+    const depScope =
+      req.user!.role === 'inventory_manager' && req.user!.branchId !== null ? ' AND dep.branch_id = ?' : '';
     const departmentConsumption = (db
       .prepare(
         `SELECT dep.id AS departmentId, dep.name AS departmentName, br.name AS branchName,
@@ -938,11 +944,11 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
                  AND d.type IN ('issue', 'write_off')
                  AND NOT EXISTS (SELECT 1 FROM stock_documents rev WHERE rev.reverses_document_id = d.id)
            LEFT JOIN stock_movements m ON m.document_id = d.id
-          WHERE br.organisation_id = ?
+          WHERE br.organisation_id = ?${depScope}
           GROUP BY dep.id, dep.name, br.name
           ORDER BY consumed_cents DESC, dep.name ASC`,
       )
-      .all(orgId) as {
+      .all(...whParams) as {
       departmentId: number;
       departmentName: string;
       branchName: string;
@@ -1071,19 +1077,22 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       )
       .all(orgId);
 
-    const draftCountSheets = db
+    const draftCountSheets = (db
       .prepare(
         `SELECT cs.id, cs.reference, cs.notes, cs.status, cs.created_at AS createdAt,
                 w.name AS warehouseName, cs.created_by AS createdById, u.name AS createdByName,
-                (SELECT COUNT(*) FROM count_sheet_lines l WHERE l.count_sheet_id = cs.id) AS lineCount,
-                (SELECT COUNT(*) FROM count_sheet_lines l WHERE l.count_sheet_id = cs.id AND l.counted_milli != l.expected_milli) AS varianceCount
+                (SELECT COUNT(*) FROM count_sheet_lines l WHERE l.count_sheet_id = cs.id) AS lineCount
            FROM count_sheets cs
            JOIN warehouses w ON w.id = cs.warehouse_id
            LEFT JOIN users u ON u.id = cs.created_by
           WHERE cs.organisation_id = ? AND cs.status = 'draft'
           ORDER BY cs.id DESC`,
       )
-      .all(orgId);
+      .all(orgId) as ({ id: number } & Record<string, unknown>)[]).map((cs) => {
+      const sheet = getCountSheet(db, orgId, cs.id);
+      const varianceCount = sheet ? sheet.lines.filter((l) => l.varianceBaseQuantity !== 0).length : 0;
+      return { ...cs, varianceCount };
+    });
 
     return {
       draftPurchaseOrders,

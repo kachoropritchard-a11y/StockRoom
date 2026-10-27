@@ -89,15 +89,18 @@ export function Organisation() {
       setAuditTotal(logRes.total);
       setHealth(hRes);
       setBackups(bkRes.items);
-      if (!whBranchId && bRes[0]) setWhBranchId(String(bRes[0].id));
-      if (!deptBranchId && bRes[0]) setDeptBranchId(String(bRes[0].id));
-      if (!uBranchId && bRes[0]) setUBranchId(String(bRes[0].id));
+      if (bRes[0]) {
+        const defaultBr = String(bRes[0].id);
+        setWhBranchId((prev) => prev || defaultBr);
+        setDeptBranchId((prev) => prev || defaultBr);
+        setUBranchId((prev) => prev || defaultBr);
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [auditFilter, whBranchId, deptBranchId, uBranchId]);
+  }, [auditFilter]);
 
   useEffect(() => {
     load();

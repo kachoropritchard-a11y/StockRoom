@@ -22,7 +22,7 @@ npm run migrate
 npm run seed          # seeds demo org, users, Zimbabwean inventory, POs, and requisitions (idempotent)
 npm run dev:server    # http://127.0.0.1:4000 (running in background)
 npm run dev:web       # http://localhost:5173 (running in background)
-npm test              # 38 server tests (all passing)
+npm test              # 39 server tests (all passing)
 npm test -w web       # 5 frontend routing, keyboard accessibility & portal tests (all passing)
 npm run verify-ledger # audits ledger invariants (Ledger OK.)
 ```
@@ -38,9 +38,14 @@ npm run verify-ledger # audits ledger invariants (Ledger OK.)
   3. **Branch & Organisation Data Isolation:** Enforced strict branch scoping for branch-assigned Inventory Managers across `GET /api/branches`, `GET /api/warehouses`, `GET /api/departments`, `GET /api/dashboard/summary`, `GET /api/purchase-orders`, `GET /api/purchase-orders/:id`, `GET /api/requisitions`, `GET /api/requisitions/:id`, `GET /api/stock/count-sheets`, `GET /api/stock/count-sheets/:id`, and `GET /api/stock/documents/:id` (`403 forbidden_warehouse`).
   4. **Safe File Uploads (`/api/attachments`):** Implemented validated document attachments with strict MIME allow-list, magic-byte inspection, path-traversal prevention, 2 MB limit, SHA-256 checksums, and `nosniff` / `CSP` download headers.
   5. **Secret Redaction & Error Sanitization:** Redacted `authorization`, `cookie`, `set-cookie`, `password`, `currentPassword`, `newPassword`, and `token` in Fastify logs, and hardened `setErrorHandler` so raw Error messages and stack traces never leak to clients.
+- **Stage 5.1 (Full-Stack Error Audit & Bug Fixes):**
+  1. **Fixed `GET /api/executive/approvals` HTTP 500 SQL Error (`no such column: l.expected_milli`):** Replaced the invalid `l.expected_milli` subquery in `server/src/inventory/routes.ts` with dynamic variance calculation via `getCountSheet(db, orgId, cs.id)` against the authoritative `stock_balances` view.
+  2. **Eliminated Duplicate `useCallback` / `useEffect` Fetch Loops Across 5 Pages:** Refactored `Organisation.tsx`, `Products.tsx`, `Warehouses.tsx`, `Procurement.tsx`, and `Operations.tsx` to use functional state updates (`setX((prev) => prev || defaultId)`) and depend only on active query filters instead of default form dropdown states.
+  3. **Scoped Inventory Reports by Branch:** Scoped `warehouseStockSummary` and `departmentConsumption` in `GET /api/reports/inventory` (`server/src/inventory/routes.ts`) to the assigned branch when queried by a branch-bound Inventory Manager.
+  4. **Human-Readable API Error Mapping & Keyboard Shortcut Display:** Added structured error code mapping in `web/src/api.ts` and `web/src/pages/Login.tsx` (preserving `ApiError.code`), and updated `web/src/components/Shell.tsx` to dynamically show `Alt+1..{cfg.items.length}`.
 
 ## Actual Test Results
-- **Backend Automated Tests (`npm test`):** **38 / 38 passing** (`0` failures, duration ~8.7s) across `server/test/app.test.ts` (10 auth, session, CSRF, lockout, and role-guard tests) and `server/test/inventory.test.ts` (28 ledger, packaging, negative-stock, idempotency, reversal, immutability, randomized property, PO, requisition, governance, backup/restore, concurrency, approval auditability, branch isolation, and safe file upload tests).
+- **Backend Automated Tests (`npm test`):** **39 / 39 passing** (`0` failures) across `server/test/app.test.ts` (10 auth, session, CSRF, lockout, and role-guard tests) and `server/test/inventory.test.ts` (29 ledger, packaging, negative-stock, idempotency, reversal, immutability, randomized property, PO, requisition, governance, approvals queue, backup/restore, concurrency, approval auditability, branch isolation, and safe file upload tests).
 - **Frontend Automated Tests (`npm test -w web`):** **5 / 5 passing** (`0` failures) in `web/src/App.test.tsx`.
 - **Production Frontend Build (`npm run build -w web`):** **Passing** (`tsc --noEmit && vite build`).
 - **Ledger Invariant Verification (`npm run verify-ledger`):** **`Ledger OK.`** (`0` discrepancies).

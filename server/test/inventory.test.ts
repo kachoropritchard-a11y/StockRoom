@@ -882,3 +882,47 @@ test('Stage 5 branch isolation & safe file uploads: branch-scoped managers canno
   assert.equal(notFoundRes.status, 404);
   assert.equal(notFoundRes.body.stack, undefined);
 });
+
+test('executive approvals queue returns draft POs, pending requisitions, and draft count sheets with computed varianceCount', async () => {
+  const t = await setup();
+  await t.receive(50);
+
+  // Create a draft PO
+  const po = await t.call('POST', '/api/purchase-orders', t.inv, {
+    supplierId: t.supplier,
+    warehouseId: t.wh1,
+    reference: 'PO-APPROVAL-001',
+    lines: [{ productId: t.product, unitId: t.units.each, orderedQuantity: 25, unitCost: 2.5 }],
+  });
+  assert.equal(po.status, 201);
+
+  // Create a pending requisition
+  const reqRes = await t.call('POST', '/api/requisitions', t.inv, {
+    kind: 'department_issue',
+    warehouseId: t.wh1,
+    departmentId: t.dept,
+    reference: 'REQ-APPROVAL-001',
+    lines: [{ productId: t.product, unitId: t.units.each, requestedQuantity: 10 }],
+  });
+  assert.equal(reqRes.status, 201);
+
+  // Create a draft count sheet with a variance (50 expected, 47 counted => variance of -3 on 1 line)
+  const cs = await t.call('POST', '/api/stock/count-sheets', t.inv, {
+    warehouseId: t.wh1,
+    reference: 'CS-APPROVAL-001',
+    lines: [{ productId: t.product, unitId: t.units.each, countedQuantity: 47 }],
+  });
+  assert.equal(cs.status, 201);
+
+  const approvals = await t.call('GET', '/api/executive/approvals', t.exec);
+  assert.equal(approvals.status, 200);
+  assert.equal(approvals.body.totalPending, 3);
+  assert.equal(approvals.body.draftPurchaseOrders.length, 1);
+  assert.equal(approvals.body.draftPurchaseOrders[0].reference, 'PO-APPROVAL-001');
+  assert.equal(approvals.body.pendingRequisitions.length, 1);
+  assert.equal(approvals.body.pendingRequisitions[0].reference, 'REQ-APPROVAL-001');
+  assert.equal(approvals.body.draftCountSheets.length, 1);
+  assert.equal(approvals.body.draftCountSheets[0].reference, 'CS-APPROVAL-001');
+  assert.equal(approvals.body.draftCountSheets[0].lineCount, 1);
+  assert.equal(approvals.body.draftCountSheets[0].varianceCount, 1);
+});

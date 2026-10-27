@@ -376,11 +376,37 @@ export interface DocumentAttachmentItem {
   createdAt?: string;
 }
 
+const ERROR_MESSAGES: Record<string, string> = {
+  invalid_credentials: 'Incorrect email or password.',
+  account_locked: 'Too many failed attempts. This account is locked for 15 minutes. Contact an administrator if you need help.',
+  rate_limit_exceeded: 'Too many requests. Please wait a minute and try again.',
+  csrf_validation_failed: 'Security validation failed. Refresh the page and try again.',
+  validation_error: 'Please check your input fields and try again.',
+  forbidden: 'You do not have permission to perform this action.',
+  forbidden_permission: 'Your role does not have permission for this action. Contact an Executive Manager.',
+  forbidden_branch_scope: 'This warehouse or record belongs to another branch outside your assigned scope.',
+  separation_of_duties_violation: 'Separation of duties policy: you cannot approve or fulfill a document you created yourself.',
+  po_exceeds_approval_threshold: 'This Purchase Order exceeds the Executive approval threshold and requires Executive Manager approval.',
+  insufficient_stock: 'Insufficient stock on hand in the selected warehouse to complete this movement.',
+  already_reversed: 'This stock document has already been reversed.',
+  cannot_reverse_reversal: 'A reversal document cannot be reversed again.',
+  cannot_demote_or_deactivate_self: 'You cannot deactivate or demote your own Executive Manager account.',
+  email_exists: 'A user with this email address already exists.',
+  duplicate_or_invalid: 'A record with this code, SKU, or name already exists.',
+  invalid_or_expired_token: 'This password reset token is invalid or has expired.',
+  invalid_file_signature: 'Uploaded file failed PNG/JPEG/WEBP magic-byte verification.',
+  file_too_large: 'Uploaded image exceeds the maximum allowed size.',
+  confirmation_phrase_mismatch: 'The confirmation phrase did not match RESTORE BACKUP.',
+  internal_error: 'An unexpected server error occurred. Please try again.',
+};
+
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
-    super(message);
+  code: string;
+  constructor(status: number, code: string, customMessage?: string) {
+    super(customMessage ?? ERROR_MESSAGES[code] ?? code);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -397,10 +423,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       headers: { 'X-Requested-With': 'stockroom', ...(init?.body ? { 'Content-Type': 'application/json' } : {}), ...init?.headers },
     });
   } catch {
-    throw new ApiError(0, 'Cannot reach the server. Check your connection.');
+    throw new ApiError(0, 'network_error', 'Cannot reach the server. Check your connection.');
   }
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, (body as { error?: string }).error ?? 'request_failed');
+  if (!res.ok) {
+    const code = (body as { error?: string }).error ?? 'request_failed';
+    const detail = (body as { message?: string }).message;
+    throw new ApiError(res.status, code, detail && !ERROR_MESSAGES[code] ? detail : undefined);
+  }
   return body as T;
 }
 

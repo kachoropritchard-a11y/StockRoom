@@ -135,7 +135,7 @@ export function Shell({ portal }: { portal: keyof typeof NAV }) {
         </nav>
         <div className="sidebar-help">
           <div className="sidebar-help-title">Keyboard Shortcuts</div>
-          <div className="sidebar-help-row"><span>Jump pages</span><kbd>Alt+1..6</kbd></div>
+          <div className="sidebar-help-row"><span>Jump pages</span><kbd>Alt+1..{cfg.items.length}</kbd></div>
           <div className="sidebar-help-row"><span>Quick search</span><kbd>Alt+K</kbd></div>
           <div className="sidebar-help-row"><span>Quick transfer</span><kbd>Alt+T</kbd></div>
           <div className="sidebar-help-row"><span>Switch tabs</span><kbd>← / →</kbd></div>

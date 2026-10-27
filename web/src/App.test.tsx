@@ -81,6 +81,9 @@ function mockFetch(user: unknown) {
         );
       }
       if (url === '/api/branches' || url === '/api/warehouses' || url === '/api/departments' || url === '/api/users') {
+        if (url === '/api/branches') {
+          return new Response(JSON.stringify([{ id: 1, name: 'Harare HQ', city: 'Harare' }]), { status: 200 });
+        }
         return new Response(JSON.stringify([]), { status: 200 });
       }
       if (url.startsWith('/api/executive/audit-logs')) {
@@ -156,6 +159,11 @@ describe('role-based routing', () => {
     const tablist = screen.getByRole('tablist', { name: /Executive governance sections/i });
     fireEvent.keyDown(tablist, { key: 'ArrowRight' });
     expect(await screen.findByText('Approve Purchase Orders')).toBeTruthy();
+
+    // Verify /api/executive/approvals was only fetched once on initial mount (no duplicate useCallback reload loop)
+    const fetchMock = vi.mocked(globalThis.fetch);
+    const approvalCalls = fetchMock.mock.calls.filter(([url]) => url === '/api/executive/approvals');
+    expect(approvalCalls.length).toBe(1);
   });
 
   it('renders inventory manager reports and supports keyboard arrow-key tab navigation', async () => {

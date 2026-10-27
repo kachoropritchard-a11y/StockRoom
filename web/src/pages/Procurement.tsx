@@ -66,21 +66,24 @@ export function Procurement() {
       setWarehouses(wRes);
       setProducts(pRes.items);
       setPurchaseOrders(poRes.items);
-      if (!poSupplierId && sRes[0]) setPoSupplierId(String(sRes[0].id));
-      if (!poWarehouseId && wRes[0]) setPoWarehouseId(String(wRes[0].id));
+      if (sRes[0]) setPoSupplierId((prev) => prev || String(sRes[0].id));
+      if (wRes[0]) setPoWarehouseId((prev) => prev || String(wRes[0].id));
       const initialProduct =
         (prefillProductId && pRes.items.find((x) => String(x.id) === prefillProductId)) || pRes.items[0];
-      if (!poProductId && initialProduct) {
-        setPoProductId(String(initialProduct.id));
-        setPoUnitId(String(initialProduct.baseUnitId));
-        setPoCost(String(initialProduct.unitCost || 1));
+      if (initialProduct) {
+        setPoProductId((prev) => {
+          if (prev) return prev;
+          setPoUnitId(String(initialProduct.baseUnitId));
+          setPoCost(String(initialProduct.unitCost || 1));
+          return String(initialProduct.id);
+        });
       }
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, poSupplierId, poWarehouseId, poProductId, prefillProductId]);
+  }, [statusFilter, prefillProductId]);
 
   useEffect(() => {
     load();

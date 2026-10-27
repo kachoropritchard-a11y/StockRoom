@@ -7,6 +7,7 @@ const messages: Record<string, string> = {
   invalid_credentials: 'Incorrect email or password.',
   account_locked: 'Too many failed attempts. This account is locked for 15 minutes. Contact an administrator if you need help.',
   validation_error: 'Enter a valid email and password.',
+  rate_limit_exceeded: 'Too many attempts. Please wait a minute and try again.',
   'Too Many Requests': 'Too many attempts. Please wait a minute and try again.',
 };
 
@@ -26,7 +27,11 @@ export function Login() {
     try {
       await login(email, password);
     } catch (err) {
-      setError(err instanceof ApiError ? messages[err.message] ?? (err.status === 0 ? err.message : 'Sign in failed.') : 'Sign in failed.');
+      setError(
+        err instanceof ApiError
+          ? messages[err.code] ?? messages[err.message] ?? (err.status === 0 ? err.message : err.message || 'Sign in failed.')
+          : 'Sign in failed.',
+      );
     } finally {
       setBusy(false);
     }
