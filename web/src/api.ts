@@ -53,13 +53,143 @@ export interface Summary {
   departments: number;
   users: number | null;
   products?: number;
+  totalStockUnits?: number;
   totalStockValue?: number;
+  receiptsCount?: number;
+  receiptsUnits?: number;
+  issuesCount?: number;
+  issuesUnits?: number;
+  transfersCount?: number;
+  transfersUnits?: number;
   lowStockCount?: number;
   expiringSoonCount?: number;
   pendingCountSheets?: number;
+  pendingApprovals?: {
+    draftPurchaseOrders: number;
+    pendingRequisitions: number;
+    draftCountSheets: number;
+    total: number;
+  };
   lowStockItems?: LowStockItem[];
   warehouseSummary?: WarehouseSummaryItem[];
   recentMovements?: MovementItem[];
+}
+
+export interface OrganisationSettings {
+  id: number;
+  name: string;
+  allowNegativeStock: boolean;
+  enforceSeparationOfDuties: boolean;
+  poApprovalThreshold: number;
+  currencyCode: string;
+}
+
+export interface GranularPermissionItem {
+  key: 'can_approve_po' | 'can_fulfill_requisitions' | 'can_write_off_stock' | 'can_export_reports';
+  label: string;
+  description: string;
+  allowed: boolean;
+  updatedAt: string | null;
+}
+
+export interface ExecutiveApprovals {
+  draftPurchaseOrders: {
+    id: number;
+    reference: string;
+    notes: string | null;
+    status: string;
+    createdAt: string;
+    supplierName: string;
+    warehouseName: string;
+    createdById: number;
+    createdByName: string | null;
+    lineCount: number;
+    totalValue: number;
+  }[];
+  pendingRequisitions: {
+    id: number;
+    kind: 'department_issue' | 'warehouse_transfer';
+    reference: string | null;
+    notes: string | null;
+    status: string;
+    createdAt: string;
+    warehouseName: string;
+    departmentName: string | null;
+    toWarehouseName: string | null;
+    createdById: number;
+    createdByName: string | null;
+    lineCount: number;
+  }[];
+  draftCountSheets: {
+    id: number;
+    reference: string | null;
+    notes: string | null;
+    status: string;
+    createdAt: string;
+    warehouseName: string;
+    createdById: number;
+    createdByName: string | null;
+    lineCount: number;
+    varianceCount: number;
+  }[];
+  totalPending: number;
+}
+
+export interface AuditLogItem {
+  id: number;
+  actorId: number | null;
+  actorEmail: string;
+  actorRole: string;
+  action: string;
+  targetType: string;
+  targetId: string | null;
+  details: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface NotificationItem {
+  id: string;
+  severity: 'critical' | 'warning' | 'info';
+  category: 'low_stock' | 'expiry' | 'approval' | 'security' | 'backup';
+  title: string;
+  message: string;
+  link: string;
+}
+
+export interface SystemBackupItem {
+  id: number;
+  label: string;
+  checksumSha256: string;
+  sizeBytes: number;
+  status: 'verified' | 'restored';
+  createdBy: number;
+  createdByName: string | null;
+  createdAt: string;
+  restoredAt: string | null;
+}
+
+export interface SystemHealthStatus {
+  status: 'healthy' | 'degraded';
+  databaseConnected: boolean;
+  ledgerIntegrity: { ok: boolean; problems: { check: string; detail: string }[] };
+  activeSessions: number;
+  lockedUsers: number;
+  lastBackup: SystemBackupItem | null;
+  tableCounts: {
+    users: number;
+    branches: number;
+    warehouses: number;
+    departments: number;
+    products: number;
+    stockDocuments: number;
+    stockMovements: number;
+    purchaseOrders: number;
+    requisitions: number;
+    auditLogs: number;
+    backups: number;
+  };
+  uptimeSeconds: number;
+  checkedAt: string;
 }
 
 export interface ProductItem {
@@ -272,22 +402,33 @@ export const api = {
     request<{ ok: true }>('/api/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, newPassword }) }),
   summary: () => request<Summary>('/api/dashboard/summary'),
 
-  organisation: () => request<{ id: number; name: string; allowNegativeStock: boolean }>('/api/organisation'),
-  updateOrganisation: (body: { name?: string; allowNegativeStock?: boolean }) =>
-    request<{ ok: true }>('/api/organisation', { method: 'PATCH', body: JSON.stringify(body) }),
+  organisation: () => request<OrganisationSettings>('/api/organisation'),
+  updateOrganisation: (body: {
+    name?: string;
+    allowNegativeStock?: boolean;
+    enforceSeparationOfDuties?: boolean;
+    poApprovalThreshold?: number;
+    currencyCode?: string;
+  }) => request<{ ok: true }>('/api/organisation', { method: 'PATCH', body: JSON.stringify(body) }),
   verifyLedger: () => request<{ ok: boolean; problems: { check: string; detail: string }[] }>('/api/stock/verify'),
 
   branches: () => request<{ id: number; name: string; city: string | null; active: number }[]>('/api/branches'),
   createBranch: (body: { name: string; city?: string }) =>
     request<{ id: number }>('/api/branches', { method: 'POST', body: JSON.stringify(body) }),
+  updateBranch: (id: number, body: { name?: string; city?: string | null; active?: boolean }) =>
+    request<{ ok: true }>(`/api/branches/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
   warehouses: () => request<{ id: number; branchId: number; branchName?: string; name: string; active: number }[]>('/api/warehouses'),
   createWarehouse: (body: { branchId: number; name: string }) =>
     request<{ id: number }>('/api/warehouses', { method: 'POST', body: JSON.stringify(body) }),
+  updateWarehouse: (id: number, body: { name?: string; active?: boolean }) =>
+    request<{ ok: true }>(`/api/warehouses/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
   departments: () => request<{ id: number; branchId: number; branchName?: string; name: string; active: number }[]>('/api/departments'),
   createDepartment: (body: { branchId: number; name: string }) =>
     request<{ id: number }>('/api/departments', { method: 'POST', body: JSON.stringify(body) }),
+  updateDepartment: (id: number, body: { name?: string; active?: boolean }) =>
+    request<{ ok: true }>(`/api/departments/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
   users: () =>
     request<{ id: number; email: string; name: string; role: User['role']; branchId: number | null; branchName: string | null; active: boolean; lockedUntil: string | null }[]>('/api/users'),
@@ -435,4 +576,41 @@ export const api = {
     request<RequisitionDetail>(`/api/requisitions/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
 
   inventoryReports: () => request<InventoryReports>('/api/reports/inventory'),
+
+  permissions: () => request<{ role: string; permissions: GranularPermissionItem[] }>('/api/executive/permissions'),
+  updatePermissions: (permissions: Partial<Record<GranularPermissionItem['key'], boolean>>) =>
+    request<{ ok: true }>('/api/executive/permissions', { method: 'PATCH', body: JSON.stringify({ permissions }) }),
+  approvals: () => request<ExecutiveApprovals>('/api/executive/approvals'),
+  auditLogs: (opts?: { action?: string; limit?: number; offset?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.action) params.set('action', opts.action);
+    if (opts?.limit !== undefined) params.set('limit', String(opts.limit));
+    if (opts?.offset !== undefined) params.set('offset', String(opts.offset));
+    const qs = params.toString();
+    return request<{ items: AuditLogItem[]; total: number }>(`/api/executive/audit-logs${qs ? `?${qs}` : ''}`);
+  },
+  notifications: () => request<{ items: NotificationItem[]; unreadCount: number }>('/api/notifications'),
+  systemHealth: () => request<SystemHealthStatus>('/api/executive/system-health'),
+  backups: () => request<{ items: SystemBackupItem[] }>('/api/executive/backups'),
+  createBackup: (label: string) =>
+    request<SystemBackupItem>('/api/executive/backups', { method: 'POST', body: JSON.stringify({ label }) }),
+  verifyBackup: (id: number) =>
+    request<{
+      backupId: number;
+      label: string;
+      checksumMatch: boolean;
+      expectedChecksum: string;
+      computedChecksum: string;
+      ledgerOk: boolean;
+      readyForRestore: boolean;
+    }>(`/api/executive/backups/${id}/verify`, { method: 'POST', body: JSON.stringify({}) }),
+  restoreBackup: (id: number, confirmationPhrase: string) =>
+    request<{ ok: boolean; backupId: number; label: string; checksumSha256: string; restoredAt: string }>(
+      `/api/executive/backups/${id}/restore`,
+      { method: 'POST', body: JSON.stringify({ confirmationPhrase }) },
+    ),
+  exportReportJson: (section: 'valuation' | 'low_stock' | 'movements' | 'audit_logs') =>
+    request<{ section: string; format: string; generatedAt: string; items: Record<string, unknown>[] }>(
+      `/api/reports/export?section=${encodeURIComponent(section)}&format=json`,
+    ),
 };

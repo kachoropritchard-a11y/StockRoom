@@ -5,6 +5,7 @@ import type { Db } from '../db.ts';
 import type { Role } from '../app.ts';
 import { AppError } from '../errors.ts';
 import {
+  GRANULAR_PERMISSIONS,
   approveCountSheet,
   approvePurchaseOrder,
   cancelCountSheet,
@@ -12,6 +13,7 @@ import {
   createCountSheet,
   createPurchaseOrder,
   createRequisition,
+  createSystemBackup,
   fromCents,
   fromMilli,
   fulfillRequisition,
@@ -19,14 +21,19 @@ import {
   getDocument,
   getPurchaseOrder,
   getRequisition,
+  hasPermission,
   postDocument,
   postReturn,
   receivePurchaseOrder,
+  recordAudit,
   rejectRequisition,
+  restoreSystemBackup,
   reverseDocument,
   toCents,
   toMilli,
   verifyLedger,
+  verifySystemBackup,
+  type GranularPermission,
   type PostableType,
 } from './engine.ts';
 
@@ -62,12 +69,44 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
 
   // ---------- organisation ----------
   app.get('/api/organisation', { preHandler: anyUser }, async (req) => {
-    const o = db.prepare('SELECT id, name, allow_negative_stock FROM organisations WHERE id = ?').get(req.user!.organisationId) as { id: number; name: string; allow_negative_stock: number };
-    return { id: o.id, name: o.name, allowNegativeStock: !!o.allow_negative_stock };
+    const o = db
+      .prepare('SELECT id, name, allow_negative_stock, enforce_separation_of_duties, po_approval_threshold_cents, currency_code FROM organisations WHERE id = ?')
+      .get(req.user!.organisationId) as {
+      id: number;
+      name: string;
+      allow_negative_stock: number;
+      enforce_separation_of_duties: number;
+      po_approval_threshold_cents: number;
+      currency_code: string;
+    };
+    return {
+      id: o.id,
+      name: o.name,
+      allowNegativeStock: !!o.allow_negative_stock,
+      enforceSeparationOfDuties: !!o.enforce_separation_of_duties,
+      poApprovalThreshold: fromCents(o.po_approval_threshold_cents ?? 0),
+      currencyCode: o.currency_code ?? 'USD',
+    };
   });
   app.patch('/api/organisation', { preHandler: exec }, async (req) => {
-    const b = z.object({ name: name.optional(), allowNegativeStock: z.boolean().optional() }).strict().parse(req.body);
-    update(db, 'organisations', req.user!.organisationId, { name: b.name, allow_negative_stock: flag(b.allowNegativeStock) });
+    const b = z
+      .object({
+        name: name.optional(),
+        allowNegativeStock: z.boolean().optional(),
+        enforceSeparationOfDuties: z.boolean().optional(),
+        poApprovalThreshold: money.optional(),
+        currencyCode: z.string().trim().min(3).max(8).optional(),
+      })
+      .strict()
+      .parse(req.body);
+    update(db, 'organisations', req.user!.organisationId, {
+      name: b.name,
+      allow_negative_stock: flag(b.allowNegativeStock),
+      enforce_separation_of_duties: flag(b.enforceSeparationOfDuties),
+      po_approval_threshold_cents: b.poApprovalThreshold !== undefined ? toCents(b.poApprovalThreshold) : undefined,
+      currency_code: b.currencyCode,
+    });
+    recordAudit(db, req.user!, 'org.policy_update', 'organisation', req.user!.organisationId, b);
     return { ok: true };
   });
 
@@ -99,7 +138,9 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     const r = db
       .prepare('INSERT INTO users (organisation_id, branch_id, email, name, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)')
       .run(orgId, b.branchId ?? null, b.email, b.name, hash, b.role);
-    return reply.code(201).send({ id: Number(r.lastInsertRowid) });
+    const userId = Number(r.lastInsertRowid);
+    recordAudit(db, req.user!, 'user.create', 'user', userId, { email: b.email, name: b.name, role: b.role, branchId: b.branchId ?? null });
+    return reply.code(201).send({ id: userId });
   });
   app.patch('/api/users/:id', { preHandler: exec }, async (req) => {
     const { id: rowId } = idParam.parse(req.params);
@@ -135,6 +176,14 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     if (b.active === false || b.password) {
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(rowId);
     }
+    recordAudit(db, req.user!, 'user.update', 'user', rowId, {
+      name: b.name,
+      role: b.role,
+      branchId: b.branchId,
+      active: b.active,
+      passwordReset: !!b.password,
+      unlocked: !!b.unlock,
+    });
     return { ok: true };
   });
 
@@ -145,13 +194,16 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   app.post('/api/branches', { preHandler: exec }, async (req, reply) => {
     const b = z.object({ name, city: text(80) }).strict().parse(req.body);
     const r = db.prepare('INSERT INTO branches (organisation_id, name, city) VALUES (?, ?, ?)').run(req.user!.organisationId, b.name, b.city);
-    return reply.code(201).send({ id: Number(r.lastInsertRowid) });
+    const branchId = Number(r.lastInsertRowid);
+    recordAudit(db, req.user!, 'branch.create', 'branch', branchId, b);
+    return reply.code(201).send({ id: branchId });
   });
   app.patch('/api/branches/:id', { preHandler: exec }, async (req) => {
     const { id: rowId } = idParam.parse(req.params);
     ownedBranch(rowId, req.user!.organisationId);
     const b = z.object({ name: name.optional(), city: text(80).optional(), active: z.boolean().optional() }).strict().parse(req.body);
     update(db, 'branches', rowId, { name: b.name, city: b.city, active: flag(b.active) });
+    recordAudit(db, req.user!, 'branch.update', 'branch', rowId, b);
     return { ok: true };
   });
 
@@ -165,13 +217,16 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       const b = z.object({ branchId: id, name }).strict().parse(req.body);
       ownedBranch(b.branchId, req.user!.organisationId);
       const r = db.prepare(`INSERT INTO ${table} (branch_id, name) VALUES (?, ?)`).run(b.branchId, b.name);
-      return reply.code(201).send({ id: Number(r.lastInsertRowid) });
+      const createdId = Number(r.lastInsertRowid);
+      recordAudit(db, req.user!, `${table.slice(0, -1)}.create`, table.slice(0, -1), createdId, b);
+      return reply.code(201).send({ id: createdId });
     });
     app.patch(`/api/${table}/:id`, { preHandler: exec }, async (req) => {
       const { id: rowId } = idParam.parse(req.params);
       if (!db.prepare(`SELECT 1 FROM ${table} t JOIN branches b ON b.id = t.branch_id WHERE t.id = ? AND b.organisation_id = ?`).get(rowId, req.user!.organisationId)) throw new AppError(404, 'not_found');
       const b = z.object({ name: name.optional(), active: z.boolean().optional() }).strict().parse(req.body);
       update(db, table, rowId, { name: b.name, active: flag(b.active) });
+      recordAudit(db, req.user!, `${table.slice(0, -1)}.update`, table.slice(0, -1), rowId, b);
       return { ok: true };
     });
   }
@@ -877,5 +932,430 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       departmentConsumption,
       movementSummary,
     };
+  });
+
+  // ---------- Stage 4: Executive Governance, Permissions, Approvals, Audit, Notifications, Health, Backups & Exports ----------
+
+  app.get('/api/executive/permissions', { preHandler: exec }, async (req) => {
+    const orgId = req.user!.organisationId;
+    const rows = db
+      .prepare('SELECT permission, allowed, updated_at AS updatedAt FROM role_permissions WHERE organisation_id = ? AND role = ?')
+      .all(orgId, 'inventory_manager') as { permission: string; allowed: number; updatedAt: string }[];
+    const map = new Map(rows.map((r) => [r.permission, r]));
+    return {
+      role: 'inventory_manager',
+      permissions: GRANULAR_PERMISSIONS.map((p) => ({
+        key: p.key,
+        label: p.label,
+        description: p.description,
+        allowed: map.has(p.key) ? map.get(p.key)!.allowed === 1 : true,
+        updatedAt: map.get(p.key)?.updatedAt ?? null,
+      })),
+    };
+  });
+
+  app.patch('/api/executive/permissions', { preHandler: exec }, async (req) => {
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        permissions: z
+          .object({
+            can_approve_po: z.boolean().optional(),
+            can_fulfill_requisitions: z.boolean().optional(),
+            can_write_off_stock: z.boolean().optional(),
+            can_export_reports: z.boolean().optional(),
+          })
+          .strict(),
+      })
+      .strict()
+      .parse(req.body);
+    const stmt = db.prepare(
+      `INSERT INTO role_permissions (organisation_id, role, permission, allowed, updated_at)
+       VALUES (?, 'inventory_manager', ?, ?, datetime('now'))
+       ON CONFLICT(organisation_id, role, permission) DO UPDATE SET allowed = excluded.allowed, updated_at = datetime('now')`,
+    );
+    for (const [k, v] of Object.entries(b.permissions)) {
+      if (v !== undefined) stmt.run(orgId, k as GranularPermission, v ? 1 : 0);
+    }
+    recordAudit(db, req.user!, 'role_permissions.update', 'role_permissions', 'inventory_manager', b.permissions);
+    return { ok: true };
+  });
+
+  app.get('/api/executive/approvals', { preHandler: exec }, async (req) => {
+    const orgId = req.user!.organisationId;
+    const draftPurchaseOrders = (db
+      .prepare(
+        `SELECT po.id, po.reference, po.notes, po.status, po.created_at AS createdAt,
+                s.name AS supplierName, w.name AS warehouseName,
+                po.created_by AS createdById, u.name AS createdByName,
+                (SELECT COUNT(*) FROM purchase_order_lines l WHERE l.purchase_order_id = po.id) AS lineCount,
+                COALESCE((SELECT SUM((l.ordered_milli / 1000.0) * l.unit_cost_cents) FROM purchase_order_lines l WHERE l.purchase_order_id = po.id), 0) AS total_cents
+           FROM purchase_orders po
+           JOIN suppliers s ON s.id = po.supplier_id
+           JOIN warehouses w ON w.id = po.warehouse_id
+           LEFT JOIN users u ON u.id = po.created_by
+          WHERE po.organisation_id = ? AND po.status = 'draft'
+          ORDER BY po.id DESC`,
+      )
+      .all(orgId) as ({ total_cents: number } & Record<string, unknown>)[]).map(({ total_cents, ...r }) => ({
+      ...r,
+      totalValue: Math.round(total_cents) / 100,
+    }));
+
+    const pendingRequisitions = db
+      .prepare(
+        `SELECT r.id, r.kind, r.reference, r.notes, r.status, r.created_at AS createdAt,
+                w.name AS warehouseName, d.name AS departmentName, tw.name AS toWarehouseName,
+                r.created_by AS createdById, u.name AS createdByName,
+                (SELECT COUNT(*) FROM requisition_lines l WHERE l.requisition_id = r.id) AS lineCount
+           FROM requisitions r
+           JOIN warehouses w ON w.id = r.warehouse_id
+           LEFT JOIN departments d ON d.id = r.department_id
+           LEFT JOIN warehouses tw ON tw.id = r.to_warehouse_id
+           LEFT JOIN users u ON u.id = r.created_by
+          WHERE r.organisation_id = ? AND r.status = 'pending'
+          ORDER BY r.id DESC`,
+      )
+      .all(orgId);
+
+    const draftCountSheets = db
+      .prepare(
+        `SELECT cs.id, cs.reference, cs.notes, cs.status, cs.created_at AS createdAt,
+                w.name AS warehouseName, cs.created_by AS createdById, u.name AS createdByName,
+                (SELECT COUNT(*) FROM count_sheet_lines l WHERE l.count_sheet_id = cs.id) AS lineCount,
+                (SELECT COUNT(*) FROM count_sheet_lines l WHERE l.count_sheet_id = cs.id AND l.counted_milli != l.expected_milli) AS varianceCount
+           FROM count_sheets cs
+           JOIN warehouses w ON w.id = cs.warehouse_id
+           LEFT JOIN users u ON u.id = cs.created_by
+          WHERE cs.organisation_id = ? AND cs.status = 'draft'
+          ORDER BY cs.id DESC`,
+      )
+      .all(orgId);
+
+    return {
+      draftPurchaseOrders,
+      pendingRequisitions,
+      draftCountSheets,
+      totalPending: draftPurchaseOrders.length + pendingRequisitions.length + draftCountSheets.length,
+    };
+  });
+
+  app.get('/api/executive/audit-logs', { preHandler: exec }, async (req) => {
+    const q = paging.extend({ action: z.string().trim().max(80).optional() }).parse(req.query);
+    const orgId = req.user!.organisationId;
+    const where = ['organisation_id = ?'];
+    const params: (string | number)[] = [orgId];
+    if (q.action) {
+      where.push('action = ?');
+      params.push(q.action);
+    }
+    const items = (db
+      .prepare(
+        `SELECT id, actor_id AS actorId, actor_email AS actorEmail, actor_role AS actorRole,
+                action, target_type AS targetType, target_id AS targetId, details_json, created_at AS createdAt
+           FROM audit_logs
+          WHERE ${where.join(' AND ')}
+          ORDER BY id DESC LIMIT ? OFFSET ?`,
+      )
+      .all(...params, q.limit, q.offset) as ({ details_json: string | null } & Record<string, unknown>)[]).map(({ details_json, ...r }) => ({
+      ...r,
+      details: details_json ? JSON.parse(details_json) : null,
+    }));
+    const total = (db.prepare(`SELECT COUNT(*) n FROM audit_logs WHERE ${where.join(' AND ')}`).get(...params) as { n: number }).n;
+    return { items, total };
+  });
+
+  app.get('/api/notifications', { preHandler: anyUser }, async (req) => {
+    const orgId = req.user!.organisationId;
+    const items: {
+      id: string;
+      severity: 'critical' | 'warning' | 'info';
+      category: 'low_stock' | 'expiry' | 'approval' | 'security' | 'backup';
+      title: string;
+      message: string;
+      link: string;
+    }[] = [];
+
+    const lowStock = db
+      .prepare(
+        `SELECT p.id, p.sku, p.name, u.code AS unit, p.reorder_level_milli,
+                COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS total_milli
+           FROM products p JOIN units_of_measure u ON u.id = p.base_unit_id
+          WHERE p.organisation_id = ? AND p.active = 1 AND p.reorder_level_milli > 0
+            AND COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) <= p.reorder_level_milli
+          ORDER BY total_milli ASC LIMIT 10`,
+      )
+      .all(orgId) as { id: number; sku: string; name: string; unit: string; reorder_level_milli: number; total_milli: number }[];
+
+    for (const p of lowStock) {
+      const portalPrefix = req.user!.role === 'executive_manager' ? '/executive' : '/inventory';
+      items.push({
+        id: `low-stock-${p.id}`,
+        severity: p.total_milli <= 0 ? 'critical' : 'warning',
+        category: 'low_stock',
+        title: p.total_milli <= 0 ? `Out of Stock: ${p.sku}` : `Low Stock Alert: ${p.sku}`,
+        message: `${p.name} has ${fromMilli(p.total_milli)} ${p.unit} remaining (reorder threshold: ${fromMilli(p.reorder_level_milli)} ${p.unit}).`,
+        link: `${portalPrefix}/reports`,
+      });
+    }
+
+    const expiringBatches = db
+      .prepare(
+        `SELECT m.batch_number AS batchNumber, m.expiry_date AS expiryDate, p.sku, p.name AS productName
+           FROM stock_movements m
+           JOIN products p ON p.id = m.product_id
+          WHERE m.organisation_id = ? AND m.expiry_date IS NOT NULL
+            AND m.expiry_date <= date('now', '+30 days')
+            AND m.base_delta_milli > 0
+          GROUP BY m.batch_number, m.expiry_date, p.sku, p.name
+          ORDER BY m.expiry_date ASC LIMIT 5`,
+      )
+      .all(orgId) as { batchNumber: string | null; expiryDate: string; sku: string; productName: string }[];
+
+    for (const b of expiringBatches) {
+      const portalPrefix = req.user!.role === 'executive_manager' ? '/executive' : '/inventory';
+      items.push({
+        id: `expiry-${b.sku}-${b.batchNumber ?? 'batch'}-${b.expiryDate}`,
+        severity: 'warning',
+        category: 'expiry',
+        title: `Batch Expiry Within 30 Days: ${b.sku}`,
+        message: `${b.productName} (Batch ${b.batchNumber ?? 'N/A'}) expires on ${b.expiryDate}.`,
+        link: `${portalPrefix}/operations`,
+      });
+    }
+
+    const draftPOs = (db.prepare("SELECT COUNT(*) n FROM purchase_orders WHERE organisation_id = ? AND status = 'draft'").get(orgId) as { n: number }).n;
+    const pendingReqs = (db.prepare("SELECT COUNT(*) n FROM requisitions WHERE organisation_id = ? AND status = 'pending'").get(orgId) as { n: number }).n;
+    const draftCounts = (db.prepare("SELECT COUNT(*) n FROM count_sheets WHERE organisation_id = ? AND status = 'draft'").get(orgId) as { n: number }).n;
+    const totalPending = draftPOs + pendingReqs + draftCounts;
+
+    if (totalPending > 0) {
+      items.push({
+        id: 'pending-approvals',
+        severity: draftCounts > 0 ? 'warning' : 'info',
+        category: 'approval',
+        title: `${totalPending} Pending Approval${totalPending === 1 ? '' : 's'}`,
+        message: `${draftPOs} draft PO(s), ${pendingReqs} requisition(s), and ${draftCounts} stocktake sheet(s) awaiting review.`,
+        link: req.user!.role === 'executive_manager' ? '/executive/organisation' : '/inventory/procurement',
+      });
+    }
+
+    if (req.user!.role === 'executive_manager') {
+      const lockedUsers = (db.prepare("SELECT COUNT(*) n FROM users WHERE organisation_id = ? AND locked_until > datetime('now')").get(orgId) as { n: number }).n;
+      if (lockedUsers > 0) {
+        items.push({
+          id: 'locked-users',
+          severity: 'critical',
+          category: 'security',
+          title: `${lockedUsers} Locked User Account${lockedUsers === 1 ? '' : 's'}`,
+          message: `${lockedUsers} user account(s) are currently locked due to failed sign-in attempts.`,
+          link: '/executive/organisation',
+        });
+      }
+
+      const backupCount = (db.prepare('SELECT COUNT(*) n FROM system_backups WHERE organisation_id = ?').get(orgId) as { n: number }).n;
+      if (backupCount === 0) {
+        items.push({
+          id: 'no-backup',
+          severity: 'info',
+          category: 'backup',
+          title: 'No Verified System Snapshot Yet',
+          message: 'Create a verified SHA-256 recovery snapshot in Executive Governance -> System Health & Backups.',
+          link: '/executive/organisation',
+        });
+      }
+    }
+
+    return {
+      items,
+      unreadCount: items.length,
+    };
+  });
+
+  app.get('/api/executive/system-health', { preHandler: exec }, async (req) => {
+    const orgId = req.user!.organisationId;
+    const ledger = verifyLedger(db, orgId);
+    const activeSessions = (db.prepare("SELECT COUNT(*) n FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.organisation_id = ? AND s.expires_at > datetime('now')").get(orgId) as { n: number }).n;
+    const lockedUsers = (db.prepare("SELECT COUNT(*) n FROM users WHERE organisation_id = ? AND locked_until > datetime('now')").get(orgId) as { n: number }).n;
+    const lastBackup = db
+      .prepare('SELECT id, label, checksum_sha256 AS checksumSha256, size_bytes AS sizeBytes, status, created_at AS createdAt, restored_at AS restoredAt FROM system_backups WHERE organisation_id = ? ORDER BY id DESC LIMIT 1')
+      .get(orgId) as Record<string, unknown> | undefined;
+
+    const tableCounts = {
+      users: (db.prepare('SELECT COUNT(*) n FROM users WHERE organisation_id = ?').get(orgId) as { n: number }).n,
+      branches: (db.prepare('SELECT COUNT(*) n FROM branches WHERE organisation_id = ?').get(orgId) as { n: number }).n,
+      warehouses: (db.prepare('SELECT COUNT(*) n FROM warehouses w JOIN branches b ON b.id = w.branch_id WHERE b.organisation_id = ?').get(orgId) as { n: number }).n,
+      departments: (db.prepare('SELECT COUNT(*) n FROM departments d JOIN branches b ON b.id = d.branch_id WHERE b.organisation_id = ?').get(orgId) as { n: number }).n,
+      products: (db.prepare('SELECT COUNT(*) n FROM products WHERE organisation_id = ?').get(orgId) as { n: number }).n,
+      stockDocuments: (db.prepare('SELECT COUNT(*) n FROM stock_documents WHERE organisation_id = ?').get(orgId) as { n: number }).n,
+      stockMovements: (db.prepare('SELECT COUNT(*) n FROM stock_movements WHERE organisation_id = ?').get(orgId) as { n: number }).n,
+      purchaseOrders: (db.prepare('SELECT COUNT(*) n FROM purchase_orders WHERE organisation_id = ?').get(orgId) as { n: number }).n,
+      requisitions: (db.prepare('SELECT COUNT(*) n FROM requisitions WHERE organisation_id = ?').get(orgId) as { n: number }).n,
+      auditLogs: (db.prepare('SELECT COUNT(*) n FROM audit_logs WHERE organisation_id = ?').get(orgId) as { n: number }).n,
+      backups: (db.prepare('SELECT COUNT(*) n FROM system_backups WHERE organisation_id = ?').get(orgId) as { n: number }).n,
+    };
+
+    return {
+      status: ledger.ok ? 'healthy' : 'degraded',
+      databaseConnected: true,
+      ledgerIntegrity: ledger,
+      activeSessions,
+      lockedUsers,
+      lastBackup: lastBackup ?? null,
+      tableCounts,
+      uptimeSeconds: Math.round(process.uptime()),
+      checkedAt: new Date().toISOString(),
+    };
+  });
+
+  app.get('/api/executive/backups', { preHandler: exec }, async (req) => {
+    const orgId = req.user!.organisationId;
+    const items = db
+      .prepare(
+        `SELECT b.id, b.label, b.checksum_sha256 AS checksumSha256, b.size_bytes AS sizeBytes,
+                b.status, b.created_by AS createdBy, u.name AS createdByName,
+                b.created_at AS createdAt, b.restored_at AS restoredAt
+           FROM system_backups b
+           LEFT JOIN users u ON u.id = b.created_by
+          WHERE b.organisation_id = ?
+          ORDER BY b.id DESC LIMIT 50`,
+      )
+      .all(orgId);
+    return { items };
+  });
+
+  app.post('/api/executive/backups', { preHandler: exec }, async (req, reply) => {
+    const b = z.object({ label: z.string().trim().min(2).max(120) }).strict().parse(req.body);
+    const created = createSystemBackup(db, req.user!, b.label);
+    return reply.code(201).send(created);
+  });
+
+  app.post('/api/executive/backups/:id/verify', { preHandler: exec }, async (req) => {
+    const { id: backupId } = idParam.parse(req.params);
+    const res = verifySystemBackup(db, req.user!.organisationId, backupId);
+    recordAudit(db, req.user!, 'backup.verify', 'system_backup', backupId, { checksumMatch: res.checksumMatch, readyForRestore: res.readyForRestore });
+    return res;
+  });
+
+  app.post('/api/executive/backups/:id/restore', { preHandler: exec }, async (req) => {
+    const { id: backupId } = idParam.parse(req.params);
+    const b = z.object({ confirmationPhrase: z.string().trim().min(1).max(60) }).strict().parse(req.body);
+    return restoreSystemBackup(db, req.user!, backupId, b.confirmationPhrase);
+  });
+
+  app.get('/api/reports/export', { preHandler: anyUser }, async (req, reply) => {
+    const q = z
+      .object({
+        section: z.enum(['valuation', 'low_stock', 'movements', 'audit_logs']).default('valuation'),
+        format: z.enum(['csv', 'json']).default('csv'),
+      })
+      .parse(req.query);
+
+    if (!hasPermission(db, req.user!, 'can_export_reports')) {
+      throw new AppError(403, 'forbidden_permission');
+    }
+    if (q.section === 'audit_logs' && req.user!.role !== 'executive_manager') {
+      throw new AppError(403, 'forbidden');
+    }
+
+    const orgId = req.user!.organisationId;
+    let rows: Record<string, unknown>[] = [];
+
+    if (q.section === 'valuation') {
+      rows = (db
+        .prepare(
+          `SELECT p.sku AS SKU, p.name AS Product, COALESCE(c.name, 'Uncategorised') AS Category,
+                  u.code AS Unit, p.unit_cost_cents, p.reorder_level_milli,
+                  COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS total_milli
+             FROM products p
+             JOIN units_of_measure u ON u.id = p.base_unit_id
+             LEFT JOIN categories c ON c.id = p.category_id
+            WHERE p.organisation_id = ?
+            ORDER BY p.name ASC`,
+        )
+        .all(orgId) as { SKU: string; Product: string; Category: string; Unit: string; unit_cost_cents: number; reorder_level_milli: number; total_milli: number }[]).map((r) => {
+        const qtyVal = fromMilli(r.total_milli);
+        const unitCost = fromCents(r.unit_cost_cents);
+        return {
+          SKU: r.SKU,
+          Product: r.Product,
+          Category: r.Category,
+          Unit: r.Unit,
+          Quantity: qtyVal,
+          UnitCost: unitCost,
+          TotalValue: Math.round(qtyVal * unitCost * 100) / 100,
+          ReorderLevel: fromMilli(r.reorder_level_milli),
+        };
+      });
+    } else if (q.section === 'low_stock') {
+      rows = (db
+        .prepare(
+          `SELECT p.sku AS SKU, p.name AS Product, COALESCE(c.name, 'Uncategorised') AS Category,
+                  u.code AS Unit, p.unit_cost_cents, p.reorder_level_milli,
+                  COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS total_milli
+             FROM products p
+             JOIN units_of_measure u ON u.id = p.base_unit_id
+             LEFT JOIN categories c ON c.id = p.category_id
+            WHERE p.organisation_id = ? AND p.active = 1 AND p.reorder_level_milli > 0
+              AND COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) <= p.reorder_level_milli
+            ORDER BY total_milli ASC`,
+        )
+        .all(orgId) as { SKU: string; Product: string; Category: string; Unit: string; unit_cost_cents: number; reorder_level_milli: number; total_milli: number }[]).map((r) => ({
+        SKU: r.SKU,
+        Product: r.Product,
+        Category: r.Category,
+        Unit: r.Unit,
+        CurrentStock: fromMilli(r.total_milli),
+        ReorderLevel: fromMilli(r.reorder_level_milli),
+        Shortfall: Math.max(0, fromMilli(r.reorder_level_milli - r.total_milli)),
+        UnitCost: fromCents(r.unit_cost_cents),
+      }));
+    } else if (q.section === 'movements') {
+      rows = (db
+        .prepare(
+          `SELECT m.id AS MovementId, d.id AS DocumentId, d.type AS Type, d.reference AS Reference,
+                  p.sku AS SKU, p.name AS Product, w.name AS Warehouse, u.code AS Unit,
+                  m.base_delta_milli, m.unit_cost_cents, d.created_at AS CreatedAt
+             FROM stock_movements m
+             JOIN stock_documents d ON d.id = m.document_id
+             JOIN products p ON p.id = m.product_id
+             JOIN warehouses w ON w.id = m.warehouse_id
+             JOIN units_of_measure u ON u.id = m.unit_id
+            WHERE m.organisation_id = ?
+            ORDER BY m.id DESC LIMIT 500`,
+        )
+        .all(orgId) as ({ base_delta_milli: number; unit_cost_cents: number } & Record<string, unknown>)[]).map(({ base_delta_milli, unit_cost_cents, ...r }) => ({
+        ...r,
+        BaseChange: fromMilli(base_delta_milli),
+        UnitCost: fromCents(unit_cost_cents),
+      }));
+    } else if (q.section === 'audit_logs') {
+      rows = db
+        .prepare(
+          `SELECT id AS AuditId, actor_email AS ActorEmail, actor_role AS ActorRole,
+                  action AS Action, target_type AS TargetType, target_id AS TargetId,
+                  details_json AS Details, created_at AS CreatedAt
+             FROM audit_logs
+            WHERE organisation_id = ?
+            ORDER BY id DESC LIMIT 500`,
+        )
+        .all(orgId) as Record<string, unknown>[];
+    }
+
+    recordAudit(db, req.user!, 'report.export', 'report', q.section, { format: q.format, rowCount: rows.length });
+
+    if (q.format === 'json') {
+      return { section: q.section, format: 'json', generatedAt: new Date().toISOString(), items: rows };
+    }
+
+    const headers = rows.length > 0 ? Object.keys(rows[0]!) : ['section'];
+    const escapeCsv = (val: unknown) => {
+      const s = val === null || val === undefined ? '' : String(val);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const csvLines = [headers.join(','), ...rows.map((r) => headers.map((h) => escapeCsv(r[h])).join(','))];
+    reply.header('content-type', 'text/csv; charset=utf-8');
+    reply.header('content-disposition', `attachment; filename="stockroom-${q.section}.csv"`);
+    return reply.send(csvLines.join('\n'));
   });
 }

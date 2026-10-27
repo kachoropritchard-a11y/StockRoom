@@ -27,6 +27,52 @@ export const DOC_PERMISSIONS: Record<DocType, Role[]> = {
   reversal: ['executive_manager'],
 };
 
+export type GranularPermission = 'can_approve_po' | 'can_fulfill_requisitions' | 'can_write_off_stock' | 'can_export_reports';
+
+export const GRANULAR_PERMISSIONS: { key: GranularPermission; label: string; description: string }[] = [
+  { key: 'can_approve_po', label: 'Approve Purchase Orders', description: 'Allow Inventory Managers to approve Purchase Orders below the executive threshold.' },
+  { key: 'can_fulfill_requisitions', label: 'Fulfill Requisitions & Transfers', description: 'Allow Inventory Managers to fulfill pending department requisitions and internal transfers.' },
+  { key: 'can_write_off_stock', label: 'Post Stock Write-Offs', description: 'Allow Inventory Managers to write off damaged or expired stock.' },
+  { key: 'can_export_reports', label: 'Export Inventory Reports', description: 'Allow Inventory Managers to download CSV/JSON inventory reports.' },
+];
+
+export function hasPermission(db: Db, actor: AuthUser, permission: GranularPermission): boolean {
+  if (actor.role === 'executive_manager') return true;
+  const row = db
+    .prepare('SELECT allowed FROM role_permissions WHERE organisation_id = ? AND role = ? AND permission = ?')
+    .get(actor.organisationId, actor.role, permission) as { allowed: number } | undefined;
+  return row ? row.allowed === 1 : true;
+}
+
+export function recordAudit(
+  db: Db,
+  actor: AuthUser,
+  action: string,
+  targetType: string,
+  targetId?: string | number | null,
+  details?: Record<string, unknown> | null,
+): void {
+  db.prepare(
+    `INSERT INTO audit_logs (organisation_id, actor_id, actor_email, actor_role, action, target_type, target_id, details_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    actor.organisationId,
+    actor.id,
+    actor.email,
+    actor.role,
+    action,
+    targetType,
+    targetId !== undefined && targetId !== null ? String(targetId) : null,
+    details ? JSON.stringify(details) : null,
+  );
+}
+
+function getOrgGovernance(db: Db, orgId: number) {
+  return db
+    .prepare('SELECT enforce_separation_of_duties, po_approval_threshold_cents FROM organisations WHERE id = ?')
+    .get(orgId) as { enforce_separation_of_duties: number; po_approval_threshold_cents: number };
+}
+
 export interface LineInput {
   productId: number;
   warehouseId: number; // source warehouse for transfers
@@ -195,6 +241,7 @@ function assertNonNegative(db: Db, orgId: number, pairs: Iterable<string>) {
 export function postDocument(db: Db, actor: AuthUser, input: PostInput): PostResult {
   const { type } = input;
   if (!DOC_PERMISSIONS[type].includes(actor.role)) throw new AppError(403, 'forbidden');
+  if (type === 'write_off' && !hasPermission(db, actor, 'can_write_off_stock')) throw new AppError(403, 'forbidden_permission');
   if (input.lines.length === 0 || input.lines.length > 200) throw new AppError(400, 'invalid_line_count');
   const reason = input.reason?.trim() || null;
   if ((type === 'adjustment' || type === 'write_off') && !reason) throw new AppError(400, 'reason_required');
@@ -341,6 +388,7 @@ export function reverseDocument(db: Db, actor: AuthUser, originalId: number, rea
     ).run(documentId, originalId);
     const touched = db.prepare('SELECT DISTINCT product_id, warehouse_id FROM stock_movements WHERE document_id = ?').all(documentId) as { product_id: number; warehouse_id: number }[];
     assertNonNegative(db, orgId, touched.map((t) => `${t.product_id}:${t.warehouse_id}`));
+    recordAudit(db, actor, 'document.reverse', 'stock_document', originalId, { reversalDocumentId: documentId, reason });
     return { documentId, replayed: false };
   });
 }
@@ -425,13 +473,17 @@ export function approveCountSheet(db: Db, actor: AuthUser, sheetId: number, idem
   const orgId = actor.organisationId;
   return tx(db, () => {
     const sheet = db
-      .prepare('SELECT id, warehouse_id, reference, status, posted_document_id FROM count_sheets WHERE id = ? AND organisation_id = ?')
-      .get(sheetId, orgId) as { id: number; warehouse_id: number; reference: string | null; status: string; posted_document_id: number | null } | undefined;
+      .prepare('SELECT id, warehouse_id, reference, status, posted_document_id, created_by FROM count_sheets WHERE id = ? AND organisation_id = ?')
+      .get(sheetId, orgId) as { id: number; warehouse_id: number; reference: string | null; status: string; posted_document_id: number | null; created_by: number } | undefined;
     if (!sheet) throw new AppError(404, 'count_sheet_not_found');
     if (sheet.status === 'approved' && sheet.posted_document_id) {
       return { documentId: sheet.posted_document_id, replayed: true };
     }
     if (sheet.status !== 'draft') throw new AppError(409, 'count_sheet_not_draft');
+    const gov = getOrgGovernance(db, orgId);
+    if (gov.enforce_separation_of_duties && sheet.created_by === actor.id) {
+      throw new AppError(403, 'separation_of_duties_violation');
+    }
     const lines = db
       .prepare('SELECT product_id, unit_id, counted_milli FROM count_sheet_lines WHERE count_sheet_id = ? ORDER BY id')
       .all(sheetId) as { product_id: number; unit_id: number; counted_milli: number }[];
@@ -451,6 +503,7 @@ export function approveCountSheet(db: Db, actor: AuthUser, sheetId: number, idem
       actor.id,
       sheetId,
     );
+    recordAudit(db, actor, 'count_sheet.approve', 'count_sheet', sheetId, { documentId: posted.documentId });
     return posted;
   });
 }
@@ -486,18 +539,16 @@ export function createPurchaseOrder(db: Db, actor: AuthUser, input: PurchaseOrde
     if (!sup.active) throw new AppError(400, 'supplier_inactive');
     const wh = loadWarehouse(db, orgId, input.warehouseId);
     if (!canAccessWarehouse(actor, wh.branch_id)) throw new AppError(403, 'forbidden_warehouse');
-    const status = input.approveImmediately ? 'approved' : 'draft';
-    const poRes = db
-      .prepare(
-        `INSERT INTO purchase_orders (organisation_id, supplier_id, warehouse_id, reference, notes, status, created_by, approved_by, approved_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'approved' THEN datetime('now') ELSE NULL END)`,
-      )
-      .run(orgId, input.supplierId, input.warehouseId, input.reference.trim(), input.notes?.trim() || null, status, actor.id, input.approveImmediately ? actor.id : null, status);
-    const poId = Number(poRes.lastInsertRowid);
+
+    const gov = getOrgGovernance(db, orgId);
+    if (input.approveImmediately) {
+      if (!hasPermission(db, actor, 'can_approve_po')) throw new AppError(403, 'forbidden_permission');
+      if (gov.enforce_separation_of_duties) throw new AppError(403, 'separation_of_duties_violation');
+    }
+
+    let totalCents = 0;
     const seen = new Set<number>();
-    const insertLine = db.prepare(
-      'INSERT INTO purchase_order_lines (purchase_order_id, product_id, unit_id, ordered_milli, unit_cost_cents) VALUES (?, ?, ?, ?, ?)',
-    );
+    const preparedLines: { productId: number; unitId: number; orderedMilli: number; unitCostCents: number }[] = [];
     for (const l of input.lines) {
       if (seen.has(l.productId)) throw new AppError(400, 'duplicate_po_line');
       seen.add(l.productId);
@@ -506,35 +557,71 @@ export function createPurchaseOrder(db: Db, actor: AuthUser, input: PurchaseOrde
       const orderedMilli = toMilli(l.orderedQuantity);
       if (orderedMilli <= 0) throw new AppError(400, 'quantity_must_be_positive');
       const unitCostCents = toCents(l.unitCost);
-      insertLine.run(poId, l.productId, l.unitId, orderedMilli, unitCostCents);
+      totalCents += Math.round((orderedMilli / 1000) * unitCostCents);
+      preparedLines.push({ productId: l.productId, unitId: l.unitId, orderedMilli, unitCostCents });
     }
+
+    if (input.approveImmediately && gov.po_approval_threshold_cents > 0 && totalCents > gov.po_approval_threshold_cents && actor.role !== 'executive_manager') {
+      throw new AppError(403, 'executive_approval_required');
+    }
+
+    const status = input.approveImmediately ? 'approved' : 'draft';
+    const poRes = db
+      .prepare(
+        `INSERT INTO purchase_orders (organisation_id, supplier_id, warehouse_id, reference, notes, status, created_by, approved_by, approved_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'approved' THEN datetime('now') ELSE NULL END)`,
+      )
+      .run(orgId, input.supplierId, input.warehouseId, input.reference.trim(), input.notes?.trim() || null, status, actor.id, input.approveImmediately ? actor.id : null, status);
+    const poId = Number(poRes.lastInsertRowid);
+    const insertLine = db.prepare(
+      'INSERT INTO purchase_order_lines (purchase_order_id, product_id, unit_id, ordered_milli, unit_cost_cents) VALUES (?, ?, ?, ?, ?)',
+    );
+    for (const l of preparedLines) {
+      insertLine.run(poId, l.productId, l.unitId, l.orderedMilli, l.unitCostCents);
+    }
+    recordAudit(db, actor, 'po.create', 'purchase_order', poId, { reference: input.reference.trim(), status, totalCents });
     return poId;
   });
 }
 
 export function approvePurchaseOrder(db: Db, actor: AuthUser, poId: number): void {
   const orgId = actor.organisationId;
-  const po = db.prepare('SELECT id, warehouse_id, status FROM purchase_orders WHERE id = ? AND organisation_id = ?').get(poId, orgId) as
-    | { id: number; warehouse_id: number; status: string }
+  if (!hasPermission(db, actor, 'can_approve_po')) throw new AppError(403, 'forbidden_permission');
+  const po = db.prepare('SELECT id, warehouse_id, reference, status, created_by FROM purchase_orders WHERE id = ? AND organisation_id = ?').get(poId, orgId) as
+    | { id: number; warehouse_id: number; reference: string; status: string; created_by: number }
     | undefined;
   if (!po) throw new AppError(404, 'po_not_found');
   const wh = loadWarehouse(db, orgId, po.warehouse_id);
   if (!canAccessWarehouse(actor, wh.branch_id)) throw new AppError(403, 'forbidden_warehouse');
   if (po.status === 'approved') return;
   if (po.status !== 'draft') throw new AppError(409, 'po_not_draft');
+
+  const gov = getOrgGovernance(db, orgId);
+  if (gov.enforce_separation_of_duties && po.created_by === actor.id) {
+    throw new AppError(403, 'separation_of_duties_violation');
+  }
+  const totalRow = db
+    .prepare('SELECT COALESCE(SUM((ordered_milli / 1000.0) * unit_cost_cents), 0) AS total_cents FROM purchase_order_lines WHERE purchase_order_id = ?')
+    .get(poId) as { total_cents: number };
+  if (gov.po_approval_threshold_cents > 0 && totalRow.total_cents > gov.po_approval_threshold_cents && actor.role !== 'executive_manager') {
+    throw new AppError(403, 'executive_approval_required');
+  }
+
   db.prepare("UPDATE purchase_orders SET status = 'approved', approved_by = ?, approved_at = datetime('now') WHERE id = ?").run(actor.id, poId);
+  recordAudit(db, actor, 'po.approve', 'purchase_order', poId, { reference: po.reference });
 }
 
 export function cancelPurchaseOrder(db: Db, actor: AuthUser, poId: number): void {
   const orgId = actor.organisationId;
-  const po = db.prepare('SELECT id, warehouse_id, status FROM purchase_orders WHERE id = ? AND organisation_id = ?').get(poId, orgId) as
-    | { id: number; warehouse_id: number; status: string }
+  const po = db.prepare('SELECT id, warehouse_id, reference, status FROM purchase_orders WHERE id = ? AND organisation_id = ?').get(poId, orgId) as
+    | { id: number; warehouse_id: number; reference: string; status: string }
     | undefined;
   if (!po) throw new AppError(404, 'po_not_found');
   const wh = loadWarehouse(db, orgId, po.warehouse_id);
   if (!canAccessWarehouse(actor, wh.branch_id)) throw new AppError(403, 'forbidden_warehouse');
   if (po.status !== 'draft' && po.status !== 'approved') throw new AppError(409, 'po_cannot_be_cancelled');
   db.prepare("UPDATE purchase_orders SET status = 'cancelled' WHERE id = ?").run(poId);
+  recordAudit(db, actor, 'po.cancel', 'purchase_order', poId, { reference: po.reference });
 }
 
 export interface ReceivePurchaseOrderInput {
@@ -770,10 +857,11 @@ export function createRequisition(db: Db, actor: AuthUser, input: RequisitionInp
 
 export function fulfillRequisition(db: Db, actor: AuthUser, reqId: number, idempotencyKey: string): PostResult {
   const orgId = actor.organisationId;
+  if (!hasPermission(db, actor, 'can_fulfill_requisitions')) throw new AppError(403, 'forbidden_permission');
   return tx(db, () => {
     const req = db
       .prepare(
-        'SELECT id, kind, warehouse_id, department_id, to_warehouse_id, reference, status, posted_document_id FROM requisitions WHERE id = ? AND organisation_id = ?',
+        'SELECT id, kind, warehouse_id, department_id, to_warehouse_id, reference, status, posted_document_id, created_by FROM requisitions WHERE id = ? AND organisation_id = ?',
       )
       .get(reqId, orgId) as
       | {
@@ -785,6 +873,7 @@ export function fulfillRequisition(db: Db, actor: AuthUser, reqId: number, idemp
           reference: string | null;
           status: string;
           posted_document_id: number | null;
+          created_by: number;
         }
       | undefined;
     if (!req) throw new AppError(404, 'requisition_not_found');
@@ -792,6 +881,10 @@ export function fulfillRequisition(db: Db, actor: AuthUser, reqId: number, idemp
       return { documentId: req.posted_document_id, replayed: true };
     }
     if (req.status !== 'pending') throw new AppError(409, 'requisition_not_pending');
+    const gov = getOrgGovernance(db, orgId);
+    if (gov.enforce_separation_of_duties && req.created_by === actor.id) {
+      throw new AppError(403, 'separation_of_duties_violation');
+    }
 
     const lines = db
       .prepare('SELECT product_id, unit_id, requested_milli FROM requisition_lines WHERE requisition_id = ? ORDER BY id')
@@ -814,6 +907,7 @@ export function fulfillRequisition(db: Db, actor: AuthUser, reqId: number, idemp
     db.prepare(
       "UPDATE requisitions SET status = 'fulfilled', posted_document_id = ?, fulfilled_by = ?, fulfilled_at = datetime('now') WHERE id = ?",
     ).run(posted.documentId, actor.id, reqId);
+    recordAudit(db, actor, 'requisition.fulfill', 'requisition', reqId, { documentId: posted.documentId, kind: req.kind });
 
     return posted;
   });
@@ -834,6 +928,7 @@ export function rejectRequisition(db: Db, actor: AuthUser, reqId: number, reason
     actor.id,
     reqId,
   );
+  recordAudit(db, actor, 'requisition.reject', 'requisition', reqId, { reason: reason?.trim() || null });
 }
 
 export function getRequisition(db: Db, orgId: number, reqId: number) {
@@ -1046,4 +1141,185 @@ export function verifyLedger(db: Db, organisationId?: number): { ok: boolean; pr
     problems.push({ check: 'negative_balance', detail: `product ${r.product_id} at warehouse ${r.warehouse_id} is ${fromMilli(Number(r.quantity_milli))}` });
 
   return { ok: problems.length === 0, problems };
+}
+
+// ---------- backup history, checksum verification & controlled restoration ----------
+
+export interface BackupSummary {
+  id: number;
+  label: string;
+  checksumSha256: string;
+  sizeBytes: number;
+  status: 'verified' | 'restored';
+  createdBy: number;
+  createdByName: string | null;
+  createdAt: string;
+  restoredAt: string | null;
+}
+
+export function createSystemBackup(db: Db, actor: AuthUser, label: string): BackupSummary {
+  if (actor.role !== 'executive_manager') throw new AppError(403, 'forbidden');
+  const orgId = actor.organisationId;
+  return tx(db, () => {
+    const snapshot = {
+      version: 1,
+      organisationId: orgId,
+      organisation: db.prepare('SELECT id, name, allow_negative_stock, enforce_separation_of_duties, po_approval_threshold_cents, currency_code FROM organisations WHERE id = ?').get(orgId),
+      rolePermissions: db.prepare('SELECT role, permission, allowed FROM role_permissions WHERE organisation_id = ? ORDER BY role, permission').all(orgId),
+      branches: db.prepare('SELECT id, name, city, active FROM branches WHERE organisation_id = ? ORDER BY id').all(orgId),
+      warehouses: db.prepare('SELECT w.id, w.branch_id, w.name, w.active FROM warehouses w JOIN branches b ON b.id = w.branch_id WHERE b.organisation_id = ? ORDER BY w.id').all(orgId),
+      departments: db.prepare('SELECT d.id, d.branch_id, d.name, d.active FROM departments d JOIN branches b ON b.id = d.branch_id WHERE b.organisation_id = ? ORDER BY d.id').all(orgId),
+      categories: db.prepare('SELECT id, parent_id, name, active FROM categories WHERE organisation_id = ? ORDER BY id').all(orgId),
+      units: db.prepare('SELECT id, code, name FROM units_of_measure WHERE organisation_id = ? ORDER BY id').all(orgId),
+      suppliers: db.prepare('SELECT id, name, email, phone, active FROM suppliers WHERE organisation_id = ? ORDER BY id').all(orgId),
+      products: db.prepare('SELECT id, sku, name, description, category_id, base_unit_id, unit_cost_cents, reorder_level_milli, active FROM products WHERE organisation_id = ? ORDER BY id').all(orgId),
+      packagings: db.prepare('SELECT g.id, g.product_id, g.unit_id, g.factor_milli FROM product_packagings g JOIN products p ON p.id = g.product_id WHERE p.organisation_id = ? ORDER BY g.id').all(orgId),
+      documentCount: (db.prepare('SELECT COUNT(*) n FROM stock_documents WHERE organisation_id = ?').get(orgId) as { n: number }).n,
+      movementCount: (db.prepare('SELECT COUNT(*) n FROM stock_movements WHERE organisation_id = ?').get(orgId) as { n: number }).n,
+      balances: db.prepare('SELECT product_id, warehouse_id, quantity_milli FROM stock_balances WHERE organisation_id = ? ORDER BY product_id, warehouse_id').all(orgId),
+    };
+    const snapshotJson = JSON.stringify(snapshot);
+    const checksum = createHash('sha256').update(snapshotJson).digest('hex');
+    const sizeBytes = Buffer.byteLength(snapshotJson, 'utf8');
+    const res = db
+      .prepare(
+        `INSERT INTO system_backups (organisation_id, label, snapshot_json, checksum_sha256, size_bytes, status, created_by)
+         VALUES (?, ?, ?, ?, ?, 'verified', ?)`,
+      )
+      .run(orgId, label.trim(), snapshotJson, checksum, sizeBytes, actor.id);
+    const backupId = Number(res.lastInsertRowid);
+    recordAudit(db, actor, 'backup.create', 'system_backup', backupId, { label: label.trim(), checksum, sizeBytes });
+    return {
+      id: backupId,
+      label: label.trim(),
+      checksumSha256: checksum,
+      sizeBytes,
+      status: 'verified',
+      createdBy: actor.id,
+      createdByName: actor.name,
+      createdAt: new Date().toISOString(),
+      restoredAt: null,
+    };
+  });
+}
+
+export function verifySystemBackup(db: Db, orgId: number, backupId: number) {
+  const row = db
+    .prepare('SELECT id, label, snapshot_json, checksum_sha256, status, created_at, restored_at FROM system_backups WHERE id = ? AND organisation_id = ?')
+    .get(backupId, orgId) as
+    | { id: number; label: string; snapshot_json: string; checksum_sha256: string; status: string; created_at: string; restored_at: string | null }
+    | undefined;
+  if (!row) throw new AppError(404, 'backup_not_found');
+  const computed = createHash('sha256').update(row.snapshot_json).digest('hex');
+  const checksumMatch = computed === row.checksum_sha256;
+  const ledger = verifyLedger(db, orgId);
+  return {
+    backupId: row.id,
+    label: row.label,
+    checksumMatch,
+    expectedChecksum: row.checksum_sha256,
+    computedChecksum: computed,
+    ledgerOk: ledger.ok,
+    readyForRestore: checksumMatch && ledger.ok,
+  };
+}
+
+export function restoreSystemBackup(db: Db, actor: AuthUser, backupId: number, confirmationPhrase: string) {
+  if (actor.role !== 'executive_manager') throw new AppError(403, 'forbidden');
+  if (confirmationPhrase.trim() !== 'CONFIRM-RESTORE') {
+    throw new AppError(400, 'invalid_restore_confirmation');
+  }
+  const orgId = actor.organisationId;
+  return tx(db, () => {
+    const row = db
+      .prepare('SELECT id, label, snapshot_json, checksum_sha256 FROM system_backups WHERE id = ? AND organisation_id = ?')
+      .get(backupId, orgId) as { id: number; label: string; snapshot_json: string; checksum_sha256: string } | undefined;
+    if (!row) throw new AppError(404, 'backup_not_found');
+    const computed = createHash('sha256').update(row.snapshot_json).digest('hex');
+    if (computed !== row.checksum_sha256) throw new AppError(409, 'backup_checksum_mismatch');
+
+    const snap = JSON.parse(row.snapshot_json) as {
+      organisation?: {
+        name: string;
+        allow_negative_stock: number;
+        enforce_separation_of_duties: number;
+        po_approval_threshold_cents: number;
+        currency_code: string;
+      };
+      rolePermissions?: { role: string; permission: string; allowed: number }[];
+      branches?: { id: number; name: string; city: string | null; active: number }[];
+      warehouses?: { id: number; branch_id: number; name: string; active: number }[];
+      departments?: { id: number; branch_id: number; name: string; active: number }[];
+      categories?: { id: number; parent_id: number | null; name: string; active: number }[];
+      suppliers?: { id: number; name: string; email: string | null; phone: string | null; active: number }[];
+      products?: {
+        id: number;
+        sku: string;
+        name: string;
+        description: string | null;
+        category_id: number | null;
+        base_unit_id: number;
+        unit_cost_cents: number;
+        reorder_level_milli: number;
+        active: number;
+      }[];
+    };
+
+    if (snap.organisation) {
+      db.prepare(
+        `UPDATE organisations
+            SET name = ?, allow_negative_stock = ?, enforce_separation_of_duties = ?,
+                po_approval_threshold_cents = ?, currency_code = ?
+          WHERE id = ?`,
+      ).run(
+        snap.organisation.name,
+        snap.organisation.allow_negative_stock ?? 0,
+        snap.organisation.enforce_separation_of_duties ?? 0,
+        snap.organisation.po_approval_threshold_cents ?? 0,
+        snap.organisation.currency_code ?? 'USD',
+        orgId,
+      );
+    }
+
+    if (snap.rolePermissions) {
+      const upPerm = db.prepare(
+        `INSERT INTO role_permissions (organisation_id, role, permission, allowed, updated_at)
+         VALUES (?, ?, ?, ?, datetime('now'))
+         ON CONFLICT(organisation_id, role, permission) DO UPDATE SET allowed = excluded.allowed, updated_at = datetime('now')`,
+      );
+      for (const rp of snap.rolePermissions) upPerm.run(orgId, rp.role, rp.permission, rp.allowed);
+    }
+
+    for (const b of snap.branches ?? []) {
+      db.prepare('UPDATE branches SET name = ?, city = ?, active = ? WHERE id = ? AND organisation_id = ?').run(b.name, b.city, b.active, b.id, orgId);
+    }
+    for (const w of snap.warehouses ?? []) {
+      db.prepare('UPDATE warehouses SET name = ?, active = ? WHERE id = ?').run(w.name, w.active, w.id);
+    }
+    for (const d of snap.departments ?? []) {
+      db.prepare('UPDATE departments SET name = ?, active = ? WHERE id = ?').run(d.name, d.active, d.id);
+    }
+    for (const c of snap.categories ?? []) {
+      db.prepare('UPDATE categories SET name = ?, active = ? WHERE id = ? AND organisation_id = ?').run(c.name, c.active, c.id, orgId);
+    }
+    for (const s of snap.suppliers ?? []) {
+      db.prepare('UPDATE suppliers SET name = ?, email = ?, phone = ?, active = ? WHERE id = ? AND organisation_id = ?').run(s.name, s.email, s.phone, s.active, s.id, orgId);
+    }
+    for (const p of snap.products ?? []) {
+      db.prepare(
+        'UPDATE products SET name = ?, description = ?, category_id = ?, unit_cost_cents = ?, reorder_level_milli = ?, active = ? WHERE id = ? AND organisation_id = ?',
+      ).run(p.name, p.description, p.category_id, p.unit_cost_cents, p.reorder_level_milli, p.active, p.id, orgId);
+    }
+
+    db.prepare("UPDATE system_backups SET status = 'restored', restored_at = datetime('now'), restored_by = ? WHERE id = ?").run(actor.id, backupId);
+    recordAudit(db, actor, 'backup.restore', 'system_backup', backupId, { label: row.label, checksum: row.checksum_sha256 });
+
+    return {
+      ok: true,
+      backupId: row.id,
+      label: row.label,
+      checksumSha256: row.checksum_sha256,
+      restoredAt: new Date().toISOString(),
+    };
+  });
 }

@@ -13,7 +13,9 @@ export function Reports() {
 
   const [activeTab, setActiveTab] = useState<ReportTab>('alerts');
   const [reports, setReports] = useState<InventoryReports | null>(null);
+  const [exportSection, setExportSection] = useState<'valuation' | 'low_stock' | 'movements' | 'audit_logs'>('valuation');
   const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
@@ -34,47 +36,32 @@ export function Reports() {
     return () => window.removeEventListener('stockroom:sync', onSync);
   }, [load]);
 
-  function handleExportCsv() {
-    if (!reports) return;
-    const rows = [
-      ['Section', 'Name / SKU', 'Secondary', 'Quantity', 'Value (USD)'],
-      ...reports.valuationByCategory.map((c) => [
-        'Category Valuation',
-        c.categoryName,
-        `${c.productCount} SKUs`,
-        String(c.totalQuantity),
-        c.totalValue.toFixed(2),
-      ]),
-      ...reports.warehouseStockSummary.map((w) => [
-        'Warehouse Valuation',
-        w.warehouseName,
-        w.branchName,
-        String(w.totalQuantity),
-        w.totalValue.toFixed(2),
-      ]),
-      ...reports.departmentConsumption.map((d) => [
-        'Department Consumption',
-        d.departmentName,
-        `${d.issueCount} issues / ${d.writeOffCount} write-offs`,
-        String(d.consumedQuantity),
-        d.consumedValue.toFixed(2),
-      ]),
-      ...reports.lowStockAlerts.map((a) => [
-        'Low-Stock Alert',
-        `${a.sku} - ${a.productName}`,
-        `Reorder <= ${a.reorderLevel} ${a.unit}`,
-        String(a.currentStock),
-        a.estimatedRestockCost.toFixed(2),
-      ]),
-    ];
-    const csv = rows.map((r) => r.map((cell) => `"${cell.replace(/"/g, '""')}"`).join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `stockroom-inventory-report-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  async function handleAuthorisedExport(format: 'csv' | 'json') {
+    setError('');
+    setMsg('');
+    try {
+      const res = await fetch(`/api/reports/export?section=${encodeURIComponent(exportSection)}&format=${format}`, {
+        credentials: 'same-origin',
+        headers: { 'X-Requested-With': 'stockroom' },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error ?? 'export_failed');
+      }
+      const text = await res.text();
+      const blob = new Blob([text], {
+        type: format === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json;charset=utf-8;',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `stockroom-${exportSection}-${new Date().toISOString().slice(0, 10)}.${format}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setMsg(`Authorised ${exportSection.replace('_', ' ')} ${format.toUpperCase()} export downloaded and recorded in the audit log.`);
+    } catch (err) {
+      setError((err as Error).message);
+    }
   }
 
   if (loading && !reports) return <Spinner label="Generating inventory reports" />;
@@ -110,8 +97,21 @@ export function Reports() {
           <p className="muted">Authoritative stock valuation, reorder alerts, department consumption and ledger movement analytics.</p>
         </div>
         <div className="quick-actions">
-          <button type="button" className="btn btn-outline" onClick={handleExportCsv}>
-            ⬇ Export Report CSV
+          <select
+            aria-label="Export dataset"
+            value={exportSection}
+            onChange={(e) => setExportSection(e.target.value as 'valuation' | 'low_stock' | 'movements' | 'audit_logs')}
+          >
+            <option value="valuation">Stock Valuation Dataset</option>
+            <option value="low_stock">Low-Stock Alerts Dataset</option>
+            <option value="movements">Stock Movements Ledger</option>
+            {user?.role === 'executive_manager' && <option value="audit_logs">Executive Audit Logs</option>}
+          </select>
+          <button type="button" className="btn btn-outline" onClick={() => handleAuthorisedExport('csv')}>
+            ⬇ Export CSV
+          </button>
+          <button type="button" className="btn btn-outline" onClick={() => handleAuthorisedExport('json')}>
+            ⬇ Export JSON
           </button>
           <button type="button" className="btn btn-primary" onClick={load}>
             ↻ Refresh Reports
@@ -120,6 +120,7 @@ export function Reports() {
       </div>
 
       {error && <p className="form-error" role="alert">{error}</p>}
+      {msg && <p className="form-success" role="status">{msg}</p>}
 
       <section className="kpi-grid" aria-label="Report highlights">
         <article className="kpi-card">

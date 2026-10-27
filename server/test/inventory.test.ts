@@ -534,3 +534,159 @@ test('stock returns (from department and to supplier) and inventory reports accu
   assert.equal(deptRow.consumedQuantity, 10);
   assert.deepEqual(verifyLedger(t.db), { ok: true, problems: [] });
 });
+
+test('Stage 4 governance: separation of duties, PO approval thresholds, and granular role permissions', async () => {
+  const t = await setup();
+  await t.receive(50);
+
+  // Enable separation of duties and a $100 PO threshold on the organisation
+  const patchOrg = await t.call('PATCH', '/api/organisation', t.exec, {
+    enforceSeparationOfDuties: true,
+    poApprovalThreshold: 100,
+    currencyCode: 'USD',
+  });
+  assert.equal(patchOrg.status, 200);
+
+  // 1. Inventory Manager creates a draft PO worth $60 (below threshold), cannot self-approve when separation of duties is on
+  const poLow = await t.call('POST', '/api/purchase-orders', t.inv, {
+    supplierId: t.supplier,
+    warehouseId: t.wh1,
+    reference: 'PO-SOD-1',
+    lines: [{ productId: t.product, unitId: t.units.each, orderedQuantity: 10, unitCost: 6 }],
+  });
+  assert.equal(poLow.status, 201);
+  assert.equal(poLow.body.status, 'draft');
+
+  const selfApprovePo = await t.call('POST', `/api/purchase-orders/${poLow.body.id}/approve`, t.inv, {});
+  assert.equal(selfApprovePo.status, 403);
+  assert.equal(selfApprovePo.body.error, 'separation_of_duties_violation');
+
+  // Executive Manager approves the PO
+  const execApprovePo = await t.call('POST', `/api/purchase-orders/${poLow.body.id}/approve`, t.exec, {});
+  assert.equal(execApprovePo.status, 200);
+  assert.equal(execApprovePo.body.status, 'approved');
+
+  // 2. PO above $100 threshold requires Executive Manager even when separation of duties is off
+  await t.call('PATCH', '/api/organisation', t.exec, { enforceSeparationOfDuties: false, poApprovalThreshold: 100 });
+  const poHigh = await t.call('POST', '/api/purchase-orders', t.inv, {
+    supplierId: t.supplier,
+    warehouseId: t.wh1,
+    reference: 'PO-HIGH-1',
+    lines: [{ productId: t.product, unitId: t.units.each, orderedQuantity: 10, unitCost: 15 }],
+  });
+  assert.equal(poHigh.status, 201);
+  const invApproveHigh = await t.call('POST', `/api/purchase-orders/${poHigh.body.id}/approve`, t.inv, {});
+  assert.equal(invApproveHigh.status, 403);
+  assert.equal(invApproveHigh.body.error, 'executive_approval_required');
+
+  const execApproveHigh = await t.call('POST', `/api/purchase-orders/${poHigh.body.id}/approve`, t.exec, {});
+  assert.equal(execApproveHigh.status, 200);
+
+  // 3. Requisition & Count-Sheet separation of duties
+  await t.call('PATCH', '/api/organisation', t.exec, { enforceSeparationOfDuties: true });
+  const reqDoc = await t.call('POST', '/api/requisitions', t.inv, {
+    kind: 'department_issue',
+    warehouseId: t.wh1,
+    departmentId: t.dept,
+    reference: 'REQ-SOD-1',
+    lines: [{ productId: t.product, unitId: t.units.each, requestedQuantity: 5 }],
+  });
+  assert.equal(reqDoc.status, 201);
+  const selfFulfill = await t.call('POST', `/api/requisitions/${reqDoc.body.id}/fulfill`, t.inv, {});
+  assert.equal(selfFulfill.status, 403);
+  assert.equal(selfFulfill.body.error, 'separation_of_duties_violation');
+
+  const execFulfill = await t.call('POST', `/api/requisitions/${reqDoc.body.id}/fulfill`, t.exec, {});
+  assert.equal(execFulfill.status, 201);
+
+  // 4. Granular permissions matrix: disable write-offs and report exports for inventory_manager
+  const permUpdate = await t.call('PATCH', '/api/executive/permissions', t.exec, {
+    permissions: { can_write_off_stock: false, can_export_reports: false },
+  });
+  assert.equal(permUpdate.status, 200);
+
+  const blockedWriteOff = await t.call('POST', '/api/stock/write-offs', t.inv, {
+    reason: 'Broken bottle',
+    lines: [{ productId: t.product, warehouseId: t.wh1, unitId: t.units.each, quantity: 1 }],
+  });
+  assert.equal(blockedWriteOff.status, 403);
+  assert.equal(blockedWriteOff.body.error, 'forbidden_permission');
+
+  const blockedExport = await t.call('GET', '/api/reports/export?section=valuation&format=json', t.inv);
+  assert.equal(blockedExport.status, 403);
+  assert.equal(blockedExport.body.error, 'forbidden_permission');
+
+  // Executive Manager can still export
+  const execExport = await t.call('GET', '/api/reports/export?section=valuation&format=json', t.exec);
+  assert.equal(execExport.status, 200);
+  assert.equal(execExport.body.section, 'valuation');
+  assert.ok(Array.isArray(execExport.body.items));
+});
+
+test('Stage 4 executive portal: audit logs immutability, backup/restore lifecycle, health, and notifications', async () => {
+  const t = await setup();
+  await t.call('PATCH', `/api/products/${t.product}`, t.exec, { unitCost: 12.5, reorderLevel: 25 });
+  await t.receive(10); // below reorder level 25 -> triggers low-stock notification
+
+  // Non-executives cannot access executive endpoints
+  assert.equal((await t.call('GET', '/api/executive/audit-logs', t.inv)).status, 403);
+  assert.equal((await t.call('GET', '/api/executive/backups', t.inv)).status, 403);
+  assert.equal((await t.call('GET', '/api/executive/system-health', t.inv)).status, 403);
+  assert.equal((await t.call('GET', '/api/executive/approvals', t.inv)).status, 403);
+
+  // Notifications and dashboard summary reflect real database state
+  const notif = await t.call('GET', '/api/notifications', t.exec);
+  assert.equal(notif.status, 200);
+  assert.ok(notif.body.items.some((n: { category: string }) => n.category === 'low_stock'));
+
+  const dash = await t.call('GET', '/api/dashboard/summary', t.exec);
+  assert.equal(dash.status, 200);
+  assert.equal(dash.body.totalStockUnits, 10);
+  assert.equal(dash.body.totalStockValue, 125);
+  assert.equal(dash.body.receiptsCount, 1);
+  assert.equal(dash.body.receiptsUnits, 10);
+  assert.equal(dash.body.lowStockCount, 1);
+
+  // Create a verified backup snapshot
+  const bk = await t.call('POST', '/api/executive/backups', t.exec, { label: 'Pre-policy change snapshot' });
+  assert.equal(bk.status, 201);
+  assert.equal(bk.body.status, 'verified');
+  assert.equal(typeof bk.body.checksumSha256, 'string');
+
+  // Verify backup checksum and ledger readiness
+  const ver = await t.call('POST', `/api/executive/backups/${bk.body.id}/verify`, t.exec, {});
+  assert.equal(ver.status, 200);
+  assert.equal(ver.body.checksumMatch, true);
+  assert.equal(ver.body.readyForRestore, true);
+
+  // Mutate organisation name, then restore from backup using controlled confirmation phrase
+  await t.call('PATCH', '/api/organisation', t.exec, { name: 'Temporary Changed Name' });
+  assert.equal((await t.call('GET', '/api/organisation', t.exec)).body.name, 'Temporary Changed Name');
+
+  const badRestore = await t.call('POST', `/api/executive/backups/${bk.body.id}/restore`, t.exec, {
+    confirmationPhrase: 'WRONG',
+  });
+  assert.equal(badRestore.status, 400);
+  assert.equal(badRestore.body.error, 'invalid_restore_confirmation');
+
+  const goodRestore = await t.call('POST', `/api/executive/backups/${bk.body.id}/restore`, t.exec, {
+    confirmationPhrase: 'CONFIRM-RESTORE',
+  });
+  assert.equal(goodRestore.status, 200);
+  assert.equal(goodRestore.body.ok, true);
+  assert.equal((await t.call('GET', '/api/organisation', t.exec)).body.name, 'Demo Organisation');
+
+  // Audit logs recorded actions and are immutable at the SQLite trigger level
+  const logs = await t.call('GET', '/api/executive/audit-logs', t.exec);
+  assert.equal(logs.status, 200);
+  assert.ok(logs.body.total >= 4);
+  assert.throws(() => t.db.prepare("UPDATE audit_logs SET action = 'tampered'").run(), /audit_logs_are_immutable/);
+  assert.throws(() => t.db.prepare('DELETE FROM audit_logs').run(), /audit_logs_are_immutable/);
+
+  // System health endpoint reports healthy ledger and table counts
+  const health = await t.call('GET', '/api/executive/system-health', t.exec);
+  assert.equal(health.status, 200);
+  assert.equal(health.body.status, 'healthy');
+  assert.equal(health.body.ledgerIntegrity.ok, true);
+  assert.ok(health.body.tableCounts.backups >= 1);
+});

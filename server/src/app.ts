@@ -222,12 +222,34 @@ export function buildApp(db: Db, config: Config) {
 
     const valueRow = db
       .prepare(
-        `SELECT COALESCE(SUM(b.quantity_milli * p.unit_cost_cents), 0) AS total_milli_cents
+        `SELECT COALESCE(SUM(b.quantity_milli), 0) AS total_units_milli,
+                COALESCE(SUM(b.quantity_milli * p.unit_cost_cents), 0) AS total_milli_cents
            FROM stock_balances b JOIN products p ON p.id = b.product_id
           WHERE b.organisation_id = ? AND b.quantity_milli > 0`,
       )
-      .get(org) as { total_milli_cents: number };
+      .get(org) as { total_units_milli: number; total_milli_cents: number };
+    const totalStockUnits = fromMilli(valueRow.total_units_milli);
     const totalStockValue = Math.round(valueRow.total_milli_cents / 1000) / 100;
+
+    const movementBreakdown = db
+      .prepare(
+        `SELECT d.type,
+                COUNT(DISTINCT d.id) AS doc_count,
+                COALESCE(SUM(CASE WHEN d.type = 'transfer' THEN (CASE WHEN m.base_delta_milli > 0 THEN m.base_delta_milli ELSE 0 END) ELSE abs(m.base_delta_milli) END), 0) AS units_milli
+           FROM stock_documents d
+           JOIN stock_movements m ON m.document_id = d.id
+          WHERE d.organisation_id = ?
+            AND NOT EXISTS (SELECT 1 FROM stock_documents rev WHERE rev.reverses_document_id = d.id)
+          GROUP BY d.type`,
+      )
+      .all(org) as { type: string; doc_count: number; units_milli: number }[];
+    const byType = Object.fromEntries(movementBreakdown.map((r) => [r.type, { count: r.doc_count, units: fromMilli(r.units_milli) }]));
+    const receiptsCount = byType.receipt?.count ?? 0;
+    const receiptsUnits = byType.receipt?.units ?? 0;
+    const issuesCount = byType.issue?.count ?? 0;
+    const issuesUnits = byType.issue?.units ?? 0;
+    const transfersCount = byType.transfer?.count ?? 0;
+    const transfersUnits = byType.transfer?.units ?? 0;
 
     const lowStockItems = (db
       .prepare(
@@ -301,6 +323,10 @@ export function buildApp(db: Db, config: Config) {
       .prepare('SELECT COUNT(DISTINCT id) n FROM stock_movements WHERE organisation_id = ? AND expiry_date IS NOT NULL AND expiry_date <= ? AND base_delta_milli > 0')
       .get(org, soon) as { n: number }).n;
 
+    const draftPurchaseOrders = count("SELECT COUNT(*) n FROM purchase_orders WHERE organisation_id = ? AND status = 'draft'");
+    const pendingRequisitions = count("SELECT COUNT(*) n FROM requisitions WHERE organisation_id = ? AND status = 'pending'");
+    const pendingCountSheets = count("SELECT COUNT(*) n FROM count_sheets WHERE organisation_id = ? AND status = 'draft'");
+
     return {
       role: req.user!.role,
       branches: count('SELECT COUNT(*) n FROM branches WHERE organisation_id = ? AND active = 1'),
@@ -308,10 +334,23 @@ export function buildApp(db: Db, config: Config) {
       departments: count('SELECT COUNT(*) n FROM departments d JOIN branches b ON b.id = d.branch_id WHERE b.organisation_id = ? AND d.active = 1'),
       users: req.user!.role === 'executive_manager' ? count('SELECT COUNT(*) n FROM users WHERE organisation_id = ? AND active = 1') : null,
       products: count('SELECT COUNT(*) n FROM products WHERE organisation_id = ? AND active = 1'),
+      totalStockUnits,
       totalStockValue,
+      receiptsCount,
+      receiptsUnits,
+      issuesCount,
+      issuesUnits,
+      transfersCount,
+      transfersUnits,
       lowStockCount: lowStockItems.length,
       expiringSoonCount,
-      pendingCountSheets: count("SELECT COUNT(*) n FROM count_sheets WHERE organisation_id = ? AND status = 'draft'"),
+      pendingCountSheets,
+      pendingApprovals: {
+        draftPurchaseOrders,
+        pendingRequisitions,
+        draftCountSheets: pendingCountSheets,
+        total: draftPurchaseOrders + pendingRequisitions + pendingCountSheets,
+      },
       lowStockItems,
       warehouseSummary,
       recentMovements,

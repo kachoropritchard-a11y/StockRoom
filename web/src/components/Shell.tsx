@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { api, type NotificationItem } from '../api';
 import { portalPath, useAuth } from '../auth';
 import { QuickTransferModal } from './QuickTransferModal';
 
@@ -12,8 +13,8 @@ const NAV = {
       { to: '/executive/warehouses', label: '3. Warehouses & Depts', short: 'Warehouses', keyHint: 'Alt+3', end: false },
       { to: '/executive/procurement', label: '4. Suppliers & POs', short: 'Procurement', keyHint: 'Alt+4', end: false },
       { to: '/executive/operations', label: '5. Movements & Stocktakes', short: 'Operations', keyHint: 'Alt+5', end: false },
-      { to: '/executive/reports', label: '6. Reports & Alerts', short: 'Reports', keyHint: 'Alt+6', end: false },
-      { to: '/executive/organisation', label: '7. Org & Users', short: 'Organisation', keyHint: 'Alt+7', end: false },
+      { to: '/executive/reports', label: '6. Reports & Exports', short: 'Reports', keyHint: 'Alt+6', end: false },
+      { to: '/executive/organisation', label: '7. Governance & System', short: 'Governance', keyHint: 'Alt+7', end: false },
     ],
   },
   inventory: {
@@ -38,6 +39,8 @@ export function Shell({ portal }: { portal: keyof typeof NAV }) {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('stockroom_theme') === 'dark' ? 'dark' : 'light'));
   const [quickSearch, setQuickSearch] = useState('');
   const [transferOpen, setTransferOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [syncFlash, setSyncFlash] = useState('');
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -46,7 +49,25 @@ export function Shell({ portal }: { portal: keyof typeof NAV }) {
   const currentNav =
     cfg.items.find((i) => (i.end ? location.pathname === i.to : location.pathname.startsWith(i.to))) ?? cfg.items[0];
 
-  useEffect(() => setDrawer(false), [location.pathname]);
+  function loadNotifications() {
+    api
+      .notifications()
+      .then((res) => setNotifications(res.items ?? []))
+      .catch(() => {});
+  }
+
+  useEffect(() => {
+    setDrawer(false);
+    setNotifOpen(false);
+    loadNotifications();
+  }, [location.pathname]);
+
+  useEffect(() => {
+    const onSync = () => loadNotifications();
+    window.addEventListener('stockroom:sync', onSync);
+    return () => window.removeEventListener('stockroom:sync', onSync);
+  }, []);
+
   useEffect(() => localStorage.setItem('sidebar', collapsed ? 'collapsed' : 'open'), [collapsed]);
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -174,6 +195,21 @@ export function Shell({ portal }: { portal: keyof typeof NAV }) {
             <button
               type="button"
               className="btn btn-pill-action"
+              onClick={() => setNotifOpen((o) => !o)}
+              aria-label={`Notifications (${notifications.length})`}
+              aria-expanded={notifOpen}
+              title="Live System Notifications"
+            >
+              🔔 Alerts
+              {notifications.length > 0 && (
+                <span className="badge badge-warn" style={{ marginLeft: '0.25rem' }}>
+                  {notifications.length}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              className="btn btn-pill-action"
               onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
               aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
               title="Toggle Light / Dark theme"
@@ -212,6 +248,62 @@ export function Shell({ portal }: { portal: keyof typeof NAV }) {
         </div>
 
         <main id="main" className="main" tabIndex={-1}>
+          {notifOpen && (
+            <section className="card" aria-label="Live Notifications Drawer" style={{ marginBottom: '1rem', borderColor: 'var(--gold)' }}>
+              <div className="section-head">
+                <div>
+                  <h2>🔔 Live System Notifications ({notifications.length})</h2>
+                  <p className="muted" style={{ margin: 0, fontSize: '0.84rem' }}>
+                    Real-time alerts computed from stock balances, batch expiry dates, approval queues, and system security.
+                  </p>
+                </div>
+                <button type="button" className="btn btn-outline btn-sm" onClick={() => setNotifOpen(false)}>
+                  Close
+                </button>
+              </div>
+              {notifications.length === 0 ? (
+                <div className="empty-state">All clear — no low-stock, expiry, or approval alerts right now.</div>
+              ) : (
+                <div className="table-wrap">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Severity</th>
+                        <th>Alert</th>
+                        <th>Details</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {notifications.map((n) => (
+                        <tr key={n.id}>
+                          <td>
+                            <span className={`badge ${n.severity === 'critical' ? 'badge-danger' : n.severity === 'warning' ? 'badge-warn' : 'badge-info'}`}>
+                              {n.severity.toUpperCase()}
+                            </span>
+                          </td>
+                          <td><strong>{n.title}</strong></td>
+                          <td>{n.message}</td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn btn-outline btn-sm"
+                              onClick={() => {
+                                setNotifOpen(false);
+                                navigate(n.link);
+                              }}
+                            >
+                              Open →
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          )}
           <Outlet />
         </main>
       </div>

@@ -44,21 +44,25 @@ export function Dashboard() {
   const lowStockCount = data?.lowStockCount ?? 0;
   const healthySkus = Math.max(0, totalSkus - lowStockCount);
   const healthPct = totalSkus > 0 ? Math.round((healthySkus / totalSkus) * 100) : 100;
-  const totalUnitsAll = (data?.warehouseSummary ?? []).reduce((acc, w) => acc + w.totalUnits, 0);
+  const totalUnitsAll =
+    data?.totalStockUnits !== undefined
+      ? data.totalStockUnits
+      : (data?.warehouseSummary ?? []).reduce((acc, w) => acc + w.totalUnits, 0);
 
-  // Build 16 zone cells (A1..D4) mapped to live balances so the heatmap reflects real warehouse stock
+  // Build 16 zone cells (A1..D4) mapped strictly to real warehouse stock balances (no synthetic numbers)
   const zoneCells = ZONE_ROWS.flatMap((r, rIdx) =>
     ZONE_COLS.map((c, cIdx) => {
       const idx = rIdx * 4 + cIdx;
       const code = `${r}${c}`;
-      const bal = balances[idx % Math.max(1, balances.length)];
-      // Deterministic utilization level from actual stock balance
+      const bal = balances[idx];
       const ratio = bal
         ? bal.reorderLevel > 0
-          ? Math.min(1, bal.quantity / (bal.reorderLevel * 2.5))
-          : Math.min(1, bal.quantity / 120)
-        : ((idx * 37) % 100) / 100;
-      const tier: 'low' | 'mid' | 'high' = ratio >= 0.7 ? 'high' : ratio >= 0.35 ? 'mid' : 'low';
+          ? Math.min(1, bal.quantity / (bal.reorderLevel * 2))
+          : bal.quantity > 0
+            ? 0.75
+            : 0
+        : 0;
+      const tier: 'low' | 'mid' | 'high' = ratio >= 0.7 ? 'high' : ratio >= 0.3 ? 'mid' : 'low';
       return {
         code,
         tier,
@@ -75,14 +79,14 @@ export function Dashboard() {
       {error && <p className="form-error" role="alert">Could not load the dashboard. {error}</p>}
       {flashMsg && <p className="form-success" role="status">{flashMsg}</p>}
 
-      {/* TIER 1: 4 Command KPI Cards in strict priority order */}
+      {/* TIER 1: 4 Command KPI Cards backed 100% by real SQLite queries */}
       {data && (
         <section className="ops-kpi-row" aria-label="Key operational metrics">
           {/* Card 1: Total Stock Valuation & Units */}
           <article className="ops-kpi-card">
             <div className="ops-kpi-top">
               <span className="ops-kpi-title">Total Stock Valuation</span>
-              <span className="ops-kpi-trend">+{data.recentMovements?.length ?? 0} recent docs</span>
+              <span className="ops-kpi-trend">{totalUnitsAll.toLocaleString()} base units</span>
             </div>
             <div className="ops-kpi-Mid">
               <div>
@@ -91,7 +95,7 @@ export function Dashboard() {
                     ? `$${data.totalStockValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                     : `${totalUnitsAll.toLocaleString()}`}
                 </div>
-                <span className="ops-pill-badge">{data.products ?? 0} Active SKUs</span>
+                <span className="ops-pill-badge">{data.products ?? 0} Active SKUs · {data.warehouses} Warehouses</span>
               </div>
               <svg className="ops-sparkline" viewBox="0 0 110 38" aria-hidden="true">
                 <path
@@ -109,56 +113,68 @@ export function Dashboard() {
             </div>
           </article>
 
-          {/* Card 2: Active Locations & Operations */}
+          {/* Card 2: Receipts vs Issues (Real Ledger Totals) */}
           <article className="ops-kpi-card">
             <div className="ops-kpi-top">
-              <span className="ops-kpi-title">Active Locations</span>
-              <span className="muted" style={{ margin: 0, fontSize: '.78rem' }}>{data.branches} Branches</span>
+              <span className="ops-kpi-title">Receipts &amp; Issues Ledger</span>
+              <span className="muted" style={{ margin: 0, fontSize: '.78rem' }}>
+                {(data.receiptsCount ?? 0) + (data.issuesCount ?? 0)} Posted Docs
+              </span>
             </div>
             <div className="ops-kpi-big ops-kpi-split-num">
-              <span><strong>{data.warehouses}</strong> <small>Warehouses</small></span>
+              <span title="Total received base units">
+                <strong>+{(data.receiptsUnits ?? 0).toLocaleString()}</strong> <small>Received ({data.receiptsCount ?? 0})</small>
+              </span>
               <span className="sep">/</span>
-              <span><strong>{data.departments}</strong> <small>Departments</small></span>
+              <span title="Total issued base units">
+                <strong>-{(data.issuesUnits ?? 0).toLocaleString()}</strong> <small>Issued ({data.issuesCount ?? 0})</small>
+              </span>
             </div>
-            <div className="ops-dot-strip" aria-hidden="true">
-              <span className="dot active" />
-              <span className="dot active" />
-              <span className="dot active" />
-              <span className="dot active" />
-              <span className="dot" />
-              <span className="ops-dot-caption">{data.pendingCountSheets ?? 0} draft stocktakes</span>
+            <div className="ops-dot-strip">
+              <span className="dot active" aria-hidden="true" />
+              <span className="ops-dot-caption">
+                {data.branches} Branches · {data.departments} Depts
+                {data.users !== null ? ` · ${data.users} Users` : ''}
+              </span>
             </div>
           </article>
 
-          {/* Card 3: Inventory Coverage & Units */}
+          {/* Card 3: Internal Transfers & Pending Approvals */}
           <article className="ops-kpi-card">
             <div className="ops-kpi-top">
-              <span className="ops-kpi-title">Total Units On Hand</span>
-              <span className="muted" style={{ margin: 0, fontSize: '.78rem' }}>Ledger Verified</span>
+              <span className="ops-kpi-title">Transfers &amp; Approvals</span>
+              <span className="muted" style={{ margin: 0, fontSize: '.78rem' }}>
+                {data.transfersCount ?? 0} Transfer Docs
+              </span>
             </div>
             <div className="ops-kpi-big ops-kpi-split-num">
-              <span><strong>{totalUnitsAll.toLocaleString()}</strong></span>
+              <span>
+                <strong>{(data.transfersUnits ?? 0).toLocaleString()}</strong> <small>Units Moved</small>
+              </span>
               <span className="sep">/</span>
-              <small>{healthySkus} of {totalSkus} SKUs Healthy</small>
+              <span>
+                <strong>{data.pendingApprovals?.total ?? data.pendingCountSheets ?? 0}</strong> <small>Pending</small>
+              </span>
             </div>
-            <div className="ops-progress-row">
-              <div className="ops-progress-track">
-                <div className="ops-progress-fill" style={{ width: `${healthPct}%` }} />
-              </div>
-              <strong className="ops-progress-pct">{healthPct}%</strong>
+            <div className="ops-dot-strip">
+              <span className="ops-dot-caption">
+                {data.pendingApprovals
+                  ? `${data.pendingApprovals.draftPurchaseOrders} POs · ${data.pendingApprovals.pendingRequisitions} Reqs · ${data.pendingApprovals.draftCountSheets} Counts`
+                  : `${data.pendingCountSheets ?? 0} draft stocktakes`}
+              </span>
             </div>
           </article>
 
           {/* Card 4: Overall Utilization / Reorder Health Gauge */}
           <article className="ops-kpi-card ops-kpi-gauge-card">
             <div>
-              <span className="ops-kpi-title">Stock Health Index</span>
+              <span className="ops-kpi-title">Low-Stock &amp; Health</span>
               <div className="ops-gauge-sub">
                 <strong>{healthPct}% Optimal</strong>
-                <span>({lowStockCount} low-stock alerts)</span>
+                <span>({lowStockCount} low-stock · {data.expiringSoonCount ?? 0} expiring)</span>
               </div>
               <div className="ops-gauge-legend">
-                <span className="warn">▲ {lowStockCount} Warning</span>
+                <span className="warn">▲ {lowStockCount} Low Stock</span>
                 <span className="opt">● {healthySkus} Optimal</span>
               </div>
             </div>
