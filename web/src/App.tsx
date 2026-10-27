@@ -9,7 +9,10 @@ import { Login } from './pages/Login';
 import { NotFound } from './pages/NotFound';
 import { Operations } from './pages/Operations';
 import { Organisation } from './pages/Organisation';
+import { Procurement } from './pages/Procurement';
 import { Products } from './pages/Products';
+import { Reports } from './pages/Reports';
+import { Warehouses } from './pages/Warehouses';
 
 /** Client-side route guard. The server enforces the same rules; this only provides sensible navigation. */
 export function RequireRole({ roles, children }: { roles: User['role'][]; children?: ReactNode }) {
@@ -35,7 +38,10 @@ export function App() {
         <Route path="/executive" element={<Shell portal="executive" />}>
           <Route index element={<Dashboard />} />
           <Route path="products" element={<Products />} />
+          <Route path="warehouses" element={<Warehouses />} />
+          <Route path="procurement" element={<Procurement />} />
           <Route path="operations" element={<Operations />} />
+          <Route path="reports" element={<Reports />} />
           <Route path="organisation" element={<Organisation />} />
         </Route>
       </Route>
@@ -43,7 +49,10 @@ export function App() {
         <Route path="/inventory" element={<Shell portal="inventory" />}>
           <Route index element={<Dashboard />} />
           <Route path="products" element={<Products />} />
+          <Route path="warehouses" element={<Warehouses />} />
+          <Route path="procurement" element={<Procurement />} />
           <Route path="operations" element={<Operations />} />
+          <Route path="reports" element={<Reports />} />
         </Route>
       </Route>
       <Route path="*" element={<NotFound />} />

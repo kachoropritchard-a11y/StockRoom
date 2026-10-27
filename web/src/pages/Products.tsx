@@ -2,14 +2,18 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { api, type BalanceItem, type ProductItem } from '../api';
 import { Spinner } from '../components/Spinner';
 
+const PAGE_SIZE = 10;
+
 export function Products() {
   const [products, setProducts] = useState<ProductItem[]>([]);
+  const [totalProducts, setTotalProducts] = useState(0);
+  const [page, setPage] = useState(0);
   const [balances, setBalances] = useState<BalanceItem[]>([]);
-  const [categories, setCategories] = useState<{ id: number; name: string }[]>([]);
+  const [categories, setCategories] = useState<{ id: number; name: string; active: number }[]>([]);
   const [units, setUnits] = useState<{ id: number; code: string; name: string }[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: number; name: string }[]>([]);
-  const [suppliers, setSuppliers] = useState<{ id: number; name: string; email: string | null; phone: string | null }[]>([]);
   const [search, setSearch] = useState('');
+  const [catFilter, setCatFilter] = useState<number | undefined>(undefined);
   const [whFilter, setWhFilter] = useState<number | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
@@ -23,33 +27,39 @@ export function Products() {
   const [unitCost, setUnitCost] = useState('0');
   const [reorderLevel, setReorderLevel] = useState('10');
 
+  // Edit Product state
+  const [editingProduct, setEditingProduct] = useState<ProductItem | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editCategoryId, setEditCategoryId] = useState<string>('');
+  const [editUnitCost, setEditUnitCost] = useState('0');
+  const [editReorderLevel, setEditReorderLevel] = useState('0');
+
   // Packaging form
   const [pkgProductId, setPkgProductId] = useState<string>('');
   const [pkgUnitId, setPkgUnitId] = useState<string>('');
   const [pkgFactor, setPkgFactor] = useState('12');
 
-  // Quick master data forms
+  // Category & Unit forms
   const [newCategory, setNewCategory] = useState('');
-  const [newSupplierName, setNewSupplierName] = useState('');
-  const [newSupplierPhone, setNewSupplierPhone] = useState('');
+  const [newUnitCode, setNewUnitCode] = useState('');
+  const [newUnitName, setNewUnitName] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [pRes, bRes, cRes, uRes, wRes, sRes] = await Promise.all([
-        api.products(search),
+      const [pRes, bRes, cRes, uRes, wRes] = await Promise.all([
+        api.products(search, { categoryId: catFilter, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
         api.balances(whFilter),
         api.categories(),
         api.units(),
         api.warehouses(),
-        api.suppliers(),
       ]);
       setProducts(pRes.items);
+      setTotalProducts(pRes.total);
       setBalances(bRes.items);
       setCategories(cRes);
       setUnits(uRes);
       setWarehouses(wRes);
-      setSuppliers(sRes);
       if (!baseUnitId && uRes[0]) setBaseUnitId(String(uRes[0].id));
       if (!pkgProductId && pRes.items[0]) setPkgProductId(String(pRes.items[0].id));
       if (!pkgUnitId && uRes[1]) setPkgUnitId(String(uRes[1].id));
@@ -58,7 +68,7 @@ export function Products() {
     } finally {
       setLoading(false);
     }
-  }, [search, whFilter, baseUnitId, pkgProductId, pkgUnitId]);
+  }, [search, catFilter, page, whFilter, baseUnitId, pkgProductId, pkgUnitId]);
 
   useEffect(() => {
     load();
@@ -80,6 +90,46 @@ export function Products() {
       setSku('');
       setName('');
       setMsg('Product created.');
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  function startEditProduct(p: ProductItem) {
+    setEditingProduct(p);
+    setEditName(p.name);
+    setEditCategoryId(p.categoryId ? String(p.categoryId) : '');
+    setEditUnitCost(String(p.unitCost));
+    setEditReorderLevel(String(p.reorderLevel));
+  }
+
+  async function handleSaveEditProduct(e: FormEvent) {
+    e.preventDefault();
+    if (!editingProduct) return;
+    setError('');
+    setMsg('');
+    try {
+      await api.updateProduct(editingProduct.id, {
+        name: editName.trim(),
+        categoryId: editCategoryId ? Number(editCategoryId) : null,
+        unitCost: Number(editUnitCost),
+        reorderLevel: Number(editReorderLevel),
+      });
+      setEditingProduct(null);
+      setMsg(`Updated product ${editName}.`);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function handleToggleProductActive(p: ProductItem) {
+    setError('');
+    setMsg('');
+    try {
+      await api.updateProduct(p.id, { active: !p.active });
+      setMsg(`${p.name} marked ${p.active ? 'inactive' : 'active'}.`);
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -116,27 +166,40 @@ export function Products() {
     }
   }
 
-  async function handleAddSupplier(e: FormEvent) {
-    e.preventDefault();
-    if (!newSupplierName.trim()) return;
+  async function handleToggleCategory(c: { id: number; name: string; active: number }) {
     setError('');
     try {
-      await api.createSupplier({ name: newSupplierName.trim(), phone: newSupplierPhone.trim() || undefined });
-      setNewSupplierName('');
-      setNewSupplierPhone('');
-      setMsg('Supplier added.');
+      await api.updateCategory(c.id, { active: !c.active });
+      setMsg(`Category "${c.name}" ${c.active ? 'deactivated' : 'activated'}.`);
       await load();
     } catch (err) {
       setError((err as Error).message);
     }
   }
 
+  async function handleAddUnit(e: FormEvent) {
+    e.preventDefault();
+    if (!newUnitCode.trim() || !newUnitName.trim()) return;
+    setError('');
+    try {
+      await api.createUnit({ code: newUnitCode.trim(), name: newUnitName.trim() });
+      setNewUnitCode('');
+      setNewUnitName('');
+      setMsg('Unit of measure added.');
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  const totalPages = Math.max(1, Math.ceil(totalProducts / PAGE_SIZE));
+
   return (
     <>
       <div className="page-header">
         <div>
-          <h1>Products, Packaging &amp; Balances</h1>
-          <p className="muted">Catalogue with unit conversions, reorder levels, unit costs and live warehouse balances.</p>
+          <h1>Product &amp; Category Management</h1>
+          <p className="muted">Catalogue with unit conversions, categories, reorder levels, unit costs and live warehouse balances.</p>
         </div>
       </div>
 
@@ -149,7 +212,7 @@ export function Products() {
           <form className="form-grid" onSubmit={handleCreateProduct}>
             <label>
               SKU
-              <input value={sku} onChange={(e) => setSku(e.target.value)} placeholder="e.g. GRN-mz10" required />
+              <input value={sku} onChange={(e) => setSku(e.target.value)} placeholder="e.g. GRN-MZ10" required />
             </label>
             <label>
               Product Name
@@ -159,7 +222,7 @@ export function Products() {
               Category
               <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
                 <option value="">Uncategorised</option>
-                {categories.map((c) => (
+                {categories.filter((c) => c.active).map((c) => (
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
@@ -187,7 +250,7 @@ export function Products() {
         </section>
 
         <section className="card">
-          <h2>Packaging Conversion &amp; Master Data</h2>
+          <h2>Packaging Conversions &amp; Categories</h2>
           <form className="form-grid" onSubmit={handleAddPackaging}>
             <label>
               Product
@@ -220,70 +283,159 @@ export function Products() {
               <input value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="New category name" />
               <button className="btn btn-outline" type="submit">+ Category</button>
             </form>
-            <form onSubmit={handleAddSupplier} className="inline-form">
-              <input value={newSupplierName} onChange={(e) => setNewSupplierName(e.target.value)} placeholder="New supplier name" />
-              <input value={newSupplierPhone} onChange={(e) => setNewSupplierPhone(e.target.value)} placeholder="Phone (optional)" />
-              <button className="btn btn-outline" type="submit">+ Supplier</button>
+            <form onSubmit={handleAddUnit} className="inline-form">
+              <input value={newUnitCode} onChange={(e) => setNewUnitCode(e.target.value)} placeholder="Unit code (e.g. bag)" style={{ maxWidth: '130px' }} />
+              <input value={newUnitName} onChange={(e) => setNewUnitName(e.target.value)} placeholder="Unit label (e.g. 50kg Bag)" />
+              <button className="btn btn-outline" type="submit">+ Unit</button>
             </form>
           </div>
-          {suppliers.length > 0 && (
-            <p className="muted" style={{ marginTop: '.6rem', marginBottom: 0 }}>
-              Active suppliers: {suppliers.map((s) => s.name).join(' • ')}
-            </p>
+          {categories.length > 0 && (
+            <div className="chip-row" style={{ marginTop: '.75rem' }}>
+              {categories.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  className={`chip-toggle ${c.active ? 'active' : 'inactive'}`}
+                  onClick={() => handleToggleCategory(c)}
+                  title="Click to toggle active status"
+                >
+                  {c.name} {c.active ? '✓' : '(inactive)'}
+                </button>
+              ))}
+            </div>
           )}
         </section>
       </div>
 
+      {editingProduct && (
+        <section className="card" style={{ marginTop: '1.25rem' }}>
+          <div className="section-head">
+            <h2>Edit Product: {editingProduct.sku}</h2>
+            <button type="button" className="btn btn-outline btn-sm" onClick={() => setEditingProduct(null)}>Cancel</button>
+          </div>
+          <form className="form-grid" onSubmit={handleSaveEditProduct}>
+            <label>
+              Product Name
+              <input value={editName} onChange={(e) => setEditName(e.target.value)} required />
+            </label>
+            <label>
+              Category
+              <select value={editCategoryId} onChange={(e) => setEditCategoryId(e.target.value)}>
+                <option value="">Uncategorised</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Base Unit Cost (USD)
+              <input type="number" step="0.01" min="0" value={editUnitCost} onChange={(e) => setEditUnitCost(e.target.value)} required />
+            </label>
+            <label>
+              Reorder Level ({editingProduct.baseUnit})
+              <input type="number" step="0.001" min="0" value={editReorderLevel} onChange={(e) => setEditReorderLevel(e.target.value)} required />
+            </label>
+            <div className="form-actions">
+              <button className="btn btn-primary" type="submit">Save Changes</button>
+            </div>
+          </form>
+        </section>
+      )}
+
       <section className="card" style={{ marginTop: '1.25rem' }}>
         <div className="section-head">
-          <h2>Product Catalogue ({products.length})</h2>
-          <input
-            className="search-input"
-            type="search"
-            placeholder="Search by SKU or product name…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <h2>Product Catalogue ({totalProducts})</h2>
+          <div className="filter-bar">
+            <select
+              value={catFilter ?? ''}
+              onChange={(e) => {
+                setCatFilter(e.target.value ? Number(e.target.value) : undefined);
+                setPage(0);
+              }}
+            >
+              <option value="">All Categories</option>
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+            <input
+              className="search-input"
+              type="search"
+              placeholder="Search by SKU or product name…"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(0);
+              }}
+            />
+          </div>
         </div>
         {loading ? (
           <Spinner label="Loading products" />
         ) : (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>SKU</th>
-                  <th>Product</th>
-                  <th>Category</th>
-                  <th>Base Unit</th>
-                  <th>Packagings</th>
-                  <th className="num">Unit Cost</th>
-                  <th className="num">Reorder At</th>
-                  <th className="num">Total On Hand</th>
-                </tr>
-              </thead>
-              <tbody>
-                {products.map((p) => (
-                  <tr key={p.id}>
-                    <td><code>{p.sku}</code></td>
-                    <td><strong>{p.name}</strong></td>
-                    <td>{p.categoryName ?? '—'}</td>
-                    <td>{p.baseUnit}</td>
-                    <td>
-                      {p.packagings.length > 0
-                        ? p.packagings.map((g) => `1 ${g.unit} = ${g.factor} ${p.baseUnit}`).join(', ')
-                        : 'Base unit only'}
-                    </td>
-                    <td className="num">${p.unitCost.toFixed(2)}</td>
-                    <td className="num">{p.reorderLevel} {p.baseUnit}</td>
-                    <td className={`num ${p.reorderLevel > 0 && p.totalStock <= p.reorderLevel ? 'badge-danger-text' : ''}`}>
-                      <strong>{p.totalStock} {p.baseUnit}</strong>
-                    </td>
+          <>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>SKU</th>
+                    <th>Product</th>
+                    <th>Category</th>
+                    <th>Base Unit</th>
+                    <th>Packagings</th>
+                    <th className="num">Unit Cost</th>
+                    <th className="num">Reorder At</th>
+                    <th className="num">Total On Hand</th>
+                    <th>Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {products.map((p) => (
+                    <tr key={p.id}>
+                      <td><code>{p.sku}</code></td>
+                      <td>
+                        <strong>{p.name}</strong>
+                        {!p.active && <span className="badge badge-write_off" style={{ marginLeft: '.4rem' }}>Inactive</span>}
+                      </td>
+                      <td>{p.categoryName ?? '—'}</td>
+                      <td>{p.baseUnit}</td>
+                      <td>
+                        {p.packagings.length > 0
+                          ? p.packagings.map((g) => `1 ${g.unit} = ${g.factor} ${p.baseUnit}`).join(', ')
+                          : 'Base unit only'}
+                      </td>
+                      <td className="num">${p.unitCost.toFixed(2)}</td>
+                      <td className="num">{p.reorderLevel} {p.baseUnit}</td>
+                      <td className={`num ${p.reorderLevel > 0 && p.totalStock <= p.reorderLevel ? 'badge-danger-text' : ''}`}>
+                        <strong>{p.totalStock} {p.baseUnit}</strong>
+                      </td>
+                      <td className="action-row">
+                        <button type="button" className="btn btn-outline btn-sm" onClick={() => startEditProduct(p)}>
+                          Edit
+                        </button>
+                        <button type="button" className="btn btn-outline btn-sm" onClick={() => handleToggleProductActive(p)}>
+                          {p.active ? 'Deactivate' : 'Activate'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="pagination-bar">
+              <span className="muted">
+                Page {page + 1} of {totalPages} ({totalProducts} total items)
+              </span>
+              <div className="action-row">
+                <button type="button" className="btn btn-outline btn-sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
+                  Previous
+                </button>
+                <button type="button" className="btn btn-outline btn-sm" disabled={page + 1 >= totalPages} onClick={() => setPage((p) => p + 1)}>
+                  Next
+                </button>
+              </div>
+            </div>
+          </>
         )}
       </section>
 

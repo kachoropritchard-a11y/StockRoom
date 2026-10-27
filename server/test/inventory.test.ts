@@ -23,7 +23,9 @@ async function setup() {
 
   const call = async (method: 'GET' | 'POST' | 'PATCH', url: string, token: string, payload?: unknown, key?: string | null) => {
     const headers: Record<string, string> = { authorization: `Bearer ${token}` };
-    if (key !== null && method === 'POST' && url.startsWith('/api/stock')) headers['idempotency-key'] = key ?? newKey();
+    if (key !== null && method === 'POST' && (url.startsWith('/api/stock') || url.endsWith('/receive') || url.endsWith('/fulfill'))) {
+      headers['idempotency-key'] = key ?? newKey();
+    }
     const res = await app.inject({ method, url, headers, payload: payload as object | undefined });
     return { status: res.statusCode, body: res.json() as any };
   };
@@ -31,6 +33,8 @@ async function setup() {
   const units = Object.fromEntries((await call('GET', '/api/units', exec)).body.map((u: any) => [u.code, u.id]));
   const product = (await call('POST', '/api/products', exec, { sku: 'RICE-1', name: 'Rice', baseUnitId: units.each })).body.id as number;
   await call('POST', `/api/products/${product}/packagings`, exec, { unitId: units.carton, factor: 24 });
+  const supplier = (await call('POST', '/api/suppliers', exec, { name: 'National Foods' })).body.id as number;
+  const dept = 1; // seeded "General" department in branch 1
   const wh1 = 1; // seeded "Main Warehouse" in branch 1
   const wh2 = (await call('POST', '/api/warehouses', exec, { branchId: 1, name: 'Cold Room' })).body.id as number;
   const branch2 = (await call('POST', '/api/branches', exec, { name: 'Bulawayo', city: 'Bulawayo' })).body.id as number;
@@ -42,7 +46,7 @@ async function setup() {
   };
   const receive = (qty: number, warehouseId = wh1, unitId = units.each) =>
     call('POST', '/api/stock/receipts', exec, { lines: [{ productId: product, warehouseId, unitId, quantity: qty }] });
-  return { db, app, exec, inv, call, units, product, wh1, wh2, wh3, branch2, balance, receive };
+  return { db, app, exec, inv, call, units, product, supplier, dept, wh1, wh2, wh3, branch2, balance, receive };
 }
 
 test('migrations create the inventory schema and are idempotent', () => {
@@ -387,4 +391,146 @@ test('executive user management and self-service password reset', async () => {
     payload: { email: 'mutare@example.com', password: 'updated-password-456' },
   });
   assert.equal(loginRes.statusCode, 200);
+});
+
+test('purchase orders: draft, approval, partial deliveries, completion, and over-delivery protection', async () => {
+  const t = await setup();
+  const po = await t.call('POST', '/api/purchase-orders', t.inv, {
+    supplierId: t.supplier,
+    warehouseId: t.wh1,
+    reference: 'PO-2026-500',
+    notes: 'Two-part shipment',
+    lines: [{ productId: t.product, unitId: t.units.each, orderedQuantity: 40, unitCost: 3.5 }],
+  });
+  assert.equal(po.status, 201);
+  assert.equal(po.body.status, 'draft');
+  assert.equal(po.body.totalValue, 140);
+
+  // Cannot receive against draft PO
+  assert.equal(
+    (await t.call('POST', `/api/purchase-orders/${po.body.id}/receive`, t.inv, { lines: [{ productId: t.product, quantity: 15 }] })).status,
+    409,
+  );
+
+  // Approve PO
+  const approved = await t.call('POST', `/api/purchase-orders/${po.body.id}/approve`, t.inv, {});
+  assert.equal(approved.status, 200);
+  assert.equal(approved.body.status, 'approved');
+
+  // First partial delivery: 15 units
+  const part1 = await t.call('POST', `/api/purchase-orders/${po.body.id}/receive`, t.inv, {
+    reference: 'GRN-500-A',
+    lines: [{ productId: t.product, quantity: 15, batchNumber: 'BATCH-A' }],
+  });
+  assert.equal(part1.status, 201);
+  assert.equal(part1.body.purchaseOrder.status, 'partial');
+  assert.equal(part1.body.purchaseOrder.lines[0].receivedQuantity, 15);
+  assert.equal(part1.body.purchaseOrder.lines[0].remainingQuantity, 25);
+  assert.equal(await t.balance(), 15);
+
+  // Over-delivery (30 > 25 remaining) is rejected and does not touch balance
+  const over = await t.call('POST', `/api/purchase-orders/${po.body.id}/receive`, t.inv, {
+    lines: [{ productId: t.product, quantity: 30 }],
+  });
+  assert.equal(over.status, 409);
+  assert.equal(over.body.error, 'over_delivery');
+  assert.equal(await t.balance(), 15);
+
+  // Second delivery completes the remaining 25 units
+  const part2 = await t.call('POST', `/api/purchase-orders/${po.body.id}/receive`, t.inv, {
+    reference: 'GRN-500-B',
+    lines: [{ productId: t.product, quantity: 25, batchNumber: 'BATCH-B' }],
+  });
+  assert.equal(part2.status, 201);
+  assert.equal(part2.body.purchaseOrder.status, 'received');
+  assert.equal(part2.body.purchaseOrder.lines[0].remainingQuantity, 0);
+  assert.equal(await t.balance(), 40);
+  assert.deepEqual(verifyLedger(t.db), { ok: true, problems: [] });
+});
+
+test('requisitions: department issues and internal transfers post through the stock engine on fulfillment', async () => {
+  const t = await setup();
+  await t.receive(30);
+
+  // Create a department requisition for 12 units
+  const deptReq = await t.call('POST', '/api/requisitions', t.inv, {
+    kind: 'department_issue',
+    warehouseId: t.wh1,
+    departmentId: t.dept,
+    reference: 'REQ-DEPT-1',
+    lines: [{ productId: t.product, unitId: t.units.each, requestedQuantity: 12 }],
+  });
+  assert.equal(deptReq.status, 201);
+  assert.equal(deptReq.body.status, 'pending');
+  assert.equal(deptReq.body.lines[0].availableBaseQuantity, 30);
+
+  // Fulfill department requisition -> posts issue movement
+  const fulfilledDept = await t.call('POST', `/api/requisitions/${deptReq.body.id}/fulfill`, t.inv, {});
+  assert.equal(fulfilledDept.status, 201);
+  assert.equal(fulfilledDept.body.requisition.status, 'fulfilled');
+  assert.equal(fulfilledDept.body.document.type, 'issue');
+  assert.equal(await t.balance(), 18);
+
+  // Create an internal warehouse transfer requisition for 8 units from wh1 -> wh2
+  const trfReq = await t.call('POST', '/api/requisitions', t.inv, {
+    kind: 'warehouse_transfer',
+    warehouseId: t.wh1,
+    toWarehouseId: t.wh2,
+    reference: 'REQ-TRF-1',
+    lines: [{ productId: t.product, unitId: t.units.each, requestedQuantity: 8 }],
+  });
+  assert.equal(trfReq.status, 201);
+  const fulfilledTrf = await t.call('POST', `/api/requisitions/${trfReq.body.id}/fulfill`, t.inv, {});
+  assert.equal(fulfilledTrf.status, 201);
+  assert.equal(fulfilledTrf.body.document.type, 'transfer');
+  assert.equal(await t.balance(t.product, t.wh1), 10);
+  assert.equal(await t.balance(t.product, t.wh2), 8);
+  assert.deepEqual(verifyLedger(t.db), { ok: true, problems: [] });
+});
+
+test('stock returns (from department and to supplier) and inventory reports accuracy', async () => {
+  const t = await setup();
+  await t.call('PATCH', `/api/products/${t.product}`, t.exec, { unitCost: 4, reorderLevel: 20 });
+  await t.receive(25);
+  await t.call('POST', '/api/stock/issues', t.inv, {
+    departmentId: t.dept,
+    reference: 'ISS-900',
+    lines: [{ productId: t.product, warehouseId: t.wh1, unitId: t.units.each, quantity: 10 }],
+  });
+  assert.equal(await t.balance(), 15);
+
+  // Department returns 3 unused units back into wh1 -> balance becomes 18
+  const retDept = await t.call('POST', '/api/stock/returns', t.inv, {
+    returnType: 'from_department',
+    warehouseId: t.wh1,
+    departmentId: t.dept,
+    reference: 'RET-DEPT-1',
+    reason: 'Unused stock from weekend shift',
+    lines: [{ productId: t.product, warehouseId: t.wh1, unitId: t.units.each, quantity: 3 }].map(({ warehouseId: _, ...rest }) => rest),
+  });
+  assert.equal(retDept.status, 201);
+  assert.equal(await t.balance(), 18);
+
+  // Return 4 damaged units to supplier -> balance becomes 14 (which is <= reorderLevel 20)
+  const retSup = await t.call('POST', '/api/stock/returns', t.inv, {
+    returnType: 'to_supplier',
+    warehouseId: t.wh1,
+    supplierId: t.supplier,
+    reference: 'RET-SUP-1',
+    reason: 'Damaged seals on delivery',
+    lines: [{ productId: t.product, unitId: t.units.each, quantity: 4 }],
+  });
+  assert.equal(retSup.status, 201);
+  assert.equal(await t.balance(), 14);
+
+  // Check inventory reports endpoint
+  const rep = await t.call('GET', '/api/reports/inventory', t.inv);
+  assert.equal(rep.status, 200);
+  assert.equal(rep.body.lowStockAlerts.length, 1);
+  assert.equal(rep.body.lowStockAlerts[0].currentStock, 14);
+  assert.equal(rep.body.lowStockAlerts[0].shortfall, 6);
+  const deptRow = rep.body.departmentConsumption.find((d: { departmentId: number }) => d.departmentId === t.dept);
+  assert.equal(deptRow.issueCount, 1);
+  assert.equal(deptRow.consumedQuantity, 10);
+  assert.deepEqual(verifyLedger(t.db), { ok: true, problems: [] });
 });

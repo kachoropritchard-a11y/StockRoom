@@ -7,8 +7,11 @@ const NAV = {
     title: 'Executive Portal',
     items: [
       { to: '/executive', label: 'Overview', end: true },
-      { to: '/executive/products', label: 'Products & Stock', end: false },
-      { to: '/executive/operations', label: 'Movements & Counts', end: false },
+      { to: '/executive/products', label: 'Products & Categories', end: false },
+      { to: '/executive/warehouses', label: 'Warehouses & Depts', end: false },
+      { to: '/executive/procurement', label: 'Suppliers & POs', end: false },
+      { to: '/executive/operations', label: 'Movements & Stocktakes', end: false },
+      { to: '/executive/reports', label: 'Reports & Alerts', end: false },
       { to: '/executive/organisation', label: 'Org & Users', end: false },
     ],
   },
@@ -16,8 +19,11 @@ const NAV = {
     title: 'Inventory Portal',
     items: [
       { to: '/inventory', label: 'Overview', end: true },
-      { to: '/inventory/products', label: 'Products & Stock', end: false },
-      { to: '/inventory/operations', label: 'Movements & Counts', end: false },
+      { to: '/inventory/products', label: 'Products & Categories', end: false },
+      { to: '/inventory/warehouses', label: 'Warehouses & Depts', end: false },
+      { to: '/inventory/procurement', label: 'Suppliers & POs', end: false },
+      { to: '/inventory/operations', label: 'Movements & Stocktakes', end: false },
+      { to: '/inventory/reports', label: 'Reports & Alerts', end: false },
     ],
   },
 };

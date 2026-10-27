@@ -455,6 +455,526 @@ export function approveCountSheet(db: Db, actor: AuthUser, sheetId: number, idem
   });
 }
 
+export function cancelCountSheet(db: Db, actor: AuthUser, sheetId: number): void {
+  const orgId = actor.organisationId;
+  const sheet = db.prepare('SELECT id, warehouse_id, status FROM count_sheets WHERE id = ? AND organisation_id = ?').get(sheetId, orgId) as
+    | { id: number; warehouse_id: number; status: string }
+    | undefined;
+  if (!sheet) throw new AppError(404, 'count_sheet_not_found');
+  const wh = loadWarehouse(db, orgId, sheet.warehouse_id);
+  if (!canAccessWarehouse(actor, wh.branch_id)) throw new AppError(403, 'forbidden_warehouse');
+  if (sheet.status !== 'draft') throw new AppError(409, 'count_sheet_not_draft');
+  db.prepare("UPDATE count_sheets SET status = 'cancelled' WHERE id = ?").run(sheetId);
+}
+
+// ---------- purchase orders & partial deliveries ----------
+
+export interface PurchaseOrderInput {
+  supplierId: number;
+  warehouseId: number;
+  reference: string;
+  notes?: string | null;
+   approveImmediately?: boolean;
+  lines: { productId: number; unitId: number; orderedQuantity: number; unitCost: number }[];
+}
+
+export function createPurchaseOrder(db: Db, actor: AuthUser, input: PurchaseOrderInput): number {
+  const orgId = actor.organisationId;
+  return tx(db, () => {
+    const sup = db.prepare('SELECT active FROM suppliers WHERE id = ? AND organisation_id = ?').get(input.supplierId, orgId) as { active: number } | undefined;
+    if (!sup) throw new AppError(400, 'supplier_not_found');
+    if (!sup.active) throw new AppError(400, 'supplier_inactive');
+    const wh = loadWarehouse(db, orgId, input.warehouseId);
+    if (!canAccessWarehouse(actor, wh.branch_id)) throw new AppError(403, 'forbidden_warehouse');
+    const status = input.approveImmediately ? 'approved' : 'draft';
+    const poRes = db
+      .prepare(
+        `INSERT INTO purchase_orders (organisation_id, supplier_id, warehouse_id, reference, notes, status, created_by, approved_by, approved_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'approved' THEN datetime('now') ELSE NULL END)`,
+      )
+      .run(orgId, input.supplierId, input.warehouseId, input.reference.trim(), input.notes?.trim() || null, status, actor.id, input.approveImmediately ? actor.id : null, status);
+    const poId = Number(poRes.lastInsertRowid);
+    const seen = new Set<number>();
+    const insertLine = db.prepare(
+      'INSERT INTO purchase_order_lines (purchase_order_id, product_id, unit_id, ordered_milli, unit_cost_cents) VALUES (?, ?, ?, ?, ?)',
+    );
+    for (const l of input.lines) {
+      if (seen.has(l.productId)) throw new AppError(400, 'duplicate_po_line');
+      seen.add(l.productId);
+      const product = loadProduct(db, orgId, l.productId);
+      resolveFactor(db, product, l.unitId);
+      const orderedMilli = toMilli(l.orderedQuantity);
+      if (orderedMilli <= 0) throw new AppError(400, 'quantity_must_be_positive');
+      const unitCostCents = toCents(l.unitCost);
+      insertLine.run(poId, l.productId, l.unitId, orderedMilli, unitCostCents);
+    }
+    return poId;
+  });
+}
+
+export function approvePurchaseOrder(db: Db, actor: AuthUser, poId: number): void {
+  const orgId = actor.organisationId;
+  const po = db.prepare('SELECT id, warehouse_id, status FROM purchase_orders WHERE id = ? AND organisation_id = ?').get(poId, orgId) as
+    | { id: number; warehouse_id: number; status: string }
+    | undefined;
+  if (!po) throw new AppError(404, 'po_not_found');
+  const wh = loadWarehouse(db, orgId, po.warehouse_id);
+  if (!canAccessWarehouse(actor, wh.branch_id)) throw new AppError(403, 'forbidden_warehouse');
+  if (po.status === 'approved') return;
+  if (po.status !== 'draft') throw new AppError(409, 'po_not_draft');
+  db.prepare("UPDATE purchase_orders SET status = 'approved', approved_by = ?, approved_at = datetime('now') WHERE id = ?").run(actor.id, poId);
+}
+
+export function cancelPurchaseOrder(db: Db, actor: AuthUser, poId: number): void {
+  const orgId = actor.organisationId;
+  const po = db.prepare('SELECT id, warehouse_id, status FROM purchase_orders WHERE id = ? AND organisation_id = ?').get(poId, orgId) as
+    | { id: number; warehouse_id: number; status: string }
+    | undefined;
+  if (!po) throw new AppError(404, 'po_not_found');
+  const wh = loadWarehouse(db, orgId, po.warehouse_id);
+  if (!canAccessWarehouse(actor, wh.branch_id)) throw new AppError(403, 'forbidden_warehouse');
+  if (po.status !== 'draft' && po.status !== 'approved') throw new AppError(409, 'po_cannot_be_cancelled');
+  db.prepare("UPDATE purchase_orders SET status = 'cancelled' WHERE id = ?").run(poId);
+}
+
+export interface ReceivePurchaseOrderInput {
+  reference?: string | null;
+  idempotencyKey: string;
+  lines: { productId: number; quantity: number; unitCost?: number | null; batchNumber?: string | null; expiryDate?: string | null }[];
+}
+
+export function receivePurchaseOrder(db: Db, actor: AuthUser, poId: number, input: ReceivePurchaseOrderInput): PostResult {
+  const orgId = actor.organisationId;
+  return tx(db, () => {
+    const po = db
+      .prepare('SELECT id, supplier_id, warehouse_id, reference, status FROM purchase_orders WHERE id = ? AND organisation_id = ?')
+      .get(poId, orgId) as { id: number; supplier_id: number; warehouse_id: number; reference: string; status: string } | undefined;
+    if (!po) throw new AppError(404, 'po_not_found');
+
+    // Check if this exact idempotency key was already recorded for this PO
+    const existingDoc = db
+      .prepare(
+        `SELECT r.document_id FROM purchase_order_receipts r JOIN stock_documents d ON d.id = r.document_id
+          WHERE r.purchase_order_id = ? AND d.organisation_id = ? AND d.idempotency_key = ?`,
+      )
+      .get(poId, orgId, input.idempotencyKey) as { document_id: number } | undefined;
+    if (existingDoc) return { documentId: existingDoc.document_id, replayed: true };
+
+    if (po.status !== 'approved' && po.status !== 'partial') {
+      throw new AppError(409, 'po_not_receivable', { status: po.status });
+    }
+
+    const poLines = db
+      .prepare('SELECT id, product_id, unit_id, ordered_milli, received_milli, unit_cost_cents FROM purchase_order_lines WHERE purchase_order_id = ?')
+      .all(poId) as { id: number; product_id: number; unit_id: number; ordered_milli: number; received_milli: number; unit_cost_cents: number }[];
+    const byProduct = new Map(poLines.map((l) => [l.product_id, l]));
+
+    const postLines: LineInput[] = [];
+    const updates: { lineId: number; addMilli: number }[] = [];
+    const seen = new Set<number>();
+
+    for (const l of input.lines) {
+      if (seen.has(l.productId)) throw new AppError(400, 'duplicate_po_line');
+      seen.add(l.productId);
+      const poLine = byProduct.get(l.productId);
+      if (!poLine) throw new AppError(400, 'product_not_on_po', { productId: l.productId });
+      const deliveryMilli = toMilli(l.quantity);
+      if (deliveryMilli <= 0) throw new AppError(400, 'quantity_must_be_positive');
+      const remainingMilli = poLine.ordered_milli - poLine.received_milli;
+      if (deliveryMilli > remainingMilli) {
+        throw new AppError(409, 'over_delivery', {
+          productId: l.productId,
+          remaining: fromMilli(remainingMilli),
+          attempted: l.quantity,
+        });
+      }
+      const unitCostCents = l.unitCost !== undefined && l.unitCost !== null ? toCents(l.unitCost) : poLine.unit_cost_cents;
+      postLines.push({
+        productId: l.productId,
+        warehouseId: po.warehouse_id,
+        unitId: poLine.unit_id,
+        quantityMilli: deliveryMilli,
+        unitCostCents,
+        batchNumber: l.batchNumber ?? null,
+        expiryDate: l.expiryDate ?? null,
+      });
+      updates.push({ lineId: poLine.id, addMilli: deliveryMilli });
+    }
+
+    const posted = postDocument(db, actor, {
+      type: 'receipt',
+      supplierId: po.supplier_id,
+      reference: input.reference?.trim() || `${po.reference}-RCV`,
+      idempotencyKey: input.idempotencyKey,
+      lines: postLines,
+    });
+
+    const updStmt = db.prepare('UPDATE purchase_order_lines SET received_milli = received_milli + ? WHERE id = ?');
+    for (const u of updates) updStmt.run(u.addMilli, u.lineId);
+
+    db.prepare('INSERT INTO purchase_order_receipts (purchase_order_id, document_id) VALUES (?, ?)').run(poId, posted.documentId);
+
+    const pending = db
+      .prepare('SELECT 1 FROM purchase_order_lines WHERE purchase_order_id = ? AND received_milli < ordered_milli')
+      .get(poId);
+    db.prepare('UPDATE purchase_orders SET status = ? WHERE id = ?').run(pending ? 'partial' : 'received', poId);
+
+    return posted;
+  });
+}
+
+export function getPurchaseOrder(db: Db, orgId: number, poId: number) {
+  const po = db
+    .prepare(
+      `SELECT po.id, po.supplier_id AS supplierId, s.name AS supplierName,
+              po.warehouse_id AS warehouseId, w.name AS warehouseName,
+              po.reference, po.notes, po.status, po.created_by AS createdBy,
+              po.approved_by AS approvedBy, po.created_at AS createdAt, po.approved_at AS approvedAt
+         FROM purchase_orders po
+         JOIN suppliers s ON s.id = po.supplier_id
+         JOIN warehouses w ON w.id = po.warehouse_id
+        WHERE po.id = ? AND po.organisation_id = ?`,
+    )
+    .get(poId, orgId) as
+    | {
+        id: number;
+        supplierId: number;
+        supplierName: string;
+        warehouseId: number;
+        warehouseName: string;
+        reference: string;
+        notes: string | null;
+        status: string;
+        createdBy: number;
+        approvedBy: number | null;
+        createdAt: string;
+        approvedAt: string | null;
+      }
+    | undefined;
+  if (!po) return null;
+
+  const lines = (db
+    .prepare(
+      `SELECT l.id, l.product_id AS productId, p.sku, p.name AS productName,
+              l.unit_id AS unitId, u.code AS unit, l.ordered_milli, l.received_milli, l.unit_cost_cents
+         FROM purchase_order_lines l
+         JOIN products p ON p.id = l.product_id
+         JOIN units_of_measure u ON u.id = l.unit_id
+        WHERE l.purchase_order_id = ? ORDER BY l.id`,
+    )
+    .all(poId) as {
+    id: number;
+    productId: number;
+    sku: string;
+    productName: string;
+    unitId: number;
+    unit: string;
+    ordered_milli: number;
+    received_milli: number;
+    unit_cost_cents: number;
+  }[]).map((l) => {
+    const orderedQuantity = fromMilli(l.ordered_milli);
+    const receivedQuantity = fromMilli(l.received_milli);
+    const remainingQuantity = fromMilli(l.ordered_milli - l.received_milli);
+    const unitCost = fromCents(l.unit_cost_cents);
+    return {
+      id: l.id,
+      productId: l.productId,
+      sku: l.sku,
+      productName: l.productName,
+      unitId: l.unitId,
+      unit: l.unit,
+      orderedQuantity,
+      receivedQuantity,
+      remainingQuantity,
+      unitCost,
+      lineTotal: Math.round(orderedQuantity * unitCost * 100) / 100,
+    };
+  });
+
+  const receipts = db
+    .prepare(
+      `SELECT r.document_id AS documentId, d.reference, r.created_at AS createdAt
+         FROM purchase_order_receipts r JOIN stock_documents d ON d.id = r.document_id
+        WHERE r.purchase_order_id = ? ORDER BY r.id DESC`,
+    )
+    .all(poId);
+
+  const totalValue = Math.round(lines.reduce((acc, l) => acc + l.lineTotal, 0) * 100) / 100;
+  return { ...po, totalValue, lines, receipts };
+}
+
+// ---------- department requisitions & internal transfer requests ----------
+
+export interface RequisitionInput {
+  kind: 'department_issue' | 'warehouse_transfer';
+  warehouseId: number;
+  departmentId?: number | null;
+  toWarehouseId?: number | null;
+  reference?: string | null;
+  notes?: string | null;
+  lines: { productId: number; unitId: number; requestedQuantity: number }[];
+}
+
+export function createRequisition(db: Db, actor: AuthUser, input: RequisitionInput): number {
+  const orgId = actor.organisationId;
+  return tx(db, () => {
+    const fromWh = loadWarehouse(db, orgId, input.warehouseId);
+    if (!canAccessWarehouse(actor, fromWh.branch_id)) throw new AppError(403, 'forbidden_warehouse');
+
+    if (input.kind === 'department_issue') {
+      if (!input.departmentId || input.toWarehouseId) throw new AppError(400, 'invalid_requisition_target');
+      const dept = db
+        .prepare('SELECT d.branch_id, d.active FROM departments d JOIN branches b ON b.id = d.branch_id WHERE d.id = ? AND b.organisation_id = ?')
+        .get(input.departmentId, orgId) as { branch_id: number; active: number } | undefined;
+      if (!dept) throw new AppError(400, 'department_not_found');
+      if (!dept.active) throw new AppError(400, 'department_inactive');
+      if (dept.branch_id !== fromWh.branch_id) throw new AppError(400, 'department_branch_mismatch');
+    } else {
+      if (!input.toWarehouseId || input.departmentId || input.toWarehouseId === input.warehouseId) {
+        throw new AppError(400, 'invalid_requisition_target');
+      }
+      loadWarehouse(db, orgId, input.toWarehouseId);
+    }
+
+    const reqRes = db
+      .prepare(
+        `INSERT INTO requisitions (organisation_id, kind, warehouse_id, department_id, to_warehouse_id, reference, notes, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        orgId,
+        input.kind,
+        input.warehouseId,
+        input.kind === 'department_issue' ? input.departmentId! : null,
+        input.kind === 'warehouse_transfer' ? input.toWarehouseId! : null,
+        input.reference?.trim() || null,
+        input.notes?.trim() || null,
+        actor.id,
+      );
+    const reqId = Number(reqRes.lastInsertRowid);
+    const seen = new Set<number>();
+    const insertLine = db.prepare('INSERT INTO requisition_lines (requisition_id, product_id, unit_id, requested_milli) VALUES (?, ?, ?, ?)');
+    for (const l of input.lines) {
+      if (seen.has(l.productId)) throw new AppError(400, 'duplicate_requisition_line');
+      seen.add(l.productId);
+      const product = loadProduct(db, orgId, l.productId);
+      resolveFactor(db, product, l.unitId);
+      const requestedMilli = toMilli(l.requestedQuantity);
+      if (requestedMilli <= 0) throw new AppError(400, 'quantity_must_be_positive');
+      insertLine.run(reqId, l.productId, l.unitId, requestedMilli);
+    }
+    return reqId;
+  });
+}
+
+export function fulfillRequisition(db: Db, actor: AuthUser, reqId: number, idempotencyKey: string): PostResult {
+  const orgId = actor.organisationId;
+  return tx(db, () => {
+    const req = db
+      .prepare(
+        'SELECT id, kind, warehouse_id, department_id, to_warehouse_id, reference, status, posted_document_id FROM requisitions WHERE id = ? AND organisation_id = ?',
+      )
+      .get(reqId, orgId) as
+      | {
+          id: number;
+          kind: 'department_issue' | 'warehouse_transfer';
+          warehouse_id: number;
+          department_id: number | null;
+          to_warehouse_id: number | null;
+          reference: string | null;
+          status: string;
+          posted_document_id: number | null;
+        }
+      | undefined;
+    if (!req) throw new AppError(404, 'requisition_not_found');
+    if (req.status === 'fulfilled' && req.posted_document_id) {
+      return { documentId: req.posted_document_id, replayed: true };
+    }
+    if (req.status !== 'pending') throw new AppError(409, 'requisition_not_pending');
+
+    const lines = db
+      .prepare('SELECT product_id, unit_id, requested_milli FROM requisition_lines WHERE requisition_id = ? ORDER BY id')
+      .all(reqId) as { product_id: number; unit_id: number; requested_milli: number }[];
+
+    const posted = postDocument(db, actor, {
+      type: req.kind === 'department_issue' ? 'issue' : 'transfer',
+      departmentId: req.kind === 'department_issue' ? req.department_id : null,
+      reference: req.reference ?? `REQ-${req.id}`,
+      idempotencyKey,
+      lines: lines.map((l) => ({
+        productId: l.product_id,
+        warehouseId: req.warehouse_id,
+        toWarehouseId: req.kind === 'warehouse_transfer' ? req.to_warehouse_id! : undefined,
+        unitId: l.unit_id,
+        quantityMilli: l.requested_milli,
+      })),
+    });
+
+    db.prepare(
+      "UPDATE requisitions SET status = 'fulfilled', posted_document_id = ?, fulfilled_by = ?, fulfilled_at = datetime('now') WHERE id = ?",
+    ).run(posted.documentId, actor.id, reqId);
+
+    return posted;
+  });
+}
+
+export function rejectRequisition(db: Db, actor: AuthUser, reqId: number, reason?: string | null): void {
+  const orgId = actor.organisationId;
+  const req = db
+    .prepare('SELECT id, warehouse_id, notes, status FROM requisitions WHERE id = ? AND organisation_id = ?')
+    .get(reqId, orgId) as { id: number; warehouse_id: number; notes: string | null; status: string } | undefined;
+  if (!req) throw new AppError(404, 'requisition_not_found');
+  const wh = loadWarehouse(db, orgId, req.warehouse_id);
+  if (!canAccessWarehouse(actor, wh.branch_id)) throw new AppError(403, 'forbidden_warehouse');
+  if (req.status !== 'pending') throw new AppError(409, 'requisition_not_pending');
+  const updatedNotes = reason?.trim() ? (req.notes ? `${req.notes} | Rejected: ${reason.trim()}` : `Rejected: ${reason.trim()}`) : req.notes;
+  db.prepare("UPDATE requisitions SET status = 'rejected', notes = ?, fulfilled_by = ?, fulfilled_at = datetime('now') WHERE id = ?").run(
+    updatedNotes,
+    actor.id,
+    reqId,
+  );
+}
+
+export function getRequisition(db: Db, orgId: number, reqId: number) {
+  const req = db
+    .prepare(
+      `SELECT r.id, r.kind, r.warehouse_id AS warehouseId, w.name AS warehouseName,
+              r.department_id AS departmentId, d.name AS departmentName,
+              r.to_warehouse_id AS toWarehouseId, tw.name AS toWarehouseName,
+              r.reference, r.notes, r.status, r.posted_document_id AS postedDocumentId,
+              r.created_by AS createdBy, r.fulfilled_by AS fulfilledBy,
+              r.created_at AS createdAt, r.fulfilled_at AS fulfilledAt
+         FROM requisitions r
+         JOIN warehouses w ON w.id = r.warehouse_id
+         LEFT JOIN departments d ON d.id = r.department_id
+         LEFT JOIN warehouses tw ON tw.id = r.to_warehouse_id
+        WHERE r.id = ? AND r.organisation_id = ?`,
+    )
+    .get(reqId, orgId) as
+    | {
+        id: number;
+        kind: string;
+        warehouseId: number;
+        warehouseName: string;
+        departmentId: number | null;
+        departmentName: string | null;
+        toWarehouseId: number | null;
+        toWarehouseName: string | null;
+        reference: string | null;
+        notes: string | null;
+        status: string;
+        postedDocumentId: number | null;
+        createdBy: number;
+        fulfilledBy: number | null;
+        createdAt: string;
+        fulfilledAt: string | null;
+      }
+    | undefined;
+  if (!req) return null;
+
+  const lines = (db
+    .prepare(
+      `SELECT l.id, l.product_id AS productId, p.sku, p.name AS productName, p.base_unit_id AS baseUnitId,
+              bu.code AS baseUnit, l.unit_id AS unitId, u.code AS unit, l.requested_milli
+         FROM requisition_lines l
+         JOIN products p ON p.id = l.product_id
+         JOIN units_of_measure u ON u.id = l.unit_id
+         JOIN units_of_measure bu ON bu.id = p.base_unit_id
+        WHERE l.requisition_id = ? ORDER BY l.id`,
+    )
+    .all(reqId) as {
+    id: number;
+    productId: number;
+    sku: string;
+    productName: string;
+    baseUnitId: number;
+    baseUnit: string;
+    unitId: number;
+    unit: string;
+    requested_milli: number;
+  }[]).map((l) => {
+    const factorMilli = resolveFactor(db, { id: l.productId, base_unit_id: l.baseUnitId }, l.unitId);
+    const requestedBaseMilli = toBase(l.requested_milli, factorMilli);
+    const availableBaseMilli = getBalance(db, orgId, l.productId, req.warehouseId);
+    return {
+      id: l.id,
+      productId: l.productId,
+      sku: l.sku,
+      productName: l.productName,
+      unitId: l.unitId,
+      unit: l.unit,
+      baseUnit: l.baseUnit,
+      requestedQuantity: fromMilli(l.requested_milli),
+      requestedBaseQuantity: fromMilli(requestedBaseMilli),
+      availableBaseQuantity: fromMilli(availableBaseMilli),
+    };
+  });
+
+  return { ...req, lines };
+}
+
+// ---------- returns (from department to warehouse, or from warehouse to supplier) ----------
+
+export interface ReturnInput {
+  returnType: 'from_department' | 'to_supplier';
+  warehouseId: number;
+  departmentId?: number | null;
+  supplierId?: number | null;
+  reference?: string | null;
+  reason: string;
+  idempotencyKey: string;
+  lines: { productId: number; unitId: number; quantity: number; batchNumber?: string | null; expiryDate?: string | null }[];
+}
+
+export function postReturn(db: Db, actor: AuthUser, input: ReturnInput): PostResult {
+  const orgId = actor.organisationId;
+  return tx(db, () => {
+    const wh = loadWarehouse(db, orgId, input.warehouseId);
+    if (!canAccessWarehouse(actor, wh.branch_id)) throw new AppError(403, 'forbidden_warehouse');
+
+    let prefix = '';
+    if (input.returnType === 'from_department') {
+      if (!input.departmentId) throw new AppError(400, 'department_required_for_return');
+      const dept = db
+        .prepare('SELECT d.name, d.branch_id, d.active FROM departments d JOIN branches b ON b.id = d.branch_id WHERE d.id = ? AND b.organisation_id = ?')
+        .get(input.departmentId, orgId) as { name: string; branch_id: number; active: number } | undefined;
+      if (!dept) throw new AppError(400, 'department_not_found');
+      if (!dept.active) throw new AppError(400, 'department_inactive');
+      if (dept.branch_id !== wh.branch_id) throw new AppError(400, 'department_branch_mismatch');
+      prefix = `Return from department (${dept.name}): `;
+    } else {
+      if (!input.supplierId) throw new AppError(400, 'supplier_required_for_return');
+      const sup = db.prepare('SELECT name, active FROM suppliers WHERE id = ? AND organisation_id = ?').get(input.supplierId, orgId) as
+        | { name: string; active: number }
+        | undefined;
+      if (!sup) throw new AppError(400, 'supplier_not_found');
+      if (!sup.active) throw new AppError(400, 'supplier_inactive');
+      prefix = `Return to supplier (${sup.name}): `;
+    }
+
+    const sign = input.returnType === 'from_department' ? 1 : -1;
+    return postDocument(db, actor, {
+      type: 'adjustment',
+      reference: input.reference?.trim() || null,
+      reason: `${prefix}${input.reason.trim()}`,
+      idempotencyKey: input.idempotencyKey,
+      lines: input.lines.map((l) => {
+        const qMilli = toMilli(l.quantity);
+        if (qMilli <= 0) throw new AppError(400, 'quantity_must_be_positive');
+        return {
+          productId: l.productId,
+          warehouseId: input.warehouseId,
+          unitId: l.unitId,
+          quantityMilli: sign * qMilli,
+          batchNumber: l.batchNumber ?? null,
+          expiryDate: l.expiryDate ?? null,
+        };
+      }),
+    });
+  });
+}
+
 // ---------- reading ----------
 
 export function getDocument(db: Db, orgId: number, id: number) {

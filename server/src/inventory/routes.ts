@@ -6,12 +6,23 @@ import type { Role } from '../app.ts';
 import { AppError } from '../errors.ts';
 import {
   approveCountSheet,
+  approvePurchaseOrder,
+  cancelCountSheet,
+  cancelPurchaseOrder,
   createCountSheet,
+  createPurchaseOrder,
+  createRequisition,
   fromCents,
   fromMilli,
+  fulfillRequisition,
   getCountSheet,
   getDocument,
+  getPurchaseOrder,
+  getRequisition,
   postDocument,
+  postReturn,
+  receivePurchaseOrder,
+  rejectRequisition,
   reverseDocument,
   toCents,
   toMilli,
@@ -414,6 +425,215 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       document: getDocument(db, req.user!.organisationId, result.documentId),
     });
   });
+  app.post('/api/stock/count-sheets/:id/cancel', { preHandler: staff }, async (req) => {
+    const { id: sheetId } = idParam.parse(req.params);
+    cancelCountSheet(db, req.user!, sheetId);
+    return getCountSheet(db, req.user!.organisationId, sheetId);
+  });
+
+  // ---------- purchase orders & partial deliveries ----------
+  app.get('/api/purchase-orders', { preHandler: anyUser }, async (req) => {
+    const q = z
+      .object({
+        status: z.enum(['draft', 'approved', 'partial', 'received', 'cancelled']).optional(),
+        supplierId: z.coerce.number().int().positive().optional(),
+        warehouseId: z.coerce.number().int().positive().optional(),
+      })
+      .parse(req.query);
+    const where = ['po.organisation_id = ?'];
+    const params: (string | number)[] = [req.user!.organisationId];
+    if (q.status) { where.push('po.status = ?'); params.push(q.status); }
+    if (q.supplierId) { where.push('po.supplier_id = ?'); params.push(q.supplierId); }
+    if (q.warehouseId) { where.push('po.warehouse_id = ?'); params.push(q.warehouseId); }
+    const rows = (db
+      .prepare(
+        `SELECT po.id, po.supplier_id AS supplierId, s.name AS supplierName,
+                po.warehouse_id AS warehouseId, w.name AS warehouseName,
+                po.reference, po.notes, po.status, po.created_at AS createdAt, po.approved_at AS approvedAt,
+                (SELECT COUNT(*) FROM purchase_order_lines l WHERE l.purchase_order_id = po.id) AS lineCount,
+                COALESCE((SELECT SUM((l.ordered_milli / 1000.0) * l.unit_cost_cents) FROM purchase_order_lines l WHERE l.purchase_order_id = po.id), 0) AS total_cents
+           FROM purchase_orders po
+           JOIN suppliers s ON s.id = po.supplier_id
+           JOIN warehouses w ON w.id = po.warehouse_id
+          WHERE ${where.join(' AND ')} ORDER BY po.id DESC LIMIT 100`,
+      )
+      .all(...params) as ({ total_cents: number } & Record<string, unknown>)[]).map(({ total_cents, ...r }) => ({
+      ...r,
+      totalValue: Math.round(total_cents) / 100,
+    }));
+    return { items: rows };
+  });
+  app.get('/api/purchase-orders/:id', { preHandler: anyUser }, async (req) => {
+    const { id: poId } = idParam.parse(req.params);
+    const po = getPurchaseOrder(db, req.user!.organisationId, poId);
+    if (!po) throw new AppError(404, 'not_found');
+    return po;
+  });
+  app.post('/api/purchase-orders', { preHandler: staff }, async (req, reply) => {
+    const b = z
+      .object({
+        supplierId: id,
+        warehouseId: id,
+        reference: z.string().trim().min(1).max(80),
+        notes: text(300),
+        approveImmediately: z.boolean().optional(),
+        lines: z
+          .array(
+            z
+              .object({
+                productId: id,
+                unitId: id,
+                orderedQuantity: qty.positive(),
+                unitCost: money.default(0),
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(200),
+      })
+      .strict()
+      .parse(req.body);
+    const poId = createPurchaseOrder(db, req.user!, b);
+    return reply.code(201).send(getPurchaseOrder(db, req.user!.organisationId, poId));
+  });
+  app.post('/api/purchase-orders/:id/approve', { preHandler: staff }, async (req) => {
+    const { id: poId } = idParam.parse(req.params);
+    approvePurchaseOrder(db, req.user!, poId);
+    return getPurchaseOrder(db, req.user!.organisationId, poId);
+  });
+  app.post('/api/purchase-orders/:id/cancel', { preHandler: staff }, async (req) => {
+    const { id: poId } = idParam.parse(req.params);
+    cancelPurchaseOrder(db, req.user!, poId);
+    return getPurchaseOrder(db, req.user!.organisationId, poId);
+  });
+  app.post('/api/purchase-orders/:id/receive', { preHandler: staff }, async (req, reply) => {
+    const { id: poId } = idParam.parse(req.params);
+    const b = z
+      .object({
+        reference: text(80),
+        lines: z
+          .array(
+            z
+              .object({
+                productId: id,
+                quantity: qty.positive(),
+                unitCost: money.nullish(),
+                ...batchFields,
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(200),
+      })
+      .strict()
+      .parse(req.body);
+    const result = receivePurchaseOrder(db, req.user!, poId, { ...b, idempotencyKey: idemKey(req) });
+    return reply.code(result.replayed ? 200 : 201).send({
+      replayed: result.replayed,
+      purchaseOrder: getPurchaseOrder(db, req.user!.organisationId, poId),
+      document: getDocument(db, req.user!.organisationId, result.documentId),
+    });
+  });
+
+  // ---------- department requisitions & internal transfer requests ----------
+  app.get('/api/requisitions', { preHandler: anyUser }, async (req) => {
+    const q = z
+      .object({
+        status: z.enum(['pending', 'fulfilled', 'rejected']).optional(),
+        kind: z.enum(['department_issue', 'warehouse_transfer']).optional(),
+      })
+      .parse(req.query);
+    const where = ['r.organisation_id = ?'];
+    const params: (string | number)[] = [req.user!.organisationId];
+    if (q.status) { where.push('r.status = ?'); params.push(q.status); }
+    if (q.kind) { where.push('r.kind = ?'); params.push(q.kind); }
+    const rows = db
+      .prepare(
+        `SELECT r.id, r.kind, r.warehouse_id AS warehouseId, w.name AS warehouseName,
+                r.department_id AS departmentId, d.name AS departmentName,
+                r.to_warehouse_id AS toWarehouseId, tw.name AS toWarehouseName,
+                r.reference, r.notes, r.status, r.posted_document_id AS postedDocumentId,
+                r.created_at AS createdAt, r.fulfilled_at AS fulfilledAt,
+                (SELECT COUNT(*) FROM requisition_lines l WHERE l.requisition_id = r.id) AS lineCount
+           FROM requisitions r
+           JOIN warehouses w ON w.id = r.warehouse_id
+           LEFT JOIN departments d ON d.id = r.department_id
+           LEFT JOIN warehouses tw ON tw.id = r.to_warehouse_id
+          WHERE ${where.join(' AND ')} ORDER BY r.id DESC LIMIT 100`,
+      )
+      .all(...params);
+    return { items: rows };
+  });
+  app.get('/api/requisitions/:id', { preHandler: anyUser }, async (req) => {
+    const { id: reqId } = idParam.parse(req.params);
+    const r = getRequisition(db, req.user!.organisationId, reqId);
+    if (!r) throw new AppError(404, 'not_found');
+    return r;
+  });
+  app.post('/api/requisitions', { preHandler: staff }, async (req, reply) => {
+    const b = z
+      .object({
+        kind: z.enum(['department_issue', 'warehouse_transfer']),
+        warehouseId: id,
+        departmentId: id.nullish(),
+        toWarehouseId: id.nullish(),
+        reference: text(80),
+        notes: text(300),
+        lines: z.array(z.object({ productId: id, unitId: id, requestedQuantity: qty.positive() }).strict()).min(1).max(200),
+      })
+      .strict()
+      .parse(req.body);
+    const reqId = createRequisition(db, req.user!, b);
+    return reply.code(201).send(getRequisition(db, req.user!.organisationId, reqId));
+  });
+  app.post('/api/requisitions/:id/fulfill', { preHandler: staff }, async (req, reply) => {
+    const { id: reqId } = idParam.parse(req.params);
+    const result = fulfillRequisition(db, req.user!, reqId, idemKey(req));
+    return reply.code(result.replayed ? 200 : 201).send({
+      replayed: result.replayed,
+      requisition: getRequisition(db, req.user!.organisationId, reqId),
+      document: getDocument(db, req.user!.organisationId, result.documentId),
+    });
+  });
+  app.post('/api/requisitions/:id/reject', { preHandler: staff }, async (req) => {
+    const { id: reqId } = idParam.parse(req.params);
+    const b = z.object({ reason: text(300) }).strict().parse(req.body ?? {});
+    rejectRequisition(db, req.user!, reqId, b.reason);
+    return getRequisition(db, req.user!.organisationId, reqId);
+  });
+
+  // ---------- stock returns ----------
+  app.post('/api/stock/returns', { preHandler: staff }, async (req, reply) => {
+    const b = z
+      .object({
+        returnType: z.enum(['from_department', 'to_supplier']),
+        warehouseId: id,
+        departmentId: id.nullish(),
+        supplierId: id.nullish(),
+        reference: text(80),
+        reason: z.string().trim().min(3).max(300),
+        lines: z
+          .array(
+            z
+              .object({
+                productId: id,
+                unitId: id,
+                quantity: qty.positive(),
+                ...batchFields,
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(200),
+      })
+      .strict()
+      .parse(req.body);
+    const result = postReturn(db, req.user!, { ...b, idempotencyKey: idemKey(req) });
+    return reply.code(result.replayed ? 200 : 201).send({
+      replayed: result.replayed,
+      document: getDocument(db, req.user!.organisationId, result.documentId),
+    });
+  });
 
   app.post('/api/stock/documents/:id/reverse', { preHandler: staff }, async (req, reply) => {
     const { id: docId } = idParam.parse(req.params);
@@ -502,4 +722,160 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   });
 
   app.get('/api/stock/verify', { preHandler: exec }, async (req) => verifyLedger(db, req.user!.organisationId));
+
+  // ---------- inventory reports & low-stock alerts ----------
+  app.get('/api/reports/inventory', { preHandler: anyUser }, async (req) => {
+    const orgId = req.user!.organisationId;
+
+    // 1. Low-stock alerts across products (product-level reorder threshold vs total and warehouse stock)
+    const lowStockAlerts = (db
+      .prepare(
+        `SELECT p.id AS productId, p.sku, p.name AS productName, c.name AS categoryName,
+                u.code AS unit, p.unit_cost_cents, p.reorder_level_milli,
+                COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS total_milli
+           FROM products p
+           JOIN units_of_measure u ON u.id = p.base_unit_id
+           LEFT JOIN categories c ON c.id = p.category_id
+          WHERE p.organisation_id = ? AND p.active = 1 AND p.reorder_level_milli > 0
+            AND COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) <= p.reorder_level_milli
+          ORDER BY (total_milli - p.reorder_level_milli) ASC, p.name ASC`,
+      )
+      .all(orgId) as {
+      productId: number;
+      sku: string;
+      productName: string;
+      categoryName: string | null;
+      unit: string;
+      unit_cost_cents: number;
+      reorder_level_milli: number;
+      total_milli: number;
+    }[]).map((r) => {
+      const currentStock = fromMilli(r.total_milli);
+      const reorderLevel = fromMilli(r.reorder_level_milli);
+      const shortfall = Math.max(0, fromMilli(r.reorder_level_milli - r.total_milli));
+      const unitCost = fromCents(r.unit_cost_cents);
+      return {
+        productId: r.productId,
+        sku: r.sku,
+        productName: r.productName,
+        categoryName: r.categoryName ?? 'Uncategorised',
+        unit: r.unit,
+        currentStock,
+        reorderLevel,
+        shortfall,
+        unitCost,
+        estimatedRestockCost: Math.round(Math.max(shortfall, reorderLevel) * unitCost * 100) / 100,
+      };
+    });
+
+    // 2. Stock valuation by category (from authoritative stock_balances view)
+    const valuationByCategory = (db
+      .prepare(
+        `SELECT COALESCE(c.name, 'Uncategorised') AS categoryName,
+                COUNT(DISTINCT p.id) AS productCount,
+                COALESCE(SUM(b.quantity_milli), 0) AS total_milli,
+                COALESCE(SUM((b.quantity_milli / 1000.0) * p.unit_cost_cents), 0) AS total_cents
+           FROM products p
+           LEFT JOIN categories c ON c.id = p.category_id
+           LEFT JOIN stock_balances b ON b.product_id = p.id AND b.organisation_id = p.organisation_id
+          WHERE p.organisation_id = ?
+          GROUP BY COALESCE(c.name, 'Uncategorised')
+          ORDER BY total_cents DESC, categoryName ASC`,
+      )
+      .all(orgId) as { categoryName: string; productCount: number; total_milli: number; total_cents: number }[]).map((r) => ({
+      categoryName: r.categoryName,
+      productCount: r.productCount,
+      totalQuantity: fromMilli(r.total_milli),
+      totalValue: Math.round(r.total_cents) / 100,
+    }));
+
+    // 3. Warehouse stock summary (from authoritative stock_balances view)
+    const warehouseStockSummary = (db
+      .prepare(
+        `SELECT w.id AS warehouseId, w.name AS warehouseName, br.name AS branchName,
+                COUNT(DISTINCT CASE WHEN b.quantity_milli > 0 THEN b.product_id END) AS skuCount,
+                COALESCE(SUM(b.quantity_milli), 0) AS total_milli,
+                COALESCE(SUM((b.quantity_milli / 1000.0) * p.unit_cost_cents), 0) AS total_cents
+           FROM warehouses w
+           JOIN branches br ON br.id = w.branch_id
+           LEFT JOIN stock_balances b ON b.warehouse_id = w.id AND b.organisation_id = br.organisation_id
+           LEFT JOIN products p ON p.id = b.product_id
+          WHERE br.organisation_id = ?
+          GROUP BY w.id, w.name, br.name
+          ORDER BY total_cents DESC, w.name ASC`,
+      )
+      .all(orgId) as { warehouseId: number; warehouseName: string; branchName: string; skuCount: number; total_milli: number; total_cents: number }[]).map(
+      (r) => ({
+        warehouseId: r.warehouseId,
+        warehouseName: r.warehouseName,
+        branchName: r.branchName,
+        skuCount: r.skuCount,
+        totalQuantity: fromMilli(r.total_milli),
+        totalValue: Math.round(r.total_cents) / 100,
+      }),
+    );
+
+    // 4. Department consumption report (from non-reversed issue & write_off documents)
+    const departmentConsumption = (db
+      .prepare(
+        `SELECT dep.id AS departmentId, dep.name AS departmentName, br.name AS branchName,
+                COUNT(DISTINCT CASE WHEN d.type = 'issue' THEN d.id END) AS issueCount,
+                COUNT(DISTINCT CASE WHEN d.type = 'write_off' THEN d.id END) AS writeOffCount,
+                COALESCE(SUM(CASE WHEN d.id IS NOT NULL THEN -m.base_delta_milli ELSE 0 END), 0) AS consumed_milli,
+                COALESCE(SUM(CASE WHEN d.id IS NOT NULL THEN (-m.base_delta_milli / 1000.0) * m.unit_cost_cents ELSE 0 END), 0) AS consumed_cents
+           FROM departments dep
+           JOIN branches br ON br.id = dep.branch_id
+           LEFT JOIN stock_documents d ON d.department_id = dep.id
+                 AND d.organisation_id = br.organisation_id
+                 AND d.type IN ('issue', 'write_off')
+                 AND NOT EXISTS (SELECT 1 FROM stock_documents rev WHERE rev.reverses_document_id = d.id)
+           LEFT JOIN stock_movements m ON m.document_id = d.id
+          WHERE br.organisation_id = ?
+          GROUP BY dep.id, dep.name, br.name
+          ORDER BY consumed_cents DESC, dep.name ASC`,
+      )
+      .all(orgId) as {
+      departmentId: number;
+      departmentName: string;
+      branchName: string;
+      issueCount: number;
+      writeOffCount: number;
+      consumed_milli: number;
+      consumed_cents: number;
+    }[]).map((r) => ({
+      departmentId: r.departmentId,
+      departmentName: r.departmentName,
+      branchName: r.branchName,
+      issueCount: r.issueCount,
+      writeOffCount: r.writeOffCount,
+      consumedQuantity: fromMilli(r.consumed_milli),
+      consumedValue: Math.round(r.consumed_cents) / 100,
+    }));
+
+    // 5. Movement summary by document type
+    const movementSummary = (db
+      .prepare(
+        `SELECT d.type, COUNT(DISTINCT d.id) AS documentCount, COUNT(m.id) AS lineCount,
+                COALESCE(SUM(m.base_delta_milli), 0) AS net_delta_milli
+           FROM stock_documents d
+           JOIN stock_movements m ON m.document_id = d.id
+          WHERE d.organisation_id = ?
+          GROUP BY d.type
+          ORDER BY documentCount DESC`,
+      )
+      .all(orgId) as { type: string; documentCount: number; lineCount: number; net_delta_milli: number }[]).map((r) => ({
+      type: r.type,
+      documentCount: r.documentCount,
+      lineCount: r.lineCount,
+      netBaseChange: fromMilli(r.net_delta_milli),
+    }));
+
+    return {
+      lowStockAlerts,
+      valuationByCategory,
+      warehouseStockSummary,
+      departmentConsumption,
+      movementSummary,
+    };
+  });
 }

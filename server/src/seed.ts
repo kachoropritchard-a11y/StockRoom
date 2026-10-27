@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { loadConfig } from './config.ts';
 import { openDb, type Db } from './db.ts';
 import { migrate } from './migrate.ts';
-import { createCountSheet, postDocument, toCents, toMilli } from './inventory/engine.ts';
+import { createCountSheet, createPurchaseOrder, createRequisition, postDocument, receivePurchaseOrder, toCents, toMilli } from './inventory/engine.ts';
 import type { AuthUser } from './app.ts';
 
 /** Creates a starter organisation structure and two users. Idempotent: does nothing if an organisation exists. */
@@ -143,6 +143,66 @@ export function seedDemoInventory(db: Db): boolean {
     ],
   });
 
+  seedDemoProcurementAndRequisitions(db);
+  return true;
+}
+
+/** Idempotently seeds sample purchase orders and department requisitions if none exist yet. */
+export function seedDemoProcurementAndRequisitions(db: Db): boolean {
+  if ((db.prepare('SELECT COUNT(*) n FROM purchase_orders').get() as { n: number }).n > 0) return false;
+  const org = (db.prepare('SELECT id FROM organisations ORDER BY id LIMIT 1').get() as { id: number } | undefined)?.id;
+  if (!org) return false;
+  const execUser = db.prepare("SELECT id, organisation_id, branch_id, email, name, role FROM users WHERE organisation_id = ? AND role = 'executive_manager' LIMIT 1").get(org) as
+    | { id: number; organisation_id: number; branch_id: number | null; email: string; name: string; role: 'executive_manager' }
+    | undefined;
+  if (!execUser) return false;
+  const actor: AuthUser = {
+    id: execUser.id,
+    organisationId: execUser.organisation_id,
+    branchId: execUser.branch_id,
+    email: execUser.email,
+    name: execUser.name,
+    role: execUser.role,
+  };
+
+  const mainWh = (db.prepare("SELECT w.id FROM warehouses w JOIN branches b ON b.id = w.branch_id WHERE b.organisation_id = ? ORDER BY w.id LIMIT 1").get(org) as { id: number } | undefined)?.id;
+  const supNatfoods = (db.prepare("SELECT id FROM suppliers WHERE organisation_id = ? ORDER BY id LIMIT 1").get(org) as { id: number } | undefined)?.id;
+  const pOil = (db.prepare("SELECT id, base_unit_id FROM products WHERE organisation_id = ? AND sku = 'OIL-RG2L'").get(org) as { id: number; base_unit_id: number } | undefined);
+  const pMealie = (db.prepare("SELECT id, base_unit_id FROM products WHERE organisation_id = ? AND sku = 'GRN-PM10'").get(org) as { id: number; base_unit_id: number } | undefined);
+  const dispatchDept = (db.prepare("SELECT d.id FROM departments d JOIN branches b ON b.id = d.branch_id WHERE b.organisation_id = ? AND d.name = 'Retail Dispatch'").get(org) as { id: number } | undefined)?.id;
+
+  if (!mainWh || !supNatfoods || !pOil || !pMealie) return false;
+
+  // Create an approved PO for restocking cooking oil and roller meal, and record a partial delivery
+  const poId = createPurchaseOrder(db, actor, {
+    supplierId: supNatfoods,
+    warehouseId: mainWh,
+    reference: 'PO-2026-104',
+    notes: 'Urgent restock for Roil Cooking Oil and Pearlenta Meal',
+    approveImmediately: true,
+    lines: [
+      { productId: pOil.id, unitId: pOil.base_unit_id, orderedQuantity: 60, unitCost: 3.6 },
+      { productId: pMealie.id, unitId: pMealie.base_unit_id, orderedQuantity: 50, unitCost: 6.5 },
+    ],
+  });
+
+  receivePurchaseOrder(db, actor, poId, {
+    reference: 'GRN-PO104-PART1',
+    idempotencyKey: 'seed-po-104-part1',
+    lines: [{ productId: pMealie.id, quantity: 25, batchNumber: 'NF-NOV-02', expiryDate: '2027-06-30' }],
+  });
+
+  if (dispatchDept) {
+    createRequisition(db, actor, {
+      kind: 'department_issue',
+      warehouseId: mainWh,
+      departmentId: dispatchDept,
+      reference: 'REQ-2026-019',
+      notes: 'Front-of-store weekend replenishment',
+      lines: [{ productId: pMealie.id, unitId: pMealie.base_unit_id, requestedQuantity: 15 }],
+    });
+  }
+
   return true;
 }
 
@@ -157,13 +217,14 @@ if (process.argv[1] && import.meta.filename === process.argv[1]) {
   };
   const seededOrg = seed(db, pw);
   const seededInv = seedDemoInventory(db);
+  const seededProc = seedDemoProcurementAndRequisitions(db);
   if (seededOrg) {
     console.log('Seeded organisation and users. Credentials (shown once):');
     console.log(`  executive@example.com / ${pw.executive}`);
     console.log(`  inventory@example.com / ${pw.inventory}`);
   }
-  if (seededInv) {
-    console.log('Seeded demo inventory (products, suppliers, initial receipts, transfers, issues, and draft count sheet).');
+  if (seededInv || seededProc) {
+    console.log('Seeded demo inventory, purchase orders, and requisitions.');
   } else if (!seededOrg) {
     console.log('Organisation and demo inventory already exist; seed skipped.');
   }
