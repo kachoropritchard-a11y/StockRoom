@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
@@ -48,21 +48,26 @@ describe('role-based routing', () => {
   it('sends an inventory manager away from the executive portal', async () => {
     mockFetch({ id: 1, name: 'Ina', role: 'inventory_manager', email: 'i@x.com', organisationId: 1, branchId: null });
     renderAt('/executive');
-    expect(await screen.findByText('Inventory Portal')).toBeTruthy();
+    expect((await screen.findAllByText('Inventory Portal')).length).toBeGreaterThan(0);
     expect(await screen.findByText('Warehouses')).toBeTruthy();
   });
 
   it('shows the executive portal to executives', async () => {
     mockFetch({ id: 2, name: 'Eli', role: 'executive_manager', email: 'e@x.com', organisationId: 1, branchId: null });
     renderAt('/');
-    expect(await screen.findByText('Executive Portal')).toBeTruthy();
+    expect((await screen.findAllByText('Executive Portal')).length).toBeGreaterThan(0);
   });
 
-  it('renders inventory manager reports and low-stock alerts', async () => {
+  it('renders inventory manager reports and supports keyboard arrow-key tab navigation', async () => {
     mockFetch({ id: 1, name: 'Ina', role: 'inventory_manager', email: 'i@x.com', organisationId: 1, branchId: null });
     renderAt('/inventory/reports');
     expect(await screen.findByRole('heading', { name: /Low-Stock Alerts & Inventory Reports/i })).toBeTruthy();
     expect(await screen.findByText('Roil Cooking Oil 2L')).toBeTruthy();
     expect(await screen.findByText('Restock via PO')).toBeTruthy();
+
+    // Press ArrowRight on the tablist to switch to the Valuation tab via keyboard
+    const tablist = screen.getByRole('tablist', { name: /Inventory report sections/i });
+    fireEvent.keyDown(tablist, { key: 'ArrowRight' });
+    expect(await screen.findByText('Stock Valuation by Category')).toBeTruthy();
   });
 });

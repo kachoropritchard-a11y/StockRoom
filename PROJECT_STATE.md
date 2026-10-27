@@ -6,7 +6,7 @@
 - **Database:** SQLite via built-in `node:sqlite`, plain `.sql` migrations in `server/migrations` (`001_init.sql` .. `005_procurement_requisitions_returns.sql`), applied by `server/src/migrate.ts`.
 - **Authoritative Stock Engine:** `server/src/inventory/engine.ts` is the sole writer to `stock_movements`. `stock_balances` is a SQL view (`SUM(base_delta_milli)` per organisation, product, and warehouse). No duplicate balance calculation logic exists anywhere in the codebase.
 - **Auth & Security:** email/password (`bcryptjs`), opaque session tokens stored SHA-256 hashed in `sessions`, sent as `httpOnly SameSite=Lax` cookie (web) or `Bearer` token (mobile/desktop wrappers). Account lockout after 5 failed attempts, operator CLI password reset (`npm run reset-password`), and self-service password reset (`POST /api/auth/forgot-password` + `POST /api/auth/reset-password` backed by `password_reset_tokens` and `email_outbox`).
-- **Frontend:** Vite, React, TypeScript, `react-router-dom`, Zimbabwe-inspired design tokens (deep green `#0b4f3a`, warm gold `#c9962b`, charcoal `#22262a`, off-white `#f7f4ec`), responsive desktop & mobile drawer shell, confirmation modals (`ConfirmDialog`), PWA manifest + service worker + generated PNG icons.
+- **Frontend:** Vite, React, TypeScript, `react-router-dom`, Command-Center UI (`STOCKROOM OPERATIONS • LIVE`) with Light & Dark themes, Zimbabwe-inspired deep green (`#0b4f3a`), warm gold (`#c9962b`), teal (`#11a89d`), and indigo (`#4f52e8`) accents, WAI-ARIA `AccessibleTabs` with purpose banners and arrow-key navigation, `QuickTransferModal` (`Alt+T`), `ConfirmDialog` (`Esc` to close), global keyboard shortcuts (`Alt+1..7`, `Alt+K` / `/`), PWA manifest + service worker + generated PNG icons.
 
 ## Run & Test
 ```

@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api, type BalanceItem, type ProductItem } from '../api';
+import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { Spinner } from '../components/Spinner';
 
 const PAGE_SIZE = 10;
+type ProductTab = 'catalogue' | 'balances' | 'create' | 'packaging';
 
 export function Products() {
+  const [searchParams] = useSearchParams();
+  const initialQ = searchParams.get('q') ?? '';
+
+  const [activeTab, setActiveTab] = useState<ProductTab>('catalogue');
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [totalProducts, setTotalProducts] = useState(0);
   const [page, setPage] = useState(0);
@@ -12,7 +19,7 @@ export function Products() {
   const [categories, setCategories] = useState<{ id: number; name: string; active: number }[]>([]);
   const [units, setUnits] = useState<{ id: number; code: string; name: string }[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: number; name: string }[]>([]);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(initialQ);
   const [catFilter, setCatFilter] = useState<number | undefined>(undefined);
   const [whFilter, setWhFilter] = useState<number | undefined>(undefined);
   const [loading, setLoading] = useState(true);
@@ -44,6 +51,10 @@ export function Products() {
   const [newUnitCode, setNewUnitCode] = useState('');
   const [newUnitName, setNewUnitName] = useState('');
 
+  useEffect(() => {
+    if (initialQ) setSearch(initialQ);
+  }, [initialQ]);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -72,6 +83,9 @@ export function Products() {
 
   useEffect(() => {
     load();
+    const onSync = () => load();
+    window.addEventListener('stockroom:sync', onSync);
+    return () => window.removeEventListener('stockroom:sync', onSync);
   }, [load]);
 
   async function handleCreateProduct(e: FormEvent) {
@@ -89,7 +103,8 @@ export function Products() {
       });
       setSku('');
       setName('');
-      setMsg('Product created.');
+      setMsg('Product created and added to catalogue.');
+      setActiveTab('catalogue');
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -194,295 +209,394 @@ export function Products() {
 
   const totalPages = Math.max(1, Math.ceil(totalProducts / PAGE_SIZE));
 
+  const tabs: TabDefinition<ProductTab>[] = [
+    {
+      key: 'catalogue',
+      label: '1. Product Catalogue',
+      badge: totalProducts,
+      purpose: 'Search, filter and edit SKUs, base unit costs, reorder thresholds and live total stock levels.',
+    },
+    {
+      key: 'balances',
+      label: '2. Warehouse Balances',
+      badge: balances.length,
+      purpose: 'Inspect exact stock quantities and USD valuation per warehouse location.',
+    },
+    {
+      key: 'create',
+      label: '3. + Add New Product',
+      purpose: 'Register a new SKU with its base unit of measure, unit cost and low-stock reorder threshold.',
+    },
+    {
+      key: 'packaging',
+      label: '4. Packaging & Categories',
+      badge: categories.length,
+      purpose: 'Configure multi-unit packaging conversions (e.g. 1 carton = 12 each), product categories and units.',
+    },
+  ];
+
   return (
     <>
       <div className="page-header">
         <div>
           <h1>Product &amp; Category Management</h1>
-          <p className="muted">Catalogue with unit conversions, categories, reorder levels, unit costs and live warehouse balances.</p>
+          <p className="muted">Master SKU catalogue, warehouse stock levels, unit conversions and product categories.</p>
+        </div>
+        <div className="quick-actions">
+          <button type="button" className="btn btn-primary" onClick={() => setActiveTab('create')}>
+            + Add New Product
+          </button>
+          <button type="button" className="btn btn-outline" onClick={() => setActiveTab('packaging')}>
+            Manage Packagings &amp; Categories
+          </button>
         </div>
       </div>
 
       {error && <p className="form-error" role="alert">{error}</p>}
       {msg && <p className="form-success" role="status">{msg}</p>}
 
-      <div className="dashboard-panels">
-        <section className="card">
-          <h2>Add New Product</h2>
-          <form className="form-grid" onSubmit={handleCreateProduct}>
-            <label>
-              SKU
-              <input value={sku} onChange={(e) => setSku(e.target.value)} placeholder="e.g. GRN-MZ10" required />
-            </label>
-            <label>
-              Product Name
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Roller Meal 10kg" required />
-            </label>
-            <label>
-              Category
-              <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
-                <option value="">Uncategorised</option>
-                {categories.filter((c) => c.active).map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Base Unit
-              <select value={baseUnitId} onChange={(e) => setBaseUnitId(e.target.value)} required>
-                {units.map((u) => (
-                  <option key={u.id} value={u.id}>{u.name} ({u.code})</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Base Unit Cost (USD)
-              <input type="number" step="0.01" min="0" value={unitCost} onChange={(e) => setUnitCost(e.target.value)} required />
-            </label>
-            <label>
-              Reorder Level (Base Units)
-              <input type="number" step="0.001" min="0" value={reorderLevel} onChange={(e) => setReorderLevel(e.target.value)} required />
-            </label>
-            <div className="form-actions">
-              <button className="btn btn-primary" type="submit">Create Product</button>
-            </div>
-          </form>
-        </section>
+      <section className="card">
+        <AccessibleTabs
+          idPrefix="products"
+          ariaLabel="Product management sections"
+          tabs={tabs}
+          active={activeTab}
+          onChange={setActiveTab}
+        />
 
-        <section className="card">
-          <h2>Packaging Conversions &amp; Categories</h2>
-          <form className="form-grid" onSubmit={handleAddPackaging}>
-            <label>
-              Product
-              <select value={pkgProductId} onChange={(e) => setPkgProductId(e.target.value)} required>
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name} (base: {p.baseUnit})</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Pack Unit
-              <select value={pkgUnitId} onChange={(e) => setPkgUnitId(e.target.value)} required>
-                {units.map((u) => (
-                  <option key={u.id} value={u.id}>{u.name} ({u.code})</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Base Units per Pack
-              <input type="number" step="0.001" min="0.001" value={pkgFactor} onChange={(e) => setPkgFactor(e.target.value)} required />
-            </label>
-            <div className="form-actions">
-              <button className="btn btn-outline" type="submit">+ Add Conversion</button>
-            </div>
-          </form>
-
-          <hr className="divider" />
-          <div className="inline-forms">
-            <form onSubmit={handleAddCategory} className="inline-form">
-              <input value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="New category name" />
-              <button className="btn btn-outline" type="submit">+ Category</button>
-            </form>
-            <form onSubmit={handleAddUnit} className="inline-form">
-              <input value={newUnitCode} onChange={(e) => setNewUnitCode(e.target.value)} placeholder="Unit code (e.g. bag)" style={{ maxWidth: '130px' }} />
-              <input value={newUnitName} onChange={(e) => setNewUnitName(e.target.value)} placeholder="Unit label (e.g. 50kg Bag)" />
-              <button className="btn btn-outline" type="submit">+ Unit</button>
-            </form>
-          </div>
-          {categories.length > 0 && (
-            <div className="chip-row" style={{ marginTop: '.75rem' }}>
-              {categories.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  className={`chip-toggle ${c.active ? 'active' : 'inactive'}`}
-                  onClick={() => handleToggleCategory(c)}
-                  title="Click to toggle active status"
+        {/* TAB 1: Product Catalogue */}
+        {activeTab === 'catalogue' && (
+          <div id="products-panel-catalogue" role="tabpanel" aria-labelledby="products-tab-catalogue">
+            <div className="section-head">
+              <h2>Product Catalogue ({totalProducts})</h2>
+              <div className="filter-bar">
+                <select
+                  aria-label="Filter by category"
+                  value={catFilter ?? ''}
+                  onChange={(e) => {
+                    setCatFilter(e.target.value ? Number(e.target.value) : undefined);
+                    setPage(0);
+                  }}
                 >
-                  {c.name} {c.active ? '✓' : '(inactive)'}
-                </button>
-              ))}
+                  <option value="">All Categories</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+                <input
+                  className="search-input"
+                  type="search"
+                  placeholder="Search by SKU or product name…"
+                  value={search}
+                  onChange={(e) => {
+                    setSearch(e.target.value);
+                    setPage(0);
+                  }}
+                />
+              </div>
             </div>
-          )}
-        </section>
-      </div>
 
-      {editingProduct && (
-        <section className="card" style={{ marginTop: '1.25rem' }}>
-          <div className="section-head">
-            <h2>Edit Product: {editingProduct.sku}</h2>
-            <button type="button" className="btn btn-outline btn-sm" onClick={() => setEditingProduct(null)}>Cancel</button>
+            {editingProduct && (
+              <div className="subcard" style={{ marginBottom: '1rem' }}>
+                <div className="section-head">
+                  <h3>Edit Product: {editingProduct.sku}</h3>
+                  <button type="button" className="btn btn-outline btn-sm" onClick={() => setEditingProduct(null)}>
+                    Cancel
+                  </button>
+                </div>
+                <form className="form-grid" onSubmit={handleSaveEditProduct}>
+                  <label>
+                    Product Name
+                    <input value={editName} onChange={(e) => setEditName(e.target.value)} required />
+                  </label>
+                  <label>
+                    Category
+                    <select value={editCategoryId} onChange={(e) => setEditCategoryId(e.target.value)}>
+                      <option value="">Uncategorised</option>
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Base Unit Cost (USD)
+                    <input type="number" step="0.01" min="0" value={editUnitCost} onChange={(e) => setEditUnitCost(e.target.value)} required />
+                  </label>
+                  <label>
+                    Reorder Level ({editingProduct.baseUnit})
+                    <input type="number" step="0.001" min="0" value={editReorderLevel} onChange={(e) => setEditReorderLevel(e.target.value)} required />
+                  </label>
+                  <div className="form-actions">
+                    <button className="btn btn-primary" type="submit">Save Changes</button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {loading ? (
+              <Spinner label="Loading products" />
+            ) : (
+              <>
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>SKU</th>
+                        <th>Product</th>
+                        <th>Category</th>
+                        <th>Packagings</th>
+                        <th className="num">Unit Cost</th>
+                        <th>Stock Level</th>
+                        <th>Status</th>
+                        <th className="num">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {products.map((p) => {
+                        const isLow = p.reorderLevel > 0 && p.totalStock <= p.reorderLevel;
+                        const statusClass = p.totalStock <= 0 ? 'out' : isLow ? 'low' : 'optimal';
+                        const statusText = p.totalStock <= 0 ? 'Out of Stock' : isLow ? 'Low Stock' : 'In Stock';
+                        const pct = p.reorderLevel > 0 ? Math.min(100, Math.round((p.totalStock / (p.reorderLevel * 2)) * 100)) : 80;
+                        return (
+                          <tr key={p.id}>
+                            <td><code>{p.sku}</code></td>
+                            <td>
+                              <strong>{p.name}</strong>
+                              {!p.active && <span className="badge badge-write_off" style={{ marginLeft: '.4rem' }}>Inactive</span>}
+                            </td>
+                            <td>{p.categoryName ?? 'Uncategorised'}</td>
+                            <td>
+                              {p.packagings.length > 0
+                                ? p.packagings.map((g) => `1 ${g.unit} = ${g.factor} ${p.baseUnit}`).join(', ')
+                                : `Base (${p.baseUnit})`}
+                            </td>
+                            <td className="num">${p.unitCost.toFixed(2)}</td>
+                            <td style={{ minWidth: '150px' }}>
+                              <div className="stock-level-cell">
+                                <div className="stock-bar-track">
+                                  <div className={`stock-bar-fill ${statusClass}`} style={{ width: `${Math.max(8, pct)}%` }} />
+                                </div>
+                                <span className="stock-level-num">
+                                  {p.totalStock} / {p.reorderLevel} {p.baseUnit}
+                                </span>
+                              </div>
+                            </td>
+                            <td>
+                              <span className={`status-pill ${statusClass}`}>{statusText}</span>
+                            </td>
+                            <td className="num">
+                              <div className="action-row" style={{ justifyContent: 'flex-end' }}>
+                                <button type="button" className="btn btn-outline btn-sm" onClick={() => startEditProduct(p)}>
+                                  Edit
+                                </button>
+                                <button type="button" className="btn btn-outline btn-sm" onClick={() => handleToggleProductActive(p)}>
+                                  {p.active ? 'Deactivate' : 'Activate'}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="pagination-bar">
+                  <span className="muted" style={{ margin: 0 }}>
+                    Page {page + 1} of {totalPages} ({totalProducts} total SKUs)
+                  </span>
+                  <div className="action-row">
+                    <button type="button" className="btn btn-outline btn-sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
+                      Previous
+                    </button>
+                    <button type="button" className="btn btn-outline btn-sm" disabled={page + 1 >= totalPages} onClick={() => setPage((p) => p + 1)}>
+                      Next
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
-          <form className="form-grid" onSubmit={handleSaveEditProduct}>
-            <label>
-              Product Name
-              <input value={editName} onChange={(e) => setEditName(e.target.value)} required />
-            </label>
-            <label>
-              Category
-              <select value={editCategoryId} onChange={(e) => setEditCategoryId(e.target.value)}>
-                <option value="">Uncategorised</option>
-                {categories.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
+        )}
+
+        {/* TAB 2: Warehouse Balances */}
+        {activeTab === 'balances' && (
+          <div id="products-panel-balances" role="tabpanel" aria-labelledby="products-tab-balances">
+            <div className="section-head">
+              <h2>Stock Balances by Warehouse</h2>
+              <select
+                aria-label="Filter by warehouse"
+                value={whFilter ?? ''}
+                onChange={(e) => setWhFilter(e.target.value ? Number(e.target.value) : undefined)}
+              >
+                <option value="">All Warehouses</option>
+                {warehouses.map((w) => (
+                  <option key={w.id} value={w.id}>{w.name}</option>
                 ))}
               </select>
-            </label>
-            <label>
-              Base Unit Cost (USD)
-              <input type="number" step="0.01" min="0" value={editUnitCost} onChange={(e) => setEditUnitCost(e.target.value)} required />
-            </label>
-            <label>
-              Reorder Level ({editingProduct.baseUnit})
-              <input type="number" step="0.001" min="0" value={editReorderLevel} onChange={(e) => setEditReorderLevel(e.target.value)} required />
-            </label>
-            <div className="form-actions">
-              <button className="btn btn-primary" type="submit">Save Changes</button>
             </div>
-          </form>
-        </section>
-      )}
-
-      <section className="card" style={{ marginTop: '1.25rem' }}>
-        <div className="section-head">
-          <h2>Product Catalogue ({totalProducts})</h2>
-          <div className="filter-bar">
-            <select
-              value={catFilter ?? ''}
-              onChange={(e) => {
-                setCatFilter(e.target.value ? Number(e.target.value) : undefined);
-                setPage(0);
-              }}
-            >
-              <option value="">All Categories</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-            <input
-              className="search-input"
-              type="search"
-              placeholder="Search by SKU or product name…"
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setPage(0);
-              }}
-            />
-          </div>
-        </div>
-        {loading ? (
-          <Spinner label="Loading products" />
-        ) : (
-          <>
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
                   <tr>
+                    <th>Warehouse</th>
                     <th>SKU</th>
                     <th>Product</th>
-                    <th>Category</th>
-                    <th>Base Unit</th>
-                    <th>Packagings</th>
+                    <th>Stock Level</th>
                     <th className="num">Unit Cost</th>
-                    <th className="num">Reorder At</th>
-                    <th className="num">Total On Hand</th>
-                    <th>Actions</th>
+                    <th className="num">Stock Value</th>
+                    <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {products.map((p) => (
-                    <tr key={p.id}>
-                      <td><code>{p.sku}</code></td>
-                      <td>
-                        <strong>{p.name}</strong>
-                        {!p.active && <span className="badge badge-write_off" style={{ marginLeft: '.4rem' }}>Inactive</span>}
-                      </td>
-                      <td>{p.categoryName ?? '—'}</td>
-                      <td>{p.baseUnit}</td>
-                      <td>
-                        {p.packagings.length > 0
-                          ? p.packagings.map((g) => `1 ${g.unit} = ${g.factor} ${p.baseUnit}`).join(', ')
-                          : 'Base unit only'}
-                      </td>
-                      <td className="num">${p.unitCost.toFixed(2)}</td>
-                      <td className="num">{p.reorderLevel} {p.baseUnit}</td>
-                      <td className={`num ${p.reorderLevel > 0 && p.totalStock <= p.reorderLevel ? 'badge-danger-text' : ''}`}>
-                        <strong>{p.totalStock} {p.baseUnit}</strong>
-                      </td>
-                      <td className="action-row">
-                        <button type="button" className="btn btn-outline btn-sm" onClick={() => startEditProduct(p)}>
-                          Edit
-                        </button>
-                        <button type="button" className="btn btn-outline btn-sm" onClick={() => handleToggleProductActive(p)}>
-                          {p.active ? 'Deactivate' : 'Activate'}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {balances.map((b) => {
+                    const statusClass = b.quantity <= 0 ? 'out' : b.lowStock ? 'low' : 'optimal';
+                    const pct = b.reorderLevel > 0 ? Math.min(100, Math.round((b.quantity / (b.reorderLevel * 2)) * 100)) : 80;
+                    return (
+                      <tr key={`${b.productId}-${b.warehouseId}`}>
+                        <td><strong>{b.warehouseName}</strong></td>
+                        <td><code>{b.sku}</code></td>
+                        <td>{b.productName}</td>
+                        <td style={{ minWidth: '150px' }}>
+                          <div className="stock-level-cell">
+                            <div className="stock-bar-track">
+                              <div className={`stock-bar-fill ${statusClass}`} style={{ width: `${Math.max(8, pct)}%` }} />
+                            </div>
+                            <span className="stock-level-num">{b.quantity} {b.unit}</span>
+                          </div>
+                        </td>
+                        <td className="num">${b.unitCost.toFixed(2)}</td>
+                        <td className="num">${b.stockValue.toFixed(2)}</td>
+                        <td>
+                          <span className={`status-pill ${statusClass}`}>
+                            {b.lowStock ? `Low (≤ ${b.reorderLevel})` : 'In Stock'}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
-            <div className="pagination-bar">
-              <span className="muted">
-                Page {page + 1} of {totalPages} ({totalProducts} total items)
-              </span>
-              <div className="action-row">
-                <button type="button" className="btn btn-outline btn-sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-                  Previous
-                </button>
-                <button type="button" className="btn btn-outline btn-sm" disabled={page + 1 >= totalPages} onClick={() => setPage((p) => p + 1)}>
-                  Next
-                </button>
+          </div>
+        )}
+
+        {/* TAB 3: Add New Product */}
+        {activeTab === 'create' && (
+          <div id="products-panel-create" role="tabpanel" aria-labelledby="products-tab-create">
+            <h2>Register New Product SKU</h2>
+            <form className="form-grid" onSubmit={handleCreateProduct}>
+              <label>
+                SKU Code
+                <input value={sku} onChange={(e) => setSku(e.target.value)} placeholder="e.g. GRN-MZ10" required />
+              </label>
+              <label>
+                Product Name
+                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Roller Meal 10kg" required />
+              </label>
+              <label>
+                Category
+                <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+                  <option value="">Uncategorised</option>
+                  {categories.filter((c) => c.active).map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Base Unit of Measure
+                <select value={baseUnitId} onChange={(e) => setBaseUnitId(e.target.value)} required>
+                  {units.map((u) => (
+                    <option key={u.id} value={u.id}>{u.name} ({u.code})</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Base Unit Cost (USD)
+                <input type="number" step="0.01" min="0" value={unitCost} onChange={(e) => setUnitCost(e.target.value)} required />
+              </label>
+              <label>
+                Reorder Level (Base Units)
+                <input type="number" step="0.001" min="0" value={reorderLevel} onChange={(e) => setReorderLevel(e.target.value)} required />
+              </label>
+              <div className="form-actions">
+                <button className="btn btn-primary" type="submit">Create Product</button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* TAB 4: Packaging & Categories */}
+        {activeTab === 'packaging' && (
+          <div id="products-panel-packaging" role="tabpanel" aria-labelledby="products-tab-packaging">
+            <div className="dashboard-panels">
+              <div className="subcard">
+                <h3>Add Packaging Unit Conversion</h3>
+                <p className="muted" style={{ fontSize: '.85rem' }}>
+                  Define how larger packs (e.g. cartons or boxes) convert into a product&apos;s base unit.
+                </p>
+                <form className="form-grid" onSubmit={handleAddPackaging}>
+                  <label>
+                    Product
+                    <select value={pkgProductId} onChange={(e) => setPkgProductId(e.target.value)} required>
+                      {products.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name} (base: {p.baseUnit})</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Pack Unit
+                    <select value={pkgUnitId} onChange={(e) => setPkgUnitId(e.target.value)} required>
+                      {units.map((u) => (
+                        <option key={u.id} value={u.id}>{u.name} ({u.code})</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Base Units per Pack
+                    <input type="number" step="0.001" min="0.001" value={pkgFactor} onChange={(e) => setPkgFactor(e.target.value)} required />
+                  </label>
+                  <div className="form-actions">
+                    <button className="btn btn-primary" type="submit">+ Add Conversion</button>
+                  </div>
+                </form>
+              </div>
+
+              <div className="subcard">
+                <h3>Categories &amp; Units of Measure</h3>
+                <div className="inline-forms">
+                  <form onSubmit={handleAddCategory} className="inline-form">
+                    <input value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="New category name" />
+                    <button className="btn btn-outline" type="submit">+ Category</button>
+                  </form>
+                  <form onSubmit={handleAddUnit} className="inline-form">
+                    <input value={newUnitCode} onChange={(e) => setNewUnitCode(e.target.value)} placeholder="Code (e.g. bag)" style={{ maxWidth: '130px' }} />
+                    <input value={newUnitName} onChange={(e) => setNewUnitName(e.target.value)} placeholder="Label (e.g. 50kg Bag)" />
+                    <button className="btn btn-outline" type="submit">+ Unit</button>
+                  </form>
+                </div>
+                {categories.length > 0 && (
+                  <>
+                    <p className="muted" style={{ marginTop: '.85rem', marginBottom: '.4rem', fontSize: '.82rem' }}>
+                      Click any category pill to toggle active status:
+                    </p>
+                    <div className="chip-row">
+                      {categories.map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          className={`chip-toggle ${c.active ? 'active' : 'inactive'}`}
+                          onClick={() => handleToggleCategory(c)}
+                        >
+                          {c.name} {c.active ? '✓' : '(inactive)'}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
             </div>
-          </>
+          </div>
         )}
-      </section>
-
-      <section className="card" style={{ marginTop: '1.25rem' }}>
-        <div className="section-head">
-          <h2>Stock Balances by Warehouse</h2>
-          <select value={whFilter ?? ''} onChange={(e) => setWhFilter(e.target.value ? Number(e.target.value) : undefined)}>
-            <option value="">All Warehouses</option>
-            {warehouses.map((w) => (
-              <option key={w.id} value={w.id}>{w.name}</option>
-            ))}
-          </select>
-        </div>
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Warehouse</th>
-                <th>SKU</th>
-                <th>Product</th>
-                <th className="num">On Hand</th>
-                <th className="num">Unit Cost</th>
-                <th className="num">Stock Value</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {balances.map((b) => (
-                <tr key={`${b.productId}-${b.warehouseId}`}>
-                  <td>{b.warehouseName}</td>
-                  <td><code>{b.sku}</code></td>
-                  <td><strong>{b.productName}</strong></td>
-                  <td className="num">{b.quantity} {b.unit}</td>
-                  <td className="num">${b.unitCost.toFixed(2)}</td>
-                  <td className="num">${b.stockValue.toFixed(2)}</td>
-                  <td>
-                    {b.lowStock ? (
-                      <span className="badge badge-write_off">Low stock (≤ {b.reorderLevel})</span>
-                    ) : (
-                      <span className="badge badge-receipt">Healthy</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
       </section>
     </>
   );

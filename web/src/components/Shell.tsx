@@ -1,29 +1,30 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { useAuth } from '../auth';
+import { portalPath, useAuth } from '../auth';
+import { QuickTransferModal } from './QuickTransferModal';
 
 const NAV = {
   executive: {
     title: 'Executive Portal',
     items: [
-      { to: '/executive', label: 'Overview', end: true },
-      { to: '/executive/products', label: 'Products & Categories', end: false },
-      { to: '/executive/warehouses', label: 'Warehouses & Depts', end: false },
-      { to: '/executive/procurement', label: 'Suppliers & POs', end: false },
-      { to: '/executive/operations', label: 'Movements & Stocktakes', end: false },
-      { to: '/executive/reports', label: 'Reports & Alerts', end: false },
-      { to: '/executive/organisation', label: 'Org & Users', end: false },
+      { to: '/executive', label: '1. Overview & Live Feed', short: 'Overview', keyHint: 'Alt+1', end: true },
+      { to: '/executive/products', label: '2. Products & Catalogue', short: 'Products', keyHint: 'Alt+2', end: false },
+      { to: '/executive/warehouses', label: '3. Warehouses & Depts', short: 'Warehouses', keyHint: 'Alt+3', end: false },
+      { to: '/executive/procurement', label: '4. Suppliers & POs', short: 'Procurement', keyHint: 'Alt+4', end: false },
+      { to: '/executive/operations', label: '5. Movements & Stocktakes', short: 'Operations', keyHint: 'Alt+5', end: false },
+      { to: '/executive/reports', label: '6. Reports & Alerts', short: 'Reports', keyHint: 'Alt+6', end: false },
+      { to: '/executive/organisation', label: '7. Org & Users', short: 'Organisation', keyHint: 'Alt+7', end: false },
     ],
   },
   inventory: {
     title: 'Inventory Portal',
     items: [
-      { to: '/inventory', label: 'Overview', end: true },
-      { to: '/inventory/products', label: 'Products & Categories', end: false },
-      { to: '/inventory/warehouses', label: 'Warehouses & Depts', end: false },
-      { to: '/inventory/procurement', label: 'Suppliers & POs', end: false },
-      { to: '/inventory/operations', label: 'Movements & Stocktakes', end: false },
-      { to: '/inventory/reports', label: 'Reports & Alerts', end: false },
+      { to: '/inventory', label: '1. Overview & Live Feed', short: 'Overview', keyHint: 'Alt+1', end: true },
+      { to: '/inventory/products', label: '2. Products & Catalogue', short: 'Products', keyHint: 'Alt+2', end: false },
+      { to: '/inventory/warehouses', label: '3. Warehouses & Depts', short: 'Warehouses', keyHint: 'Alt+3', end: false },
+      { to: '/inventory/procurement', label: '4. Suppliers & POs', short: 'Procurement', keyHint: 'Alt+4', end: false },
+      { to: '/inventory/operations', label: '5. Movements & Stocktakes', short: 'Operations', keyHint: 'Alt+5', end: false },
+      { to: '/inventory/reports', label: '6. Reports & Alerts', short: 'Reports', keyHint: 'Alt+6', end: false },
     ],
   },
 };
@@ -34,27 +35,90 @@ export function Shell({ portal }: { portal: keyof typeof NAV }) {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar') === 'collapsed');
   const [drawer, setDrawer] = useState(false);
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('stockroom_theme') === 'dark' ? 'dark' : 'light'));
+  const [quickSearch, setQuickSearch] = useState('');
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [syncFlash, setSyncFlash] = useState('');
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
   const cfg = NAV[portal];
+  const base = user ? portalPath(user.role) : `/${portal}`;
+  const currentNav =
+    cfg.items.find((i) => (i.end ? location.pathname === i.to : location.pathname.startsWith(i.to))) ?? cfg.items[0];
 
   useEffect(() => setDrawer(false), [location.pathname]);
   useEffect(() => localStorage.setItem('sidebar', collapsed ? 'collapsed' : 'open'), [collapsed]);
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('stockroom_theme', theme);
+  }, [theme]);
+
+  // Global keyboard navigation (Alt+1..7 for pages, Alt+K for search, Alt+T for Quick Transfer)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const inInput = target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA');
+
+      if (e.altKey && !e.ctrlKey && !e.metaKey) {
+        const num = Number(e.key);
+        if (num >= 1 && num <= cfg.items.length) {
+          e.preventDefault();
+          navigate(cfg.items[num - 1].to);
+          return;
+        }
+        if (e.key.toLowerCase() === 'k') {
+          e.preventDefault();
+          searchInputRef.current?.focus();
+          return;
+        }
+        if (e.key.toLowerCase() === 't') {
+          e.preventDefault();
+          setTransferOpen(true);
+          return;
+        }
+      }
+      if (!inInput && e.key === '/') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [cfg.items, navigate]);
+
+  function handleGlobalSearch(e: FormEvent) {
+    e.preventDefault();
+    const q = quickSearch.trim();
+    navigate(`${base}/products${q ? `?q=${encodeURIComponent(q)}` : ''}`);
+  }
 
   return (
     <div className={`shell${collapsed ? ' is-collapsed' : ''}${drawer ? ' drawer-open' : ''}`}>
-      <a className="skip-link" href="#main">Skip to content</a>
-      <aside className="sidebar" aria-label="Primary">
+      <a className="skip-link" href="#main">Skip to main content</a>
+      <aside className="sidebar" aria-label="Primary navigation">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true" />
-          <span className="brand-name">Stockroom</span>
+          <div className="brand-text-col">
+            <span className="brand-name">STOCKROOM</span>
+            <span className="brand-sub">{cfg.title}</span>
+          </div>
         </div>
-        <nav>
+        <nav aria-label="Main sections">
           {cfg.items.map((i) => (
-            <NavLink key={i.to} to={i.to} end={i.end} className="nav-link">
+            <NavLink key={i.to} to={i.to} end={i.end} className="nav-link" title={`${i.label} (${i.keyHint})`}>
               <span className="nav-dot" aria-hidden="true" />
               <span className="nav-label">{i.label}</span>
+              <kbd className="nav-kbd">{i.keyHint}</kbd>
             </NavLink>
           ))}
         </nav>
+        <div className="sidebar-help">
+          <div className="sidebar-help-title">Keyboard Shortcuts</div>
+          <div className="sidebar-help-row"><span>Jump pages</span><kbd>Alt+1..6</kbd></div>
+          <div className="sidebar-help-row"><span>Quick search</span><kbd>Alt+K</kbd></div>
+          <div className="sidebar-help-row"><span>Quick transfer</span><kbd>Alt+T</kbd></div>
+          <div className="sidebar-help-row"><span>Switch tabs</span><kbd>← / →</kbd></div>
+        </div>
         <div className="sidebar-pattern" aria-hidden="true" />
       </aside>
       {drawer && <button className="scrim" aria-label="Close menu" onClick={() => setDrawer(false)} />}
@@ -62,6 +126,7 @@ export function Shell({ portal }: { portal: keyof typeof NAV }) {
       <div className="content">
         <header className="topbar">
           <button
+            type="button"
             className="btn btn-ghost"
             aria-label="Toggle navigation"
             aria-expanded={drawer || !collapsed}
@@ -69,23 +134,97 @@ export function Shell({ portal }: { portal: keyof typeof NAV }) {
           >
             ☰
           </button>
-          <strong className="topbar-title">{cfg.title}</strong>
-          <span className="spacer" />
-          <span className="user-chip">{user?.name}</span>
-          <button
-            className="btn btn-outline"
-            onClick={async () => {
-              await logout();
-              navigate('/login', { replace: true });
-            }}
-          >
-            Sign out
-          </button>
+          <div className="topbar-brand-group">
+            <strong className="topbar-ops-title">STOCKROOM OPERATIONS</strong>
+            <span className="live-pill" aria-label="Live ledger active">● LIVE</span>
+          </div>
+
+          <form className="topbar-search" onSubmit={handleGlobalSearch} role="search">
+            <input
+              ref={searchInputRef}
+              type="search"
+              value={quickSearch}
+              onChange={(e) => setQuickSearch(e.target.value)}
+              placeholder="Search SKU, Product, or Zone… (Alt+K)"
+              aria-label="Search SKU or product"
+            />
+          </form>
+
+          <div className="topbar-actions">
+            <button
+              type="button"
+              className="btn btn-pill-action"
+              onClick={() => setTransferOpen(true)}
+              title="Open Quick-Transfer Modal (Alt+T)"
+            >
+              <span className="dot-green" aria-hidden="true" /> Quick Transfer
+            </button>
+            <button
+              type="button"
+              className="btn btn-pill-action"
+              onClick={() => {
+                setSyncFlash('Synced live ledger');
+                setTimeout(() => setSyncFlash(''), 2500);
+                window.dispatchEvent(new CustomEvent('stockroom:sync'));
+              }}
+              title="Refresh live data"
+            >
+              ↻ System Sync
+            </button>
+            <button
+              type="button"
+              className="btn btn-pill-action"
+              onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+              aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+              title="Toggle Light / Dark theme"
+            >
+              {theme === 'dark' ? '☀️ Light' : '🌙 Dark'}
+            </button>
+            <span className="user-chip" title={user?.email}>
+              <span className="user-avatar" aria-hidden="true">{user?.name?.slice(0, 1) ?? 'U'}</span>
+              <span>{user?.name}</span>
+            </span>
+            <button
+              type="button"
+              className="btn btn-outline btn-sm"
+              onClick={async () => {
+                await logout();
+                navigate('/login', { replace: true });
+              }}
+            >
+              Sign out
+            </button>
+          </div>
         </header>
+
+        <div className="subbar" aria-label="Breadcrumb and status">
+          <div className="breadcrumb">
+            <span>Dashboard</span>
+            <span className="crumb-sep">/</span>
+            <span>{cfg.title}</span>
+            <span className="crumb-sep">/</span>
+            <strong>{currentNav?.short ?? 'Stockroom'}</strong>
+          </div>
+          {syncFlash && <span className="sync-toast" role="status">{syncFlash}</span>}
+          <div className="subbar-shortcuts">
+            <span>Navigate by mouse or keyboard (<kbd>Tab</kbd>, <kbd>←/→</kbd>, <kbd>Alt+T</kbd>)</span>
+          </div>
+        </div>
+
         <main id="main" className="main" tabIndex={-1}>
           <Outlet />
         </main>
       </div>
+
+      <QuickTransferModal
+        open={transferOpen}
+        onClose={() => setTransferOpen(false)}
+        onSuccess={(message) => {
+          setSyncFlash(message);
+          setTimeout(() => setSyncFlash(''), 4000);
+          window.dispatchEvent(new CustomEvent('stockroom:sync'));
+        }}
+      />
     </div>
   );
 }

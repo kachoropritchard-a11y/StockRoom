@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { api, type User } from '../api';
 import { useAuth } from '../auth';
+import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { Spinner } from '../components/Spinner';
+
+type OrgTab = 'users' | 'structure' | 'policy';
 
 export function Organisation() {
   const { user: currentUser } = useAuth();
+  const [activeTab, setActiveTab] = useState<OrgTab>('users');
   const [org, setOrg] = useState<{ id: number; name: string; allowNegativeStock: boolean } | null>(null);
   const [branches, setBranches] = useState<{ id: number; name: string; city: string | null; active: number }[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: number; branchId: number; branchName?: string; name: string; active: number }[]>([]);
@@ -76,6 +80,7 @@ export function Organisation() {
     try {
       const res = await api.verifyLedger();
       setAudit(res);
+      setActiveTab('policy');
       setMsg(res.ok ? 'Ledger audit passed: 0 discrepancies found.' : `Ledger audit found ${res.problems.length} issue(s).`);
     } catch (err) {
       setError((err as Error).message);
@@ -154,6 +159,26 @@ export function Organisation() {
     }
   }
 
+  const tabs: TabDefinition<OrgTab>[] = [
+    {
+      key: 'users',
+      label: '1. Staff Users & Roles',
+      badge: users.length,
+      purpose: 'Create staff accounts, assign Executive or Inventory Manager roles, and scope users to specific branches.',
+    },
+    {
+      key: 'structure',
+      label: '2. Branches, Warehouses & Depts',
+      badge: branches.length + warehouses.length + departments.length,
+      purpose: 'Configure your organisation hierarchy across cities, branches, warehouses, and internal departments.',
+    },
+    {
+      key: 'policy',
+      label: '3. Governance & Ledger Integrity Audit',
+      purpose: 'Control negative-stock prevention rules and verify the mathematical integrity of the stock movement ledger.',
+    },
+  ];
+
   return (
     <>
       <div className="page-header">
@@ -171,191 +196,219 @@ export function Organisation() {
       {error && <p className="form-error" role="alert">{error}</p>}
       {msg && <p className="form-success" role="status">{msg}</p>}
 
-      {audit && (
-        <section className="card" style={{ marginBottom: '1.25rem' }}>
-          <h2>Ledger Audit Result: {audit.ok ? 'PASS (All Invariants Verified)' : 'FAIL'}</h2>
-          {audit.problems.length === 0 ? (
-            <p className="muted" style={{ marginBottom: 0 }}>
-              Verified sign rules, packaging unit conversions, zero-sum warehouse transfers, reversal parity, and non-negative balances.
-            </p>
-          ) : (
-            <ul>
-              {audit.problems.map((p, idx) => (
-                <li key={idx}><strong>{p.check}:</strong> {p.detail}</li>
-              ))}
-            </ul>
-          )}
-        </section>
-      )}
-
       {loading ? (
         <Spinner label="Loading organisation" />
       ) : (
-        <>
-          <div className="dashboard-panels">
-            <section className="card">
-              <h2>Organisation Policy</h2>
-              <p><strong>Organisation:</strong> {org?.name}</p>
-              <p>
-                <strong>Negative Stock Protection:</strong>{' '}
-                {org?.allowNegativeStock ? 'Negative balances permitted' : 'Strictly prevented (default)'}
-              </p>
-              <button
-                className="btn btn-outline"
-                type="button"
-                onClick={() => handleToggleNegativeStock(!org?.allowNegativeStock)}
-              >
-                {org?.allowNegativeStock ? 'Enforce Non-Negative Stock' : 'Allow Negative Stock'}
-              </button>
+        <section className="card">
+          <AccessibleTabs
+            idPrefix="organisation"
+            ariaLabel="Organisation administration sections"
+            tabs={tabs}
+            active={activeTab}
+            onChange={setActiveTab}
+          />
 
-              <hr className="divider" />
-              <h3>Add Branch</h3>
-              <form className="inline-form" onSubmit={handleAddBranch}>
-                <input value={branchName} onChange={(e) => setBranchName(e.target.value)} placeholder="Branch name (e.g. Mutare)" required />
-                <input value={branchCity} onChange={(e) => setBranchCity(e.target.value)} placeholder="City" />
-                <button className="btn btn-primary" type="submit">+ Branch</button>
-              </form>
+          {activeTab === 'users' && (
+            <div id="organisation-panel-users" role="tabpanel" aria-labelledby="organisation-tab-users">
+              <div className="subcard" style={{ marginBottom: '1.25rem' }}>
+                <h3>Create Staff User Account</h3>
+                <form className="form-grid" onSubmit={handleCreateUser}>
+                  <label>
+                    Full Name
+                    <input value={uName} onChange={(e) => setUName(e.target.value)} placeholder="e.g. Tendai Moyo" required />
+                  </label>
+                  <label>
+                    Email
+                    <input type="email" value={uEmail} onChange={(e) => setUEmail(e.target.value)} placeholder="tendai@example.com" required />
+                  </label>
+                  <label>
+                    Initial Password (min 10 chars)
+                    <input type="password" value={uPassword} onChange={(e) => setUPassword(e.target.value)} placeholder="At least 10 characters" required />
+                  </label>
+                  <label>
+                    Role
+                    <select value={uRole} onChange={(e) => setURole(e.target.value as User['role'])}>
+                      <option value="inventory_manager">Inventory Manager</option>
+                      <option value="executive_manager">Executive Manager</option>
+                    </select>
+                  </label>
+                  <label>
+                    Assigned Branch
+                    <select value={uBranchId} onChange={(e) => setUBranchId(e.target.value)}>
+                      <option value="">All Branches (Organisation-wide)</option>
+                      {branches.map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="form-actions">
+                    <button className="btn btn-primary" type="submit">+ Create User</button>
+                  </div>
+                </form>
+              </div>
 
-              <h3 style={{ marginTop: '1rem' }}>Add Warehouse</h3>
-              <form className="inline-form" onSubmit={handleAddWarehouse}>
-                <select value={whBranchId} onChange={(e) => setWhBranchId(e.target.value)} required>
-                  {branches.map((b) => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
-                <input value={whName} onChange={(e) => setWhName(e.target.value)} placeholder="Warehouse name" required />
-                <button className="btn btn-primary" type="submit">+ Warehouse</button>
-              </form>
-
-              <h3 style={{ marginTop: '1rem' }}>Add Department</h3>
-              <form className="inline-form" onSubmit={handleAddDepartment}>
-                <select value={deptBranchId} onChange={(e) => setDeptBranchId(e.target.value)} required>
-                  {branches.map((b) => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
-                <input value={deptName} onChange={(e) => setDeptName(e.target.value)} placeholder="Department name" required />
-                <button className="btn btn-primary" type="submit">+ Dept</button>
-              </form>
-            </section>
-
-            <section className="card">
-              <h2>Branches ({branches.length}), Warehouses ({warehouses.length}) &amp; Departments ({departments.length})</h2>
               <div className="table-wrap">
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Type</th>
                       <th>Name</th>
-                      <th>Branch / City</th>
+                      <th>Email</th>
+                      <th>Role</th>
+                      <th>Branch Scope</th>
+                      <th>Status</th>
+                      <th className="num">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {branches.map((b) => (
-                      <tr key={`b-${b.id}`}>
-                        <td><span className="badge badge-receipt">Branch</span></td>
-                        <td><strong>{b.name}</strong></td>
-                        <td>{b.city ?? '—'}</td>
-                      </tr>
-                    ))}
-                    {warehouses.map((w) => (
-                      <tr key={`w-${w.id}`}>
-                        <td><span className="badge badge-transfer">Warehouse</span></td>
-                        <td><strong>{w.name}</strong></td>
-                        <td>{w.branchName ?? `Branch #${w.branchId}`}</td>
-                      </tr>
-                    ))}
-                    {departments.map((d) => (
-                      <tr key={`d-${d.id}`}>
-                        <td><span className="badge badge-count">Department</span></td>
-                        <td><strong>{d.name}</strong></td>
-                        <td>{d.branchName ?? `Branch #${d.branchId}`}</td>
+                    {users.map((u) => (
+                      <tr key={u.id}>
+                        <td><strong>{u.name}</strong></td>
+                        <td>{u.email}</td>
+                        <td>{u.role === 'executive_manager' ? 'Executive Manager' : 'Inventory Manager'}</td>
+                        <td>{u.branchName ?? 'All Branches'}</td>
+                        <td>
+                          <span className={`status-pill ${u.active ? 'optimal' : 'out'}`}>
+                            {u.active ? 'Active' : 'Disabled'}
+                          </span>
+                        </td>
+                        <td className="num">
+                          {u.id !== currentUser?.id && (
+                            <button
+                              className="btn btn-outline btn-sm"
+                              type="button"
+                              onClick={() => handleToggleUserActive(u.id, !u.active)}
+                            >
+                              {u.active ? 'Deactivate' : 'Activate'}
+                            </button>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            </section>
-          </div>
-
-          <section className="card" style={{ marginTop: '1.25rem' }}>
-            <h2>User Management &amp; Role Access ({users.length})</h2>
-            <form className="form-grid" onSubmit={handleCreateUser} style={{ marginBottom: '1.25rem' }}>
-              <label>
-                Full Name
-                <input value={uName} onChange={(e) => setUName(e.target.value)} placeholder="e.g. Tendai Moyo" required />
-              </label>
-              <label>
-                Email
-                <input type="email" value={uEmail} onChange={(e) => setUEmail(e.target.value)} placeholder="tendai@example.com" required />
-              </label>
-              <label>
-                Initial Password (min 10 chars)
-                <input type="password" value={uPassword} onChange={(e) => setUPassword(e.target.value)} placeholder="At least 10 characters" required />
-              </label>
-              <label>
-                Role
-                <select value={uRole} onChange={(e) => setURole(e.target.value as User['role'])}>
-                  <option value="inventory_manager">Inventory Manager</option>
-                  <option value="executive_manager">Executive Manager</option>
-                </select>
-              </label>
-              <label>
-                Assigned Branch
-                <select value={uBranchId} onChange={(e) => setUBranchId(e.target.value)}>
-                  <option value="">All Branches (Organisation-wide)</option>
-                  {branches.map((b) => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
-              </label>
-              <div className="form-actions">
-                <button className="btn btn-primary" type="submit">+ Create User</button>
-              </div>
-            </form>
-
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Email</th>
-                    <th>Role</th>
-                    <th>Branch Scope</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {users.map((u) => (
-                    <tr key={u.id}>
-                      <td><strong>{u.name}</strong></td>
-                      <td>{u.email}</td>
-                      <td>{u.role === 'executive_manager' ? 'Executive Manager' : 'Inventory Manager'}</td>
-                      <td>{u.branchName ?? 'All Branches'}</td>
-                      <td>
-                        <span className={`badge badge-${u.active ? 'receipt' : 'write_off'}`}>
-                          {u.active ? 'Active' : 'Disabled'}
-                        </span>
-                      </td>
-                      <td>
-                        {u.id !== currentUser?.id && (
-                          <button
-                            className="btn btn-outline btn-sm"
-                            type="button"
-                            onClick={() => handleToggleUserActive(u.id, !u.active)}
-                          >
-                            {u.active ? 'Deactivate' : 'Activate'}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
-          </section>
-        </>
+          )}
+
+          {activeTab === 'structure' && (
+            <div id="organisation-panel-structure" role="tabpanel" aria-labelledby="organisation-tab-structure">
+              <div className="dashboard-panels">
+                <div className="subcard">
+                  <h3>Add Branch</h3>
+                  <form className="inline-form" onSubmit={handleAddBranch}>
+                    <input value={branchName} onChange={(e) => setBranchName(e.target.value)} placeholder="Branch name (e.g. Mutare)" required />
+                    <input value={branchCity} onChange={(e) => setBranchCity(e.target.value)} placeholder="City" />
+                    <button className="btn btn-primary" type="submit">+ Branch</button>
+                  </form>
+
+                  <h3 style={{ marginTop: '1rem' }}>Add Warehouse</h3>
+                  <form className="inline-form" onSubmit={handleAddWarehouse}>
+                    <select value={whBranchId} onChange={(e) => setWhBranchId(e.target.value)} required>
+                      {branches.map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </select>
+                    <input value={whName} onChange={(e) => setWhName(e.target.value)} placeholder="Warehouse name" required />
+                    <button className="btn btn-primary" type="submit">+ Warehouse</button>
+                  </form>
+
+                  <h3 style={{ marginTop: '1rem' }}>Add Department</h3>
+                  <form className="inline-form" onSubmit={handleAddDepartment}>
+                    <select value={deptBranchId} onChange={(e) => setDeptBranchId(e.target.value)} required>
+                      {branches.map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </select>
+                    <input value={deptName} onChange={(e) => setDeptName(e.target.value)} placeholder="Department name" required />
+                    <button className="btn btn-primary" type="submit">+ Dept</button>
+                  </form>
+                </div>
+
+                <div>
+                  <h3>Active Structure ({branches.length} Branches, {warehouses.length} Warehouses, {departments.length} Depts)</h3>
+                  <div className="table-wrap">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Type</th>
+                          <th>Name</th>
+                          <th>Branch / City</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {branches.map((b) => (
+                          <tr key={`b-${b.id}`}>
+                            <td><span className="badge badge-receipt">Branch</span></td>
+                            <td><strong>{b.name}</strong></td>
+                            <td>{b.city ?? '—'}</td>
+                          </tr>
+                        ))}
+                        {warehouses.map((w) => (
+                          <tr key={`w-${w.id}`}>
+                            <td><span className="badge badge-transfer">Warehouse</span></td>
+                            <td><strong>{w.name}</strong></td>
+                            <td>{w.branchName ?? `Branch #${w.branchId}`}</td>
+                          </tr>
+                        ))}
+                        {departments.map((d) => (
+                          <tr key={`d-${d.id}`}>
+                            <td><span className="badge badge-count">Department</span></td>
+                            <td><strong>{d.name}</strong></td>
+                            <td>{d.branchName ?? `Branch #${d.branchId}`}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'policy' && (
+            <div id="organisation-panel-policy" role="tabpanel" aria-labelledby="organisation-tab-policy">
+              <div className="dashboard-panels">
+                <div className="subcard">
+                  <h3>Organisation Policy</h3>
+                  <p><strong>Organisation:</strong> {org?.name}</p>
+                  <p>
+                    <strong>Negative Stock Protection:</strong>{' '}
+                    {org?.allowNegativeStock ? 'Negative balances permitted' : 'Strictly prevented (default)'}
+                  </p>
+                  <button
+                    className="btn btn-outline"
+                    type="button"
+                    onClick={() => handleToggleNegativeStock(!org?.allowNegativeStock)}
+                  >
+                    {org?.allowNegativeStock ? 'Enforce Non-Negative Stock' : 'Allow Negative Stock'}
+                  </button>
+                </div>
+
+                <div className="subcard">
+                  <h3>Ledger Mathematical Integrity Audit</h3>
+                  <p className="muted" style={{ fontSize: '.88rem' }}>
+                    Audits every movement in the database against sign rules, packaging unit conversions, zero-sum transfers, reversal parity, and non-negative balance rules.
+                  </p>
+                  <button className="btn btn-primary" type="button" onClick={handleRunAudit}>
+                    ✓ Run Live Ledger Verification
+                  </button>
+                  {audit && (
+                    <div style={{ marginTop: '.85rem' }}>
+                      <strong>Result: {audit.ok ? 'PASS (All Invariants Verified)' : 'FAIL'}</strong>
+                      {audit.problems.length > 0 && (
+                        <ul>
+                          {audit.problems.map((p, idx) => (
+                            <li key={idx}><strong>{p.check}:</strong> {p.detail}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
       )}
     </>
   );

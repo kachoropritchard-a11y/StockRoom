@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -23,17 +23,43 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    confirmRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !busy) onCancel();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, busy, onCancel]);
+
   if (!open) return null;
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
+    <div
+      className="modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="confirm-dialog-title"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !busy) onCancel();
+      }}
+    >
       <div className="modal-card">
-        <h3 id="confirm-dialog-title">{title}</h3>
+        <div className="modal-header-row">
+          <h3 id="confirm-dialog-title">{title}</h3>
+          <button type="button" className="btn-icon-close" aria-label="Close dialog" onClick={onCancel} disabled={busy}>
+            ✕
+          </button>
+        </div>
         <div className="modal-body">{description}</div>
         <div className="modal-actions">
           <button type="button" className="btn btn-outline" onClick={onCancel} disabled={busy}>
             {cancelLabel}
           </button>
           <button
+            ref={confirmRef}
             type="button"
             className={`btn ${danger ? 'btn-danger' : 'btn-primary'}`}
             onClick={onConfirm}

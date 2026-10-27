@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, type ProductItem, type PurchaseOrderDetail, type PurchaseOrderSummary } from '../api';
+import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { Spinner } from '../components/Spinner';
+
+type ProcTab = 'orders' | 'create-po' | 'suppliers';
 
 export function Procurement() {
   const [searchParams] = useSearchParams();
   const prefillProductId = searchParams.get('productId');
 
+  const [activeTab, setActiveTab] = useState<ProcTab>(prefillProductId ? 'create-po' : 'orders');
   const [suppliers, setSuppliers] = useState<{ id: number; name: string; email: string | null; phone: string | null; active: number }[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: number; name: string }[]>([]);
   const [products, setProducts] = useState<ProductItem[]>([]);
@@ -80,6 +84,9 @@ export function Procurement() {
 
   useEffect(() => {
     load();
+    const onSync = () => load();
+    window.addEventListener('stockroom:sync', onSync);
+    return () => window.removeEventListener('stockroom:sync', onSync);
   }, [load]);
 
   const currentPoProduct = products.find((p) => String(p.id) === poProductId);
@@ -95,6 +102,7 @@ export function Procurement() {
     try {
       const detail = await api.purchaseOrder(id);
       setSelectedPo(detail);
+      setActiveTab('orders');
       setGrnRef(`${detail.reference}-GRN-${detail.receipts.length + 1}`);
       const initialQty: Record<number, string> = {};
       for (const l of detail.lines) {
@@ -160,6 +168,7 @@ export function Procurement() {
       setPoRef('');
       setPoNotes('');
       setSelectedPo(created);
+      setActiveTab('orders');
       setGrnRef(`${created.reference}-GRN-1`);
       setDeliveryQty({ [created.lines[0].productId]: String(created.lines[0].remainingQuantity) });
       setMsg(`Purchase Order ${created.reference} created (${created.status}).`);
@@ -212,6 +221,26 @@ export function Procurement() {
     });
   }
 
+  const tabs: TabDefinition<ProcTab>[] = [
+    {
+      key: 'orders',
+      label: '1. Purchase Orders & Receiving',
+      badge: purchaseOrders.length,
+      purpose: 'View purchase orders, approve drafts, and receive partial or full deliveries directly into warehouse stock.',
+    },
+    {
+      key: 'create-po',
+      label: '2. + Create Purchase Order',
+      purpose: 'Issue a new Purchase Order to a supplier with destination warehouse, unit conversion and agreed cost.',
+    },
+    {
+      key: 'suppliers',
+      label: '3. Supplier Directory',
+      badge: suppliers.length,
+      purpose: 'Manage approved suppliers, contact emails/phones, and active status.',
+    },
+  ];
+
   return (
     <>
       <div className="page-header">
@@ -219,342 +248,385 @@ export function Procurement() {
           <h1>Suppliers, Purchase Orders &amp; Receiving</h1>
           <p className="muted">Manage suppliers, issue purchase orders, and record full or partial deliveries into warehouse stock.</p>
         </div>
+        <div className="quick-actions">
+          <button type="button" className="btn btn-primary" onClick={() => setActiveTab('create-po')}>
+            + New Purchase Order
+          </button>
+          <button type="button" className="btn btn-outline" onClick={() => setActiveTab('suppliers')}>
+            Supplier Directory
+          </button>
+        </div>
       </div>
 
       {error && <p className="form-error" role="alert">{error}</p>}
       {msg && <p className="form-success" role="status">{msg}</p>}
 
-      <div className="dashboard-panels">
-        <section className="card">
-          <h2>Create Purchase Order</h2>
-          <form className="form-grid" onSubmit={handleCreatePo}>
-            <label>
-              Supplier
-              <select value={poSupplierId} onChange={(e) => setPoSupplierId(e.target.value)} required>
-                {suppliers.filter((s) => s.active).map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Destination Warehouse
-              <select value={poWarehouseId} onChange={(e) => setPoWarehouseId(e.target.value)} required>
-                {warehouses.map((w) => (
-                  <option key={w.id} value={w.id}>{w.name}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              PO Reference
-              <input value={poRef} onChange={(e) => setPoRef(e.target.value)} placeholder="e.g. PO-2026-108" required />
-            </label>
-            <label>
-              Product
-              <select
-                value={poProductId}
-                onChange={(e) => {
-                  setPoProductId(e.target.value);
-                  const p = products.find((x) => String(x.id) === e.target.value);
-                  if (p) {
-                    setPoUnitId(String(p.baseUnitId));
-                    setPoCost(String(p.unitCost || 1));
-                  }
-                }}
-                required
-              >
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.sku}) — On hand: {p.totalStock} {p.baseUnit}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Order Unit
-              <select value={poUnitId} onChange={(e) => setPoUnitId(e.target.value)} required>
-                {availableUnits.map((u) => (
-                  <option key={u.id} value={u.id}>{u.label}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Ordered Quantity
-              <input type="number" step="0.001" min="0.001" value={poQty} onChange={(e) => setPoQty(e.target.value)} required />
-            </label>
-            <label>
-              Unit Cost (USD)
-              <input type="number" step="0.01" min="0" value={poCost} onChange={(e) => setPoCost(e.target.value)} required />
-            </label>
-            <label>
-              Delivery Notes
-              <input value={poNotes} onChange={(e) => setPoNotes(e.target.value)} placeholder="Optional supplier instructions" />
-            </label>
-            <label className="checkbox-row">
-              <input type="checkbox" checked={poApproveNow} onChange={(e) => setPoApproveNow(e.target.checked)} />
-              <span>Approve immediately for receiving</span>
-            </label>
-            <div className="form-actions">
-              <button className="btn btn-primary" type="submit">Create Purchase Order</button>
-            </div>
-          </form>
-        </section>
+      <section className="card">
+        <AccessibleTabs
+          idPrefix="procurement"
+          ariaLabel="Procurement and supplier tabs"
+          tabs={tabs}
+          active={activeTab}
+          onChange={setActiveTab}
+        />
 
-        <section className="card">
-          <h2>Supplier Directory ({suppliers.length})</h2>
-          <form className="form-grid" onSubmit={handleCreateSupplier}>
-            <label>
-              Supplier Name
-              <input value={supName} onChange={(e) => setSupName(e.target.value)} placeholder="e.g. Dairibord Zimbabwe" required />
-            </label>
-            <label>
-              Email
-              <input type="email" value={supEmail} onChange={(e) => setSupEmail(e.target.value)} placeholder="orders@supplier.co.zw" />
-            </label>
-            <label>
-              Phone
-              <input value={supPhone} onChange={(e) => setSupPhone(e.target.value)} placeholder="+263 242 700000" />
-            </label>
-            <div className="form-actions">
-              <button className="btn btn-outline" type="submit">+ Add Supplier</button>
-            </div>
-          </form>
-
-          <div className="table-wrap" style={{ marginTop: '1rem' }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Supplier</th>
-                  <th>Contact</th>
-                  <th>Status</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {suppliers.map((s) => (
-                  <tr key={s.id}>
-                    <td><strong>{s.name}</strong></td>
-                    <td>{[s.email, s.phone].filter(Boolean).join(' • ') || '—'}</td>
-                    <td>
-                      <span className={`badge ${s.active ? 'badge-receipt' : 'badge-write_off'}`}>
-                        {s.active ? 'Active' : 'Inactive'}
-                      </span>
-                    </td>
-                    <td>
-                      <button type="button" className="btn btn-outline btn-sm" onClick={() => handleToggleSupplier(s)}>
-                        {s.active ? 'Deactivate' : 'Activate'}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </div>
-
-      <section className="card" style={{ marginTop: '1.25rem' }}>
-        <div className="section-head">
-          <h2>Purchase Orders ({purchaseOrders.length})</h2>
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-            <option value="">All Statuses</option>
-            <option value="draft">Draft</option>
-            <option value="approved">Approved</option>
-            <option value="partial">Partial Delivery</option>
-            <option value="received">Fully Received</option>
-            <option value="cancelled">Cancelled</option>
-          </select>
-        </div>
-
-        {loading ? (
-          <Spinner label="Loading purchase orders" />
-        ) : (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>PO Ref</th>
-                  <th>Supplier</th>
-                  <th>Warehouse</th>
-                  <th className="num">Order Value</th>
-                  <th>Status</th>
-                  <th>Created</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {purchaseOrders.map((po) => (
-                  <tr key={po.id}>
-                    <td><strong>{po.reference}</strong></td>
-                    <td>{po.supplierName}</td>
-                    <td>{po.warehouseName}</td>
-                    <td className="num">${po.totalValue.toFixed(2)}</td>
-                    <td>
-                      <span className={`badge badge-${po.status === 'received' ? 'receipt' : po.status === 'partial' ? 'transfer' : po.status === 'cancelled' ? 'write_off' : 'count'}`}>
-                        {po.status}
-                      </span>
-                    </td>
-                    <td>{po.createdAt.slice(0, 10)}</td>
-                    <td className="action-row">
-                      <button type="button" className="btn btn-outline btn-sm" onClick={() => inspectPo(po.id)}>
-                        {po.status === 'approved' || po.status === 'partial' ? 'Receive / Inspect' : 'Inspect'}
-                      </button>
-                      {po.status === 'draft' && (
-                        <button
-                          type="button"
-                          className="btn btn-primary btn-sm"
-                          onClick={() =>
-                            setConfirmAction({
-                              title: `Approve Purchase Order ${po.reference}`,
-                              description: `Approve ${po.reference} (${po.supplierName}) so warehouse staff can receive deliveries against it?`,
-                              run: async () => {
-                                const updated = await api.approvePurchaseOrder(po.id);
-                                setSelectedPo(updated);
-                                setMsg(`Purchase Order ${po.reference} approved.`);
-                                await load();
-                              },
-                            })
-                          }
-                        >
-                          Approve
-                        </button>
-                      )}
-                      {(po.status === 'draft' || po.status === 'approved') && (
-                        <button
-                          type="button"
-                          className="btn btn-outline btn-sm"
-                          onClick={() =>
-                            setConfirmAction({
-                              title: `Cancel Purchase Order ${po.reference}`,
-                              description: `Are you sure you want to cancel ${po.reference}? No deliveries will be permitted once cancelled.`,
-                              danger: true,
-                              run: async () => {
-                                const updated = await api.cancelPurchaseOrder(po.id);
-                                setSelectedPo(updated);
-                                setMsg(`Purchase Order ${po.reference} cancelled.`);
-                                await load();
-                              },
-                            })
-                          }
-                        >
-                          Cancel
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-                {purchaseOrders.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="muted">No purchase orders match this filter.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {selectedPo && (
-          <div className="subcard" style={{ marginTop: '1.25rem' }}>
+        {/* TAB 1: Purchase Orders & Receiving */}
+        {activeTab === 'orders' && (
+          <div id="procurement-panel-orders" role="tabpanel" aria-labelledby="procurement-tab-orders">
             <div className="section-head">
-              <div>
-                <h3>
-                  {selectedPo.reference} — {selectedPo.supplierName} → {selectedPo.warehouseName} ({selectedPo.status})
-                </h3>
-                {selectedPo.notes && <p className="muted" style={{ margin: '.25rem 0 0' }}>{selectedPo.notes}</p>}
-              </div>
-              <button type="button" className="btn btn-outline btn-sm" onClick={() => setSelectedPo(null)}>
-                Close
-              </button>
+              <h2>Purchase Orders ({purchaseOrders.length})</h2>
+              <select
+                aria-label="Filter purchase orders by status"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+              >
+                <option value="">All Statuses</option>
+                <option value="draft">Draft</option>
+                <option value="approved">Approved (Ready to Receive)</option>
+                <option value="partial">Partial Delivery</option>
+                <option value="received">Fully Received</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
             </div>
 
-            <form onSubmit={promptReceiveDelivery}>
-              <div className="table-wrap" style={{ marginTop: '.75rem' }}>
+            {loading ? (
+              <Spinner label="Loading purchase orders" />
+            ) : (
+              <div className="table-wrap">
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>SKU</th>
-                      <th>Product</th>
-                      <th className="num">Ordered</th>
-                      <th className="num">Received</th>
-                      <th className="num">Remaining</th>
-                      <th className="num">Unit Cost</th>
-                      {(selectedPo.status === 'approved' || selectedPo.status === 'partial') && (
-                        <>
-                          <th>Receive Now</th>
-                          <th>Batch / Lot</th>
-                          <th>Expiry Date</th>
-                        </>
-                      )}
+                      <th>PO Ref</th>
+                      <th>Supplier</th>
+                      <th>Destination Warehouse</th>
+                      <th className="num">Order Value</th>
+                      <th>Status</th>
+                      <th>Created</th>
+                      <th className="num">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {selectedPo.lines.map((l) => (
-                      <tr key={l.id}>
-                        <td><code>{l.sku}</code></td>
-                        <td><strong>{l.productName}</strong></td>
-                        <td className="num">{l.orderedQuantity} {l.unit}</td>
-                        <td className="num">{l.receivedQuantity} {l.unit}</td>
-                        <td className="num"><strong>{l.remainingQuantity} {l.unit}</strong></td>
-                        <td className="num">${l.unitCost.toFixed(2)}</td>
-                        {(selectedPo.status === 'approved' || selectedPo.status === 'partial') && (
-                          <>
-                            <td>
-                              <input
-                                type="number"
-                                step="0.001"
-                                min="0"
-                                max={l.remainingQuantity}
-                                disabled={l.remainingQuantity <= 0}
-                                value={deliveryQty[l.productId] ?? '0'}
-                                onChange={(e) => setDeliveryQty((prev) => ({ ...prev, [l.productId]: e.target.value }))}
-                                style={{ maxWidth: '110px' }}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                placeholder="Batch #"
-                                disabled={l.remainingQuantity <= 0}
-                                value={deliveryBatch[l.productId] ?? ''}
-                                onChange={(e) => setDeliveryBatch((prev) => ({ ...prev, [l.productId]: e.target.value }))}
-                                style={{ maxWidth: '130px' }}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                type="date"
-                                disabled={l.remainingQuantity <= 0}
-                                value={deliveryExpiry[l.productId] ?? ''}
-                                onChange={(e) => setDeliveryExpiry((prev) => ({ ...prev, [l.productId]: e.target.value }))}
-                              />
-                            </td>
-                          </>
-                        )}
+                    {purchaseOrders.map((po) => (
+                      <tr key={po.id}>
+                        <td><strong>{po.reference}</strong></td>
+                        <td>{po.supplierName}</td>
+                        <td>{po.warehouseName}</td>
+                        <td className="num">${po.totalValue.toFixed(2)}</td>
+                        <td>
+                          <span className={`badge badge-${po.status === 'received' ? 'receipt' : po.status === 'partial' ? 'transfer' : po.status === 'cancelled' ? 'write_off' : 'count'}`}>
+                            {po.status}
+                          </span>
+                        </td>
+                        <td>{po.createdAt.slice(0, 10)}</td>
+                        <td className="num">
+                          <div className="action-row" style={{ justifyContent: 'flex-end' }}>
+                            <button type="button" className="btn btn-outline btn-sm" onClick={() => inspectPo(po.id)}>
+                              {po.status === 'approved' || po.status === 'partial' ? 'Receive / Inspect' : 'Inspect'}
+                            </button>
+                            {po.status === 'draft' && (
+                              <button
+                                type="button"
+                                className="btn btn-primary btn-sm"
+                                onClick={() =>
+                                  setConfirmAction({
+                                    title: `Approve Purchase Order ${po.reference}`,
+                                    description: `Approve ${po.reference} (${po.supplierName}) so warehouse staff can receive deliveries against it?`,
+                                    run: async () => {
+                                      const updated = await api.approvePurchaseOrder(po.id);
+                                      setSelectedPo(updated);
+                                      setMsg(`Purchase Order ${po.reference} approved.`);
+                                      await load();
+                                    },
+                                  })
+                                }
+                              >
+                                Approve
+                              </button>
+                            )}
+                            {(po.status === 'draft' || po.status === 'approved') && (
+                              <button
+                                type="button"
+                                className="btn btn-outline btn-sm"
+                                onClick={() =>
+                                  setConfirmAction({
+                                    title: `Cancel Purchase Order ${po.reference}`,
+                                    description: `Are you sure you want to cancel ${po.reference}? No deliveries will be permitted once cancelled.`,
+                                    danger: true,
+                                    run: async () => {
+                                      const updated = await api.cancelPurchaseOrder(po.id);
+                                      setSelectedPo(updated);
+                                      setMsg(`Purchase Order ${po.reference} cancelled.`);
+                                      await load();
+                                    },
+                                  })
+                                }
+                              >
+                                Cancel
+                              </button>
+                            )}
+                          </div>
+                        </td>
                       </tr>
                     ))}
+                    {purchaseOrders.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="muted">No purchase orders match this filter.</td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
+            )}
 
-              {(selectedPo.status === 'approved' || selectedPo.status === 'partial') && (
-                <div className="inline-form" style={{ marginTop: '1rem' }}>
-                  <input
-                    value={grnRef}
-                    onChange={(e) => setGrnRef(e.target.value)}
-                    placeholder="Goods Receipt Reference (e.g. GRN-2026-104)"
-                    style={{ maxWidth: '280px' }}
-                  />
-                  <button type="submit" className="btn btn-primary">
-                    Post Delivery to Warehouse Stock
+            {selectedPo && (
+              <div className="subcard" style={{ marginTop: '1.25rem' }}>
+                <div className="section-head">
+                  <div>
+                    <h3>
+                      {selectedPo.reference} — {selectedPo.supplierName} → {selectedPo.warehouseName} ({selectedPo.status})
+                    </h3>
+                    {selectedPo.notes && <p className="muted" style={{ margin: '.25rem 0 0' }}>{selectedPo.notes}</p>}
+                  </div>
+                  <button type="button" className="btn btn-outline btn-sm" onClick={() => setSelectedPo(null)}>
+                    Close Panel
                   </button>
                 </div>
-              )}
-            </form>
 
-            {selectedPo.receipts.length > 0 && (
-              <p className="muted" style={{ marginTop: '.75rem', marginBottom: 0 }}>
-                Posted Receipt Documents:{' '}
-                {selectedPo.receipts.map((r) => `#${r.documentId} (${r.reference ?? 'GRN'} on ${r.createdAt.slice(0, 10)})`).join(' • ')}
-              </p>
+                <form onSubmit={promptReceiveDelivery}>
+                  <div className="table-wrap" style={{ marginTop: '.75rem' }}>
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>SKU</th>
+                          <th>Product</th>
+                          <th>Fulfillment Progress</th>
+                          <th className="num">Remaining</th>
+                          <th className="num">Unit Cost</th>
+                          {(selectedPo.status === 'approved' || selectedPo.status === 'partial') && (
+                            <>
+                              <th>Receive Now</th>
+                              <th>Batch / Lot</th>
+                              <th>Expiry Date</th>
+                            </>
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedPo.lines.map((l) => {
+                          const pct = Math.min(100, Math.round((l.receivedQuantity / Math.max(1, l.orderedQuantity)) * 100));
+                          return (
+                            <tr key={l.id}>
+                              <td><code>{l.sku}</code></td>
+                              <td><strong>{l.productName}</strong></td>
+                              <td style={{ minWidth: '160px' }}>
+                                <div className="stock-level-cell">
+                                  <div className="stock-bar-track">
+                                    <div className="stock-bar-fill optimal" style={{ width: `${pct}%` }} />
+                                  </div>
+                                  <span className="stock-level-num">
+                                    {l.receivedQuantity} / {l.orderedQuantity} {l.unit}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="num"><strong>{l.remainingQuantity} {l.unit}</strong></td>
+                              <td className="num">${l.unitCost.toFixed(2)}</td>
+                              {(selectedPo.status === 'approved' || selectedPo.status === 'partial') && (
+                                <>
+                                  <td>
+                                    <input
+                                      type="number"
+                                      step="0.001"
+                                      min="0"
+                                      max={l.remainingQuantity}
+                                      disabled={l.remainingQuantity <= 0}
+                                      value={deliveryQty[l.productId] ?? '0'}
+                                      onChange={(e) => setDeliveryQty((prev) => ({ ...prev, [l.productId]: e.target.value }))}
+                                      style={{ maxWidth: '110px' }}
+                                    />
+                                  </td>
+                                  <td>
+                                    <input
+                                      placeholder="Batch #"
+                                      disabled={l.remainingQuantity <= 0}
+                                      value={deliveryBatch[l.productId] ?? ''}
+                                      onChange={(e) => setDeliveryBatch((prev) => ({ ...prev, [l.productId]: e.target.value }))}
+                                      style={{ maxWidth: '130px' }}
+                                    />
+                                  </td>
+                                  <td>
+                                    <input
+                                      type="date"
+                                      disabled={l.remainingQuantity <= 0}
+                                      value={deliveryExpiry[l.productId] ?? ''}
+                                      onChange={(e) => setDeliveryExpiry((prev) => ({ ...prev, [l.productId]: e.target.value }))}
+                                    />
+                                  </td>
+                                </>
+                              )}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {(selectedPo.status === 'approved' || selectedPo.status === 'partial') && (
+                    <div className="inline-form" style={{ marginTop: '1rem' }}>
+                      <input
+                        value={grnRef}
+                        onChange={(e) => setGrnRef(e.target.value)}
+                        placeholder="Goods Receipt Reference (e.g. GRN-2026-104)"
+                        style={{ maxWidth: '280px' }}
+                      />
+                      <button type="submit" className="btn btn-primary">
+                        Post Delivery to Warehouse Stock
+                      </button>
+                    </div>
+                  )}
+                </form>
+
+                {selectedPo.receipts.length > 0 && (
+                  <p className="muted" style={{ marginTop: '.75rem', marginBottom: 0 }}>
+                    Posted Receipt Documents:{' '}
+                    {selectedPo.receipts.map((r) => `#${r.documentId} (${r.reference ?? 'GRN'} on ${r.createdAt.slice(0, 10)})`).join(' • ')}
+                  </p>
+                )}
+              </div>
             )}
+          </div>
+        )}
+
+        {/* TAB 2: Create Purchase Order */}
+        {activeTab === 'create-po' && (
+          <div id="procurement-panel-create-po" role="tabpanel" aria-labelledby="procurement-tab-create-po">
+            <h2>Issue New Purchase Order</h2>
+            <form className="form-grid" onSubmit={handleCreatePo}>
+              <label>
+                Supplier
+                <select value={poSupplierId} onChange={(e) => setPoSupplierId(e.target.value)} required>
+                  {suppliers.filter((s) => s.active).map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Destination Warehouse
+                <select value={poWarehouseId} onChange={(e) => setPoWarehouseId(e.target.value)} required>
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={w.id}>{w.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                PO Reference
+                <input value={poRef} onChange={(e) => setPoRef(e.target.value)} placeholder="e.g. PO-2026-108" required />
+              </label>
+              <label>
+                Product
+                <select
+                  value={poProductId}
+                  onChange={(e) => {
+                    setPoProductId(e.target.value);
+                    const p = products.find((x) => String(x.id) === e.target.value);
+                    if (p) {
+                      setPoUnitId(String(p.baseUnitId));
+                      setPoCost(String(p.unitCost || 1));
+                    }
+                  }}
+                  required
+                >
+                  {products.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({p.sku}) — On hand: {p.totalStock} {p.baseUnit}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Order Unit
+                <select value={poUnitId} onChange={(e) => setPoUnitId(e.target.value)} required>
+                  {availableUnits.map((u) => (
+                    <option key={u.id} value={u.id}>{u.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Ordered Quantity
+                <input type="number" step="0.001" min="0.001" value={poQty} onChange={(e) => setPoQty(e.target.value)} required />
+              </label>
+              <label>
+                Unit Cost (USD)
+                <input type="number" step="0.01" min="0" value={poCost} onChange={(e) => setPoCost(e.target.value)} required />
+              </label>
+              <label>
+                Delivery Notes
+                <input value={poNotes} onChange={(e) => setPoNotes(e.target.value)} placeholder="Optional supplier instructions" />
+              </label>
+              <label className="checkbox-row">
+                <input type="checkbox" checked={poApproveNow} onChange={(e) => setPoApproveNow(e.target.checked)} />
+                <span>Approve immediately for receiving</span>
+              </label>
+              <div className="form-actions">
+                <button className="btn btn-primary" type="submit">Create Purchase Order</button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* TAB 3: Supplier Directory */}
+        {activeTab === 'suppliers' && (
+          <div id="procurement-panel-suppliers" role="tabpanel" aria-labelledby="procurement-tab-suppliers">
+            <div className="subcard" style={{ marginBottom: '1.25rem' }}>
+              <h3>Add New Supplier</h3>
+              <form className="form-grid" onSubmit={handleCreateSupplier}>
+                <label>
+                  Supplier Name
+                  <input value={supName} onChange={(e) => setSupName(e.target.value)} placeholder="e.g. Dairibord Zimbabwe" required />
+                </label>
+                <label>
+                  Email
+                  <input type="email" value={supEmail} onChange={(e) => setSupEmail(e.target.value)} placeholder="orders@supplier.co.zw" />
+                </label>
+                <label>
+                  Phone
+                  <input value={supPhone} onChange={(e) => setSupPhone(e.target.value)} placeholder="+263 242 700000" />
+                </label>
+                <div className="form-actions">
+                  <button className="btn btn-primary" type="submit">+ Add Supplier</button>
+                </div>
+              </form>
+            </div>
+
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Supplier</th>
+                    <th>Contact</th>
+                    <th>Status</th>
+                    <th className="num">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {suppliers.map((s) => (
+                    <tr key={s.id}>
+                      <td><strong>{s.name}</strong></td>
+                      <td>{[s.email, s.phone].filter(Boolean).join(' • ') || '—'}</td>
+                      <td>
+                        <span className={`status-pill ${s.active ? 'optimal' : 'out'}`}>
+                          {s.active ? 'Active' : 'Inactive'}
+                        </span>
+                      </td>
+                      <td className="num">
+                        <button type="button" className="btn btn-outline btn-sm" onClick={() => handleToggleSupplier(s)}>
+                          {s.active ? 'Deactivate' : 'Activate'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </section>

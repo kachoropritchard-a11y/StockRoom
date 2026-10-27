@@ -2,12 +2,16 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, type InventoryReports } from '../api';
 import { portalPath, useAuth } from '../auth';
+import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { Spinner } from '../components/Spinner';
+
+type ReportTab = 'alerts' | 'valuation' | 'consumption';
 
 export function Reports() {
   const { user } = useAuth();
   const base = user ? portalPath(user.role) : '/inventory';
 
+  const [activeTab, setActiveTab] = useState<ReportTab>('alerts');
   const [reports, setReports] = useState<InventoryReports | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -25,6 +29,9 @@ export function Reports() {
 
   useEffect(() => {
     load();
+    const onSync = () => load();
+    window.addEventListener('stockroom:sync', onSync);
+    return () => window.removeEventListener('stockroom:sync', onSync);
   }, [load]);
 
   function handleExportCsv() {
@@ -76,6 +83,25 @@ export function Reports() {
   const totalConsumedValue = (reports?.departmentConsumption ?? []).reduce((acc, d) => acc + d.consumedValue, 0);
   const totalDocs = (reports?.movementSummary ?? []).reduce((acc, m) => acc + m.documentCount, 0);
 
+  const tabs: TabDefinition<ReportTab>[] = [
+    {
+      key: 'alerts',
+      label: '1. Low-Stock Reorder Queue',
+      badge: reports?.lowStockAlerts.length ?? 0,
+      purpose: 'Products currently at or below their reorder level, ranked by urgency with one-click Purchase Order restocking.',
+    },
+    {
+      key: 'valuation',
+      label: '2. Valuation by Category & Warehouse',
+      purpose: 'Live stock valuation breakdown across product categories and warehouse locations.',
+    },
+    {
+      key: 'consumption',
+      label: '3. Department Consumption & Ledger Summary',
+      purpose: 'Track cumulative department issues, write-offs, and document activity across the ledger.',
+    },
+  ];
+
   return (
     <>
       <div className="page-header">
@@ -85,10 +111,10 @@ export function Reports() {
         </div>
         <div className="quick-actions">
           <button type="button" className="btn btn-outline" onClick={handleExportCsv}>
-            Export Report CSV
+            ⬇ Export Report CSV
           </button>
           <button type="button" className="btn btn-primary" onClick={load}>
-            Refresh Reports
+            ↻ Refresh Reports
           </button>
         </div>
       </div>
@@ -120,173 +146,195 @@ export function Reports() {
         </article>
       </section>
 
-      {/* Low-Stock Alerts Table */}
-      <section className="card" style={{ marginTop: '1.25rem' }}>
-        <div className="section-head">
-          <h2>Low-Stock Alerts &amp; Reorder Action Queue ({reports?.lowStockAlerts.length ?? 0})</h2>
-        </div>
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>SKU</th>
-                <th>Product</th>
-                <th>Category</th>
-                <th className="num">On Hand</th>
-                <th className="num">Reorder Level</th>
-                <th className="num">Shortfall</th>
-                <th className="num">Unit Cost</th>
-                <th className="num">Est. Restock Cost</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(reports?.lowStockAlerts ?? []).map((a) => (
-                <tr key={a.productId}>
-                  <td><code>{a.sku}</code></td>
-                  <td><strong>{a.productName}</strong></td>
-                  <td>{a.categoryName}</td>
-                  <td className="num badge-danger-text"><strong>{a.currentStock} {a.unit}</strong></td>
-                  <td className="num">{a.reorderLevel} {a.unit}</td>
-                  <td className="num">{a.shortfall} {a.unit}</td>
-                  <td className="num">${a.unitCost.toFixed(2)}</td>
-                  <td className="num">${a.estimatedRestockCost.toFixed(2)}</td>
-                  <td>
-                    <Link to={`${base}/procurement?productId=${a.productId}`} className="btn btn-primary btn-sm">
-                      Restock via PO
-                    </Link>
-                  </td>
-                </tr>
-              ))}
-              {(reports?.lowStockAlerts.length ?? 0) === 0 && (
-                <tr>
-                  <td colSpan={9} className="muted">All products are currently above their reorder thresholds.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+      <section className="card">
+        <AccessibleTabs
+          idPrefix="reports"
+          ariaLabel="Inventory report sections"
+          tabs={tabs}
+          active={activeTab}
+          onChange={setActiveTab}
+        />
+
+        {activeTab === 'alerts' && (
+          <div id="reports-panel-alerts" role="tabpanel" aria-labelledby="reports-tab-alerts">
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>SKU</th>
+                    <th>Product</th>
+                    <th>Category</th>
+                    <th>Stock vs Reorder Threshold</th>
+                    <th className="num">Shortfall</th>
+                    <th className="num">Unit Cost</th>
+                    <th className="num">Est. Restock Cost</th>
+                    <th className="num">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(reports?.lowStockAlerts ?? []).map((a) => {
+                    const pct = Math.min(100, Math.round((a.currentStock / Math.max(1, a.reorderLevel)) * 100));
+                    return (
+                      <tr key={a.productId}>
+                        <td><code>{a.sku}</code></td>
+                        <td><strong>{a.productName}</strong></td>
+                        <td>{a.categoryName}</td>
+                        <td style={{ minWidth: '170px' }}>
+                          <div className="stock-level-cell">
+                            <div className="stock-bar-track">
+                              <div className={`stock-bar-fill ${a.currentStock <= 0 ? 'out' : 'low'}`} style={{ width: `${Math.max(8, pct)}%` }} />
+                            </div>
+                            <span className="stock-level-num badge-danger-text">
+                              {a.currentStock} / {a.reorderLevel} {a.unit}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="num">{a.shortfall} {a.unit}</td>
+                        <td className="num">${a.unitCost.toFixed(2)}</td>
+                        <td className="num">${a.estimatedRestockCost.toFixed(2)}</td>
+                        <td className="num">
+                          <Link to={`${base}/procurement?productId=${a.productId}`} className="btn btn-primary btn-sm">
+                            Restock via PO
+                          </Link>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {(reports?.lowStockAlerts.length ?? 0) === 0 && (
+                    <tr>
+                      <td colSpan={8} className="muted">All products are currently above their reorder thresholds.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'valuation' && (
+          <div id="reports-panel-valuation" role="tabpanel" aria-labelledby="reports-tab-valuation">
+            <div className="dashboard-panels">
+              <div className="subcard">
+                <h3>Stock Valuation by Category</h3>
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Category</th>
+                        <th className="num">SKUs</th>
+                        <th className="num">Total Units</th>
+                        <th className="num">Stock Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(reports?.valuationByCategory ?? []).map((c) => (
+                        <tr key={c.categoryName}>
+                          <td><strong>{c.categoryName}</strong></td>
+                          <td className="num">{c.productCount}</td>
+                          <td className="num">{c.totalQuantity.toLocaleString()}</td>
+                          <td className="num">${c.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="subcard">
+                <h3>Stock Valuation by Warehouse</h3>
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Warehouse</th>
+                        <th>Branch</th>
+                        <th className="num">Active SKUs</th>
+                        <th className="num">Total Units</th>
+                        <th className="num">Stock Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(reports?.warehouseStockSummary ?? []).map((w) => (
+                        <tr key={w.warehouseId}>
+                          <td><strong>{w.warehouseName}</strong></td>
+                          <td>{w.branchName}</td>
+                          <td className="num">{w.skuCount}</td>
+                          <td className="num">{w.totalQuantity.toLocaleString()}</td>
+                          <td className="num">${w.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'consumption' && (
+          <div id="reports-panel-consumption" role="tabpanel" aria-labelledby="reports-tab-consumption">
+            <div className="dashboard-panels">
+              <div className="subcard">
+                <h3>Department Consumption &amp; Write-Off Report</h3>
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Department</th>
+                        <th>Branch</th>
+                        <th className="num">Issues</th>
+                        <th className="num">Write-Offs</th>
+                        <th className="num">Units Consumed</th>
+                        <th className="num">Cost Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(reports?.departmentConsumption ?? []).map((d) => (
+                        <tr key={d.departmentId}>
+                          <td><strong>{d.departmentName}</strong></td>
+                          <td>{d.branchName}</td>
+                          <td className="num">{d.issueCount}</td>
+                          <td className="num">{d.writeOffCount}</td>
+                          <td className="num">{d.consumedQuantity.toLocaleString()}</td>
+                          <td className="num">${d.consumedValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="subcard">
+                <h3>Ledger Activity by Document Type</h3>
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Document Type</th>
+                        <th className="num">Documents</th>
+                        <th className="num">Movement Lines</th>
+                        <th className="num">Net Base Delta</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(reports?.movementSummary ?? []).map((m) => (
+                        <tr key={m.type}>
+                          <td><span className={`badge badge-${m.type}`}>{m.type.replace('_', ' ')}</span></td>
+                          <td className="num">{m.documentCount}</td>
+                          <td className="num">{m.lineCount}</td>
+                          <td className={`num ${m.netBaseChange >= 0 ? 'pos' : 'neg'}`}>
+                            <strong>{m.netBaseChange > 0 ? `+${m.netBaseChange}` : m.netBaseChange}</strong>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </section>
-
-      <div className="dashboard-panels" style={{ marginTop: '1.25rem' }}>
-        {/* Valuation by Category */}
-        <section className="card">
-          <h2>Stock Valuation by Category</h2>
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Category</th>
-                  <th className="num">SKUs</th>
-                  <th className="num">Total Units</th>
-                  <th className="num">Stock Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(reports?.valuationByCategory ?? []).map((c) => (
-                  <tr key={c.categoryName}>
-                    <td><strong>{c.categoryName}</strong></td>
-                    <td className="num">{c.productCount}</td>
-                    <td className="num">{c.totalQuantity.toLocaleString()}</td>
-                    <td className="num">${c.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        {/* Warehouse Valuation Summary */}
-        <section className="card">
-          <h2>Stock Valuation by Warehouse</h2>
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Warehouse</th>
-                  <th>Branch</th>
-                  <th className="num">Active SKUs</th>
-                  <th className="num">Total Units</th>
-                  <th className="num">Stock Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(reports?.warehouseStockSummary ?? []).map((w) => (
-                  <tr key={w.warehouseId}>
-                    <td><strong>{w.warehouseName}</strong></td>
-                    <td>{w.branchName}</td>
-                    <td className="num">{w.skuCount}</td>
-                    <td className="num">{w.totalQuantity.toLocaleString()}</td>
-                    <td className="num">${w.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </div>
-
-      <div className="dashboard-panels" style={{ marginTop: '1.25rem' }}>
-        {/* Department Consumption Report */}
-        <section className="card">
-          <h2>Department Consumption &amp; Write-Off Report</h2>
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Department</th>
-                  <th>Branch</th>
-                  <th className="num">Issues</th>
-                  <th className="num">Write-Offs</th>
-                  <th className="num">Units Consumed</th>
-                  <th className="num">Cost Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(reports?.departmentConsumption ?? []).map((d) => (
-                  <tr key={d.departmentId}>
-                    <td><strong>{d.departmentName}</strong></td>
-                    <td>{d.branchName}</td>
-                    <td className="num">{d.issueCount}</td>
-                    <td className="num">{d.writeOffCount}</td>
-                    <td className="num">{d.consumedQuantity.toLocaleString()}</td>
-                    <td className="num">${d.consumedValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        {/* Movement Summary by Document Type */}
-        <section className="card">
-          <h2>Ledger Activity by Document Type</h2>
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Document Type</th>
-                  <th className="num">Documents</th>
-                  <th className="num">Movement Lines</th>
-                  <th className="num">Net Base Delta</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(reports?.movementSummary ?? []).map((m) => (
-                  <tr key={m.type}>
-                    <td><span className={`badge badge-${m.type}`}>{m.type.replace('_', ' ')}</span></td>
-                    <td className="num">{m.documentCount}</td>
-                    <td className="num">{m.lineCount}</td>
-                    <td className={`num ${m.netBaseChange >= 0 ? 'pos' : 'neg'}`}>
-                      <strong>{m.netBaseChange > 0 ? `+${m.netBaseChange}` : m.netBaseChange}</strong>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </div>
     </>
   );
 }
