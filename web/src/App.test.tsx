@@ -140,14 +140,14 @@ describe('role-based routing', () => {
     mockFetch({ id: 1, name: 'Ina', role: 'inventory_manager', email: 'i@x.com', organisationId: 1, branchId: null });
     renderAt('/executive');
     expect((await screen.findAllByText('StockRoom')).length).toBeGreaterThan(0);
-    expect(await screen.findByText('7. Departments & Credit')).toBeTruthy();
+    expect(await screen.findByText('5. Departments')).toBeTruthy();
   });
 
   it('shows the executive portal to executives', async () => {
     mockFetch({ id: 2, name: 'Eli', role: 'executive_manager', email: 'e@x.com', organisationId: 1, branchId: null });
     renderAt('/');
     expect((await screen.findAllByText('StockRoom')).length).toBeGreaterThan(0);
-    expect(await screen.findByText('10. Settings & Reset')).toBeTruthy();
+    expect(await screen.findByText('5. Settings & Backups')).toBeTruthy();
   });
 
   it('renders executive governance portal with approval queues, permissions, audit logs, and backups', async () => {
@@ -183,7 +183,7 @@ describe('role-based routing', () => {
     mockFetch({ id: 2, name: 'Eli', role: 'executive_manager', email: 'e@x.com', organisationId: 1, branchId: null });
     renderAt('/executive');
     expect(await screen.findByText('1. Overview & Quick Actions')).toBeTruthy();
-    expect(await screen.findByText('Step 1: Receive Goods (GRN)')).toBeTruthy();
+    expect(await screen.findByText('Step 1: Stock Intake (GRN)')).toBeTruthy();
 
     // Switch currency from USD $ to ZiG in the top action bar
     const zigBtn = screen.getByRole('button', { name: 'ZiG' });

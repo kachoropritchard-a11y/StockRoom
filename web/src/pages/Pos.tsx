@@ -269,6 +269,9 @@ export function Pos() {
           <button type="button" className="btn btn-outline btn-sm" onClick={loadCatalog} title="Refresh Stock Quantities">
             ↻ Sync Stock
           </button>
+          <Link to="/" className="btn btn-outline btn-sm" style={{ fontWeight: 700 }} title="Return to Portal Dashboard">
+            ← Exit POS
+          </Link>
         </div>
       </div>
 

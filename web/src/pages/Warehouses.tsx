@@ -223,7 +223,7 @@ export function Warehouses() {
     <>
       <div className="page-header">
         <div>
-          <h1>3. Warehouses &amp; Depts — Store Zones &amp; &quot;Chikwereti&quot; Book</h1>
+          <h1>Store Departments &amp; Customer Credit</h1>
           <span className="vernacular-sub">
             {subLabel(
               'Matura, Zvikamu zveChitoro & Bhuku reChikwereti cheVatengi neVarimi',
@@ -232,11 +232,9 @@ export function Warehouses() {
           </span>
         </div>
         <div className="quick-actions">
-          {isExec && (
-            <button type="button" className="btn btn-outline" onClick={() => setShowManageDrawer((s) => !s)}>
-              {showManageDrawer ? '✕ Close Form' : '+ Add Store / Department'}
-            </button>
-          )}
+          <button type="button" className="btn btn-outline" onClick={() => setShowManageDrawer((s) => !s)}>
+            {showManageDrawer ? '✕ Close Form' : '+ Add Store / Department'}
+          </button>
           <button type="button" className="btn btn-primary" onClick={() => setTransferTarget({})}>
             ⇄ Quick Transfer Stock
           </button>

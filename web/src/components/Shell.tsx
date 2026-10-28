@@ -18,18 +18,24 @@ interface NavItem {
   ndebele: string;
 }
 
-function buildNavItems(base: string): NavItem[] {
+function buildNavItems(portal: 'executive' | 'inventory', base: string): NavItem[] {
+  if (portal === 'inventory') {
+    return [
+      { to: `${base}`, label: '1. Dashboard', short: 'Dashboard', keyHint: 'Alt+1', end: true, shona: 'Mufananidzo Webhizinesi', ndebele: 'Isimo Sebhizimusi' },
+      { to: `${base}/products`, label: '2. Products & Catalog', short: 'Products', keyHint: 'Alt+2', end: false, shona: 'Zvinhu Zviri Muchitoro', ndebele: 'Impahla Yesitolo' },
+      { to: `${base}/intake`, label: '3. Stock Intake', short: 'Intake', keyHint: 'Alt+3', end: false, shona: 'Kugamuchira Zvinhu', ndebele: 'Ukungena Kwempahla' },
+      { to: `${base}/transfers`, label: '4. Transfers', short: 'Transfers', keyHint: 'Alt+4', end: false, shona: 'Kufambisa Zvinhu', ndebele: 'Ukuthutha Impahla' },
+      { to: `${base}/departments`, label: '5. Departments', short: 'Departments', keyHint: 'Alt+5', end: false, shona: 'Mathipatimendi', ndebele: 'Izigaba Zesitolo' },
+      { to: `${base}/count`, label: '6. Stock Count', short: 'Stock Count', keyHint: 'Alt+6', end: false, shona: 'Kuverenga Zvinhu', ndebele: 'Ukubala Impahla' },
+    ];
+  }
+
   return [
-    { to: `${base}`, label: '1. Dashboard', short: 'Dashboard', keyHint: 'Alt+1', end: true, shona: 'Mufananidzo Webhizinesi', ndebele: 'Isimo Sebhizimusi' },
-    { to: `${base}/pos`, label: '2. POS Fast Counter', short: 'POS', keyHint: 'Alt+2', end: false, shona: 'Kutengesa Kwepakaunda', ndebele: 'Ukuthengisa Esitolo' },
-    { to: `${base}/products`, label: '3. Products', short: 'Products', keyHint: 'Alt+3', end: false, shona: 'Zvinhu Zviri Muchitoro', ndebele: 'Impahla Yesitolo' },
-    { to: `${base}/operations`, label: '4. Stock Movements', short: 'Movements', keyHint: 'Alt+4', end: false, shona: 'Kubuda Nekupinda', ndebele: 'Ukuphuma Lokungena' },
-    { to: `${base}/procurement`, label: '5. Receiving (GRN)', short: 'Receiving', keyHint: 'Alt+5', end: false, shona: 'Kugamuchira Zvinhu', ndebele: 'Ukuthola Impahla' },
-    { to: `${base}/transfers`, label: '6. Department Transfers', short: 'Transfers', keyHint: 'Alt+6', end: false, shona: 'Kufambisa Zvinhu', ndebele: 'Ukuthutha Impahla' },
-    { to: `${base}/warehouses`, label: '7. Departments & Credit', short: 'Departments', keyHint: 'Alt+7', end: false, shona: 'Matura & Chikwereti', ndebele: 'Izigaba & Izikwelede' },
-    { to: `${base}/reports`, label: '8. Reports & ZIMRA VAT', short: 'Reports', keyHint: 'Alt+8', end: false, shona: 'Magwaro eZIMRA', ndebele: 'Imibiko yeZIMRA' },
-    { to: `${base}/users`, label: '9. Users & Fast PINs', short: 'Users', keyHint: 'Alt+9', end: false, shona: 'Vashandi & maPIN', ndebele: 'Izisebenzi & ama-PIN' },
-    { to: `${base}/organisation`, label: '10. Settings & Reset', short: 'Settings', keyHint: 'Alt+0', end: false, shona: 'Mitemo & Kutanga Patsva', ndebele: 'Izilungiselelo' },
+    { to: `${base}`, label: '1. Executive Overview', short: 'Overview', keyHint: 'Alt+1', end: true, shona: 'Mufananidzo weManeja', ndebele: 'Isimo Somphathi' },
+    { to: `${base}/reports`, label: '2. Reports & ZIMRA VAT', short: 'Reports', keyHint: 'Alt+2', end: false, shona: 'Magwaro eZIMRA', ndebele: 'Imibiko yeZIMRA' },
+    { to: `${base}/users`, label: '3. User Management', short: 'Users', keyHint: 'Alt+3', end: false, shona: 'Vashandi & maPIN', ndebele: 'Izisebenzi & ama-PIN' },
+    { to: `${base}/audit`, label: '4. Audit Logs & Ledger', short: 'Audit Logs', keyHint: 'Alt+4', end: false, shona: 'Gwaro reKufamba Kwezvinhu', ndebele: 'Ukulandelela Izinto' },
+    { to: `${base}/settings`, label: '5. Settings & Backups', short: 'Settings', keyHint: 'Alt+5', end: false, shona: 'Mitemo & Backups', ndebele: 'Izilungiselelo' },
   ];
 }
 
@@ -62,7 +68,7 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
   const isFullScreen = sidebarRetracted && topbarRetracted;
 
   const base = user ? portalPath(user.role) : `/${portal}`;
-  const navItems = buildNavItems(base);
+  const navItems = buildNavItems(portal, base);
   const portalTitle = portal === 'executive' ? 'Executive Portal' : 'Inventory Portal';
 
   const currentNav =
@@ -380,6 +386,23 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
                 </button>
               ))}
             </div>
+
+            {/* Launch Standalone POS Counter Terminal */}
+            <button
+              type="button"
+              className="btn btn-pill-action"
+              onClick={() => navigate('/pos')}
+              title="Launch Standalone POS Sales Counter"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.35rem',
+                fontWeight: 700,
+                color: 'var(--emerald)',
+              }}
+            >
+              🛍️ POS Counter
+            </button>
 
             {/* 3. Alerts Bell */}
             <button

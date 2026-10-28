@@ -443,6 +443,37 @@ export function Dashboard() {
             </article>
           </section>
 
+          {/* POS Counter Velocity & Sales Stats */}
+          <section className="card" style={{ marginBottom: '1.25rem', borderLeft: '4px solid var(--emerald)' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+                <div className="pos-station-badge" style={{ padding: '0.35rem 0.75rem' }}>
+                  <span className="live-dot" style={{ background: '#10b981' }} />
+                  <strong>POS Till Sales</strong>
+                </div>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: '0.96rem', color: 'var(--charcoal)' }}>
+                    Live Point of Sale Counter ({posDeptName || 'Active Storefloor'})
+                  </div>
+                  <span className="muted" style={{ fontSize: '0.8rem' }}>
+                    Multi-currency sales velocity, till shift reconciliation, and receipt audit.
+                  </span>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                <div style={{ textAlign: 'right', marginRight: '0.5rem' }}>
+                  <span className="muted" style={{ fontSize: '0.74rem', textTransform: 'uppercase' }}>Counter Volume</span>
+                  <div style={{ fontWeight: 800, fontSize: '1.1rem', color: 'var(--emerald)' }}>
+                    {(data.issuesUnits ?? 0).toLocaleString()} Units Sold
+                  </div>
+                </div>
+                <Link to="/pos" className="btn btn-primary btn-sm" style={{ fontWeight: 700 }}>
+                  🛍️ Launch POS Counter →
+                </Link>
+              </div>
+            </div>
+          </section>
+
           {/* 4 Oversized Step Buttons for Zero-Computer-Background Staff */}
           <section className="card">
             <div className="section-head">
@@ -458,14 +489,14 @@ export function Dashboard() {
               </div>
             </div>
             <div className="big-step-grid">
-              <Link to={`${basePath}/procurement`} className="big-step-btn">
+              <Link to={`${basePath}/intake`} className="big-step-btn">
                 <span className="big-step-icon" aria-hidden="true">
                   <GoodsInIcon size={30} />
                 </span>
                 <div>
-                  <span className="big-step-title">Step 1: Receive Goods (GRN)</span>
+                  <span className="big-step-title">Step 1: Stock Intake (GRN)</span>
                   <span className="big-step-sub">Kugamuchira Zvinhu • Ukuthola Impahla</span>
-                  <span className="big-step-desc">Record supplier deliveries, cross-border runner stock, or crates into store.</span>
+                  <span className="big-step-desc">Record supplier deliveries, bought stock, or cartons into store.</span>
                 </div>
               </Link>
 
@@ -485,9 +516,9 @@ export function Dashboard() {
                   <MoveTransferIcon size={30} />
                 </span>
                 <div>
-                  <span className="big-step-title">Step 3: Move or Break Bulk</span>
+                  <span className="big-step-title">Step 3: Move Stock</span>
                   <span className="big-step-sub">Kufambisa Zvinhu • Ukuthutha Impahla</span>
-                  <span className="big-step-desc">Move stock between store zones, branches, or open a bulk crate onto shelves.</span>
+                  <span className="big-step-desc">Move stock between store zones, departments, or storerooms.</span>
                 </div>
               </button>
 
