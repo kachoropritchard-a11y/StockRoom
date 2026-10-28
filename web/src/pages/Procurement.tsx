@@ -18,12 +18,6 @@ interface SupplierCreditorItem {
   dueDate: string;
 }
 
-const INITIAL_CREDITORS: SupplierCreditorItem[] = [
-  { id: 1, supplierName: 'National Foods Logistics (Harare)', contact: '+263 242 751 120', invoiceRef: 'NF-INV-9021', totalUsd: 1840.0, paidUsd: 1000.0, dueDate: '2026-11-10' },
-  { id: 2, supplierName: 'United Refineries Ltd (Bulawayo)', contact: '+263 292 681 400', invoiceRef: 'URL-INV-4418', totalUsd: 920.0, paidUsd: 920.0, dueDate: 'Paid in Full' },
-  { id: 3, supplierName: 'Musina Cross-Border Runner (Beitbridge)', contact: '+27 83 419 8821', invoiceRef: 'RUN-BB-319', totalUsd: 650.0, paidUsd: 250.0, dueDate: '2026-11-02' },
-];
-
 export function Procurement() {
   const [searchParams] = useSearchParams();
   const prefillProductId = searchParams.get('productId');
@@ -44,7 +38,7 @@ export function Procurement() {
   // Supplier form
   const [supName, setSupName] = useState('');
   const [supPhone, setSupPhone] = useState('');
-  const [creditors, setCreditors] = useState<SupplierCreditorItem[]>(INITIAL_CREDITORS);
+  const [creditors, setCreditors] = useState<SupplierCreditorItem[]>([]);
 
   // New PO / GRN Wizard form (with Multi-Line invoice support)
   const [poSupplierId, setPoSupplierId] = useState('');
@@ -97,9 +91,9 @@ export function Procurement() {
       setWarehouses(wRes);
       setProducts(pRes.items);
       setPurchaseOrders(poRes.items);
-      if (smeRes && smeRes.creditors.length > 0) {
+      if (smeRes) {
         setCreditors(
-          smeRes.creditors.map((c) => ({
+          (smeRes.creditors || []).map((c) => ({
             id: c.id,
             supplierName: c.supplierName,
             contact: c.notes ?? c.departmentName,
@@ -829,45 +823,53 @@ export function Procurement() {
                   </tr>
                 </thead>
                 <tbody>
-                  {creditors.map((c) => {
-                    const owed = Math.max(0, c.totalUsd - c.paidUsd);
-                    return (
-                      <tr key={c.id}>
-                        <td>
-                          <strong>{c.supplierName}</strong>
-                          <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>{c.contact}</div>
-                        </td>
-                        <td><code>{c.invoiceRef}</code></td>
-                        <td className="num">{formatMoney(c.totalUsd)}</td>
-                        <td className="num pos">{formatMoney(c.paidUsd)}</td>
-                        <td className="num">
-                          <strong className={owed > 0 ? 'neg' : 'pos'}>{formatMoney(owed)}</strong>
-                        </td>
-                        <td>
-                          <span className={`status-pill ${owed === 0 ? 'optimal' : 'low'}`}>
-                            {owed === 0 ? 'Settled in Full' : `Due ${c.dueDate}`}
-                          </span>
-                        </td>
-                        <td className="num">
-                          {owed > 0 && (
-                            <button
-                              type="button"
-                              className="btn btn-outline btn-sm"
-                              onClick={async () => {
-                                await api.payCreditor(c.id, owed).catch(() => null);
-                                setCreditors((prev) =>
-                                  prev.map((x) => (x.id === c.id ? { ...x, paidUsd: x.totalUsd, dueDate: 'Paid in Full' } : x)),
-                                );
-                                setMsg(`Recorded settlement payment for ${c.supplierName} (${c.invoiceRef}).`);
-                              }}
-                            >
-                              ✓ Record Payment
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {creditors.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
+                        No supplier credit balances logged yet. Creditors appear here automatically when receiving goods on account.
+                      </td>
+                    </tr>
+                  ) : (
+                    creditors.map((c) => {
+                      const owed = Math.max(0, c.totalUsd - c.paidUsd);
+                      return (
+                        <tr key={c.id}>
+                          <td>
+                            <strong>{c.supplierName}</strong>
+                            <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>{c.contact}</div>
+                          </td>
+                          <td><code>{c.invoiceRef}</code></td>
+                          <td className="num">{formatMoney(c.totalUsd)}</td>
+                          <td className="num pos">{formatMoney(c.paidUsd)}</td>
+                          <td className="num">
+                            <strong className={owed > 0 ? 'neg' : 'pos'}>{formatMoney(owed)}</strong>
+                          </td>
+                          <td>
+                            <span className={`status-pill ${owed === 0 ? 'optimal' : 'low'}`}>
+                              {owed === 0 ? 'Settled in Full' : `Due ${c.dueDate}`}
+                            </span>
+                          </td>
+                          <td className="num">
+                            {owed > 0 && (
+                              <button
+                                type="button"
+                                className="btn btn-outline btn-sm"
+                                onClick={async () => {
+                                  await api.payCreditor(c.id, owed).catch(() => null);
+                                  setCreditors((prev) =>
+                                    prev.map((x) => (x.id === c.id ? { ...x, paidUsd: x.totalUsd, dueDate: 'Paid in Full' } : x)),
+                                  );
+                                  setMsg(`Recorded settlement payment for ${c.supplierName} (${c.invoiceRef}).`);
+                                }}
+                              >
+                                ✓ Record Payment
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>

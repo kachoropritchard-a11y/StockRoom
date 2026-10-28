@@ -259,6 +259,34 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       recordAudit(db, req.user!, `${table.slice(0, -1)}.update`, table.slice(0, -1), rowId, b);
       return { ok: true };
     });
+    app.delete(`/api/${table}/:id`, { preHandler: exec }, async (req) => {
+      const { id: rowId } = idParam.parse(req.params);
+      const exists = db
+        .prepare(`SELECT t.name FROM ${table} t JOIN branches b ON b.id = t.branch_id WHERE t.id = ? AND b.organisation_id = ?`)
+        .get(rowId, req.user!.organisationId) as { name: string } | undefined;
+      if (!exists) throw new AppError(404, 'not_found');
+
+      if (table === 'departments') {
+        const prodCount = (db.prepare('SELECT COUNT(*) c FROM products WHERE department_id = ?').get(rowId) as { c: number }).c;
+        if (prodCount > 0) {
+          throw new AppError(400, `Cannot delete department "${exists.name}" because ${prodCount} product(s) are assigned to it. Move or reassign products first.`);
+        }
+        const docCount = (db.prepare('SELECT COUNT(*) c FROM stock_documents WHERE department_id = ?').get(rowId) as { c: number }).c;
+        if (docCount > 0) {
+          throw new AppError(400, `Cannot delete department "${exists.name}" because active stock movement documents reference it. Set it to inactive instead.`);
+        }
+        db.prepare('UPDATE organisations SET pos_department_id = NULL WHERE pos_department_id = ? AND id = ?').run(rowId, req.user!.organisationId);
+      } else if (table === 'warehouses') {
+        const mvCount = (db.prepare('SELECT COUNT(*) c FROM stock_movements WHERE warehouse_id = ?').get(rowId) as { c: number }).c;
+        if (mvCount > 0) {
+          throw new AppError(400, `Cannot delete warehouse "${exists.name}" because stock movement records exist for it. Deactivate the warehouse instead.`);
+        }
+      }
+
+      db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(rowId);
+      recordAudit(db, req.user!, `${table.slice(0, -1)}.delete`, table.slice(0, -1), rowId, { name: exists.name });
+      return { ok: true };
+    });
   }
 
   // ---------- master data (executive and inventory managers) ----------
@@ -2114,7 +2142,6 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   // Overview of all SME ledgers in one call
   app.get('/api/sme/overview', { preHandler: anyUser }, async (req) => {
     const orgId = req.user!.organisationId;
-    ensureSmeSeedForOrg(orgId);
 
     const debtors = (db
       .prepare('SELECT * FROM customer_credit_accounts WHERE organisation_id = ? ORDER BY id DESC')
@@ -2257,7 +2284,6 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   // Counter Sale / Dispatch endpoint: posts an authoritative `issue` document while optionally updating Chikwereti credit or Lay-By collection
   app.post('/api/sme/counter-sale', { preHandler: staff }, async (req, reply) => {
     const orgId = req.user!.organisationId;
-    ensureSmeSeedForOrg(orgId);
     const b = z
       .object({
         warehouseId: id,

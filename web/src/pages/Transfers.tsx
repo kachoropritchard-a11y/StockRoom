@@ -29,52 +29,6 @@ interface YieldBatchItem {
   createdAt: string;
 }
 
-const INITIAL_BREAK_BULK: BreakBulkLogItem[] = [
-  {
-    id: 'BB-101',
-    productName: 'Roil Cooking Oil 2L',
-    bulkType: '1 Carton / Case (× 6 bottles)',
-    bulkQtyOpened: 5,
-    shelfUnitsCreated: 30,
-    warehouseName: 'Harare Central Store',
-    createdAt: 'Today 08:30 CAT',
-  },
-  {
-    id: 'BB-102',
-    productName: 'Chibataura Brown Sugar 2kg',
-    bulkType: '1 Master Bale (× 10 packs)',
-    bulkQtyOpened: 4,
-    shelfUnitsCreated: 40,
-    warehouseName: 'Harare Central Store',
-    createdAt: 'Yesterday 15:10 CAT',
-  },
-];
-
-const INITIAL_YIELD_BATCHES: YieldBatchItem[] = [
-  {
-    id: 'YD-301',
-    department: 'Butchery',
-    rawInputDesc: 'Whole Beef Hindquarter Carcass',
-    rawInputWeightKg: 85,
-    finishedOutputDesc: 'T-Bone, Chuck, Boerewors & Soup Bones',
-    finishedUnits: 79,
-    wasteOrBoneKg: 6,
-    yieldPct: 92.9,
-    createdAt: 'Today 07:15 CAT',
-  },
-  {
-    id: 'YD-302',
-    department: 'Bakery',
-    rawInputDesc: '50kg Bakers Flour + Yeast + Sugar + Shortening',
-    rawInputWeightKg: 54,
-    finishedOutputDesc: 'Fresh Standard White Loaves (700g)',
-    finishedUnits: 112,
-    wasteOrBoneKg: 1.2,
-    yieldPct: 97.8,
-    createdAt: 'Today 05:45 CAT',
-  },
-];
-
 export function Transfers() {
   const { subLabel } = useZim();
   const [activeTab, setActiveTab] = useState<TransferSubTab>('move');
@@ -97,21 +51,21 @@ export function Transfers() {
   const [qty, setQty] = useState('10');
 
   // Sub-Menu 2: Break Bulk state
-  const [breakLogs, setBreakLogs] = useState<BreakBulkLogItem[]>(INITIAL_BREAK_BULK);
+  const [breakLogs, setBreakLogs] = useState<BreakBulkLogItem[]>([]);
   const [bbProdId, setBbProdId] = useState('');
   const [bbWhId, setBbWhId] = useState('');
   const [bbBulkLabel, setBbBulkLabel] = useState('1 Master Bale / Case');
-  const [bbCasesOpened, setBbCasesOpened] = useState('2');
+  const [bbCasesOpened, setBbCasesOpened] = useState('1');
   const [bbUnitsPerCase, setBbUnitsPerCase] = useState('12');
 
   // Sub-Menu 3: Recipe / Butchery / Bakery Yield Transformation state
-  const [yieldBatches, setYieldBatches] = useState<YieldBatchItem[]>(INITIAL_YIELD_BATCHES);
+  const [yieldBatches, setYieldBatches] = useState<YieldBatchItem[]>([]);
   const [ydDept, setYdDept] = useState<'Butchery' | 'Bakery' | 'Kitchen'>('Butchery');
-  const [ydRawDesc, setYdRawDesc] = useState('Whole Pork Carcass (60kg)');
-  const [ydRawKg, setYdRawKg] = useState('60');
-  const [ydOutDesc, setYdOutDesc] = useState('Pork Chops, Rashers & Sausages');
-  const [ydOutUnits, setYdOutUnits] = useState('56');
-  const [ydWasteKg, setYdWasteKg] = useState('4');
+  const [ydRawDesc, setYdRawDesc] = useState('');
+  const [ydRawKg, setYdRawKg] = useState('10');
+  const [ydOutDesc, setYdOutDesc] = useState('');
+  const [ydOutUnits, setYdOutUnits] = useState('10');
+  const [ydWasteKg, setYdWasteKg] = useState('0');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -127,37 +81,33 @@ export function Transfers() {
       setWarehouses(wRes);
       setDepartments(dRes);
       setRequisitions(rRes.items);
-      if (smeRes && smeRes.yieldBatches.length > 0) {
-        const breaks = smeRes.yieldBatches.filter((y) => y.kind === 'BREAK_BULK');
-        const yields = smeRes.yieldBatches.filter((y) => y.kind === 'RECIPE_YIELD');
-        if (breaks.length > 0) {
-          setBreakLogs(
-            breaks.map((b) => ({
-              id: b.batchRef,
-              productName: b.outputName,
-              bulkType: b.sourceName,
-              bulkQtyOpened: b.inputQty,
-              shelfUnitsCreated: b.actualOutputQty,
-              warehouseName: b.departmentName,
-              createdAt: b.createdAt.slice(0, 16),
-            })),
-          );
-        }
-        if (yields.length > 0) {
-          setYieldBatches(
-            yields.map((y) => ({
-              id: y.batchRef,
-              department: (y.departmentName as 'Butchery' | 'Bakery' | 'Kitchen') || 'Butchery',
-              rawInputDesc: y.sourceName,
-              rawInputWeightKg: y.inputQty,
-              finishedOutputDesc: y.outputName,
-              finishedUnits: y.actualOutputQty,
-              wasteOrBoneKg: y.wasteQty,
-              yieldPct: y.yieldPct,
-              createdAt: y.createdAt.slice(0, 16),
-            })),
-          );
-        }
+      if (smeRes) {
+        const breaks = (smeRes.yieldBatches || []).filter((y) => y.kind === 'BREAK_BULK');
+        const yields = (smeRes.yieldBatches || []).filter((y) => y.kind === 'RECIPE_YIELD');
+        setBreakLogs(
+          breaks.map((b) => ({
+            id: b.batchRef,
+            productName: b.outputName,
+            bulkType: b.sourceName,
+            bulkQtyOpened: b.inputQty,
+            shelfUnitsCreated: b.actualOutputQty,
+            warehouseName: b.departmentName,
+            createdAt: b.createdAt.slice(0, 16),
+          })),
+        );
+        setYieldBatches(
+          yields.map((y) => ({
+            id: y.batchRef,
+            department: (y.departmentName as 'Butchery' | 'Bakery' | 'Kitchen') || 'Butchery',
+            rawInputDesc: y.sourceName,
+            rawInputWeightKg: y.inputQty,
+            finishedOutputDesc: y.outputName,
+            finishedUnits: y.actualOutputQty,
+            wasteOrBoneKg: y.wasteQty,
+            yieldPct: y.yieldPct,
+            createdAt: y.createdAt.slice(0, 16),
+          })),
+        );
       }
       if (pRes.items[0]) {
         const first = pRes.items[0];
@@ -503,17 +453,25 @@ export function Transfers() {
                   </tr>
                 </thead>
                 <tbody>
-                  {breakLogs.map((b) => (
-                    <tr key={b.id}>
-                      <td><code>{b.id}</code></td>
-                      <td><strong>{b.productName}</strong></td>
-                      <td>{b.bulkType}</td>
-                      <td className="num">-{b.bulkQtyOpened} bulk</td>
-                      <td className="num pos"><strong>+{b.shelfUnitsCreated} singles</strong></td>
-                      <td>{b.warehouseName}</td>
-                      <td>{b.createdAt}</td>
+                  {breakLogs.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
+                        No break-bulk conversions recorded yet. Use the form above to unpack cartons or bales into single shelf units.
+                      </td>
                     </tr>
-                  ))}
+                  ) : (
+                    breakLogs.map((b) => (
+                      <tr key={b.id}>
+                        <td><code>{b.id}</code></td>
+                        <td><strong>{b.productName}</strong></td>
+                        <td>{b.bulkType}</td>
+                        <td className="num">-{b.bulkQtyOpened} bulk</td>
+                        <td className="num pos"><strong>+{b.shelfUnitsCreated} singles</strong></td>
+                        <td>{b.warehouseName}</td>
+                        <td>{b.createdAt}</td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -622,22 +580,30 @@ export function Transfers() {
                   </tr>
                 </thead>
                 <tbody>
-                  {yieldBatches.map((y) => (
-                    <tr key={y.id}>
-                      <td><code>{y.id}</code></td>
-                      <td><strong>{y.department}</strong></td>
-                      <td>{y.rawInputDesc}</td>
-                      <td className="num">{y.rawInputWeightKg} kg</td>
-                      <td><strong>{y.finishedOutputDesc}</strong></td>
-                      <td className="num pos">+{y.finishedUnits} units</td>
-                      <td className="num">{y.wasteOrBoneKg} kg</td>
-                      <td>
-                        <span className={`status-pill ${y.yieldPct >= 90 ? 'optimal' : 'low'}`}>
-                          {y.yieldPct}% Yield
-                        </span>
+                  {yieldBatches.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
+                        No production yield batches logged yet. Use the form above to record butchery carcass breakdown or bakery yield.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    yieldBatches.map((y) => (
+                      <tr key={y.id}>
+                        <td><code>{y.id}</code></td>
+                        <td><strong>{y.department}</strong></td>
+                        <td>{y.rawInputDesc}</td>
+                        <td className="num">{y.rawInputWeightKg} kg</td>
+                        <td><strong>{y.finishedOutputDesc}</strong></td>
+                        <td className="num pos">+{y.finishedUnits} units</td>
+                        <td className="num">{y.wasteOrBoneKg} kg</td>
+                        <td>
+                          <span className={`status-pill ${y.yieldPct >= 90 ? 'optimal' : 'low'}`}>
+                            {y.yieldPct}% Yield
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>

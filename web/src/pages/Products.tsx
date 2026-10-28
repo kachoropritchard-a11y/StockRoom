@@ -43,23 +43,6 @@ interface PaidUncollectedRecord {
   status: 'AWAITING_COLLECTION' | 'PARTIAL_PICKUP' | 'COLLECTED';
 }
 
-const INITIAL_BATCHES: BatchRecord[] = [
-  { id: 'B-101', sku: 'MED-AMOX500', productName: 'Amoxicillin 500mg Capsules (MCAZ)', batchNo: 'BN-2026-04A', mcazReg: 'MCAZ-88412', expiryDate: '2026-11-30', qty: 42, unit: 'pack', fefoRank: 'EXPIRING_SOON' },
-  { id: 'B-102', sku: 'AGR-DIP2L', productName: 'TickBuster Cattle Dip 2L (Agrovet)', batchNo: 'AG-9910-Z', mcazReg: 'VET-1104', expiryDate: '2027-02-15', qty: 18, unit: 'bottle', fefoRank: 'ISSUE_FIRST' },
-  { id: 'B-103', sku: 'OIL-RG2L', productName: 'Roil Cooking Oil 2L', batchNo: 'NF-2026-11', mcazReg: 'FOOD-STD', expiryDate: '2027-08-20', qty: 120, unit: 'each', fefoRank: 'HEALTHY' },
-];
-
-const INITIAL_SERIALS: SerialWarrantyRecord[] = [
-  { id: 'S-1', sku: 'SOL-INV5K', productName: 'Must 5kVA Hybrid Solar Inverter 48V', serialOrImei: 'SN-MUST-88492019', warrantyMonths: 24, customerOrStatus: 'In Stock — Harare Showroom', soldDate: '-' },
-  { id: 'S-2', sku: 'SOL-BAT100', productName: 'Svolt 48V 100Ah Lithium LiFePO4 Battery', serialOrImei: 'SN-SVLT-44109822', warrantyMonths: 60, customerOrStatus: 'Sold — T. Moyo (Borrowdale)', soldDate: '2026-10-12' },
-  { id: 'S-3', sku: 'ELC-SAM15', productName: 'Samsung Galaxy A15 Dual-SIM 128GB', serialOrImei: 'IMEI-358901129481023', warrantyMonths: 12, customerOrStatus: 'In Stock — Locked Cabinet', soldDate: '-' },
-];
-
-const INITIAL_LAYBY: PaidUncollectedRecord[] = [
-  { id: 'PU-1', receiptNo: 'INV-8821', customerName: 'VaChikowore Builders', phone: '+263 77 241 8890', productName: 'PPC Surebuild Cement 50kg (32.5N)', paidQty: 100, collectedQty: 40, unit: 'bag', status: 'PARTIAL_PICKUP' },
-  { id: 'PU-2', receiptNo: 'INV-8849', customerName: 'Mai Tawanda (Mbare Hardware)', phone: '+263 71 902 1145', productName: 'IBR Chromadek Roofing Sheets 6m', paidQty: 24, collectedQty: 0, unit: 'sheet', status: 'AWAITING_COLLECTION' },
-];
-
 export function Products() {
   const [searchParams] = useSearchParams();
   const initialQ = searchParams.get('q') ?? '';
@@ -88,12 +71,19 @@ export function Products() {
   const [stepBusyId, setStepBusyId] = useState<number | null>(null);
 
   // Sub-Menu 2, 3, 4 state
-  const [batches, setBatches] = useState<BatchRecord[]>(INITIAL_BATCHES);
-  const [serials, setSerials] = useState<SerialWarrantyRecord[]>(INITIAL_SERIALS);
+  const [batches, setBatches] = useState<BatchRecord[]>([]);
+  const [newBatchProd, setNewBatchProd] = useState('');
+  const [newBatchNo, setNewBatchNo] = useState('');
+  const [newBatchMcaz, setNewBatchMcaz] = useState('');
+  const [newBatchExpiry, setNewBatchExpiry] = useState('');
+  const [newBatchQty, setNewBatchQty] = useState('10');
+  const [newBatchUnit, setNewBatchUnit] = useState('units');
+
+  const [serials, setSerials] = useState<SerialWarrantyRecord[]>([]);
   const [newSerialNo, setNewSerialNo] = useState('');
-  const [newSerialProd, setNewSerialProd] = useState('Must 5kVA Hybrid Solar Inverter 48V');
-  const [newSerialWarranty, setNewSerialWarranty] = useState('24');
-  const [laybyItems, setLaybyItems] = useState<PaidUncollectedRecord[]>(INITIAL_LAYBY);
+  const [newSerialProd, setNewSerialProd] = useState('');
+  const [newSerialWarranty, setNewSerialWarranty] = useState('12');
+  const [laybyItems, setLaybyItems] = useState<PaidUncollectedRecord[]>([]);
 
   // New Product form
   const [sku, setSku] = useState('');
@@ -148,9 +138,9 @@ export function Products() {
       setUnits(uRes);
       setWarehouses(wRes);
       setDepartments(dRes);
-      if (smeRes && smeRes.laybys.length > 0) {
+      if (smeRes) {
         setLaybyItems(
-          smeRes.laybys.map((l) => ({
+          (smeRes.laybys || []).map((l) => ({
             id: String(l.id),
             receiptNo: l.receiptRef,
             customerName: l.customerName,
@@ -922,31 +912,107 @@ export function Products() {
                   )}
                 </span>
               </div>
-              <button
-                type="button"
-                className="btn btn-outline btn-sm"
-                onClick={() => {
-                  const nextId = `B-${100 + batches.length + 1}`;
-                  setBatches((prev) => [
-                    {
-                      id: nextId,
-                      sku: products[0]?.sku ?? 'MED-PARA500',
-                      productName: products[0]?.name ?? 'Paracetamol 500mg Blister Pack',
-                      batchNo: `BN-2026-${batches.length + 10}`,
-                      mcazReg: 'MCAZ-90122',
-                      expiryDate: '2027-04-30',
-                      qty: 50,
-                      unit: 'pack',
-                      fefoRank: 'ISSUE_FIRST',
-                    },
-                    ...prev,
-                  ]);
-                  setMsg('New MCAZ/FEFO batch logged.');
-                }}
-              >
-                + Log New Batch Expiry
-              </button>
             </div>
+
+            <form
+              className="form-grid subcard"
+              style={{ marginBottom: '1rem' }}
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!newBatchNo.trim() || !newBatchExpiry.trim()) return;
+                const prod = products.find((p) => p.name === newBatchProd) || products[0];
+                const now = new Date();
+                const exp = new Date(newBatchExpiry);
+                const diffMonths = (exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24 * 30);
+                const fefoRank: BatchRecord['fefoRank'] =
+                  diffMonths < 2 ? 'EXPIRING_SOON' : diffMonths < 6 ? 'ISSUE_FIRST' : 'HEALTHY';
+                setBatches((prev) => [
+                  {
+                    id: `B-${prev.length + 1}`,
+                    sku: prod?.sku ?? 'MED-GEN',
+                    productName: newBatchProd.trim() || prod?.name || 'Store Item',
+                    batchNo: newBatchNo.trim().toUpperCase(),
+                    mcazReg: newBatchMcaz.trim() || 'N/A',
+                    expiryDate: newBatchExpiry,
+                    qty: Number(newBatchQty) || 1,
+                    unit: newBatchUnit.trim() || prod?.baseUnit || 'each',
+                    fefoRank,
+                  },
+                  ...prev,
+                ]);
+                setNewBatchNo('');
+                setNewBatchExpiry('');
+                setMsg(`Logged batch ${newBatchNo.trim().toUpperCase()} for FEFO shelf rotation.`);
+              }}
+            >
+              <label>
+                Product Name
+                {products.length > 0 ? (
+                  <select
+                    value={newBatchProd}
+                    onChange={(e) => {
+                      setNewBatchProd(e.target.value);
+                      const matched = products.find((p) => p.name === e.target.value);
+                      if (matched) setNewBatchUnit(matched.baseUnit);
+                    }}
+                  >
+                    <option value="">Select product…</option>
+                    {products.map((p) => (
+                      <option key={p.id} value={p.name}>
+                        {p.name} ({p.sku})
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={newBatchProd}
+                    onChange={(e) => setNewBatchProd(e.target.value)}
+                    placeholder="e.g. Paracetamol 500mg or Cattle Dip"
+                    required
+                  />
+                )}
+              </label>
+              <label>
+                Batch / Lot Number
+                <input
+                  value={newBatchNo}
+                  onChange={(e) => setNewBatchNo(e.target.value)}
+                  placeholder="e.g. BN-2026-441"
+                  required
+                />
+              </label>
+              <label>
+                MCAZ / Vet Reg No.
+                <input
+                  value={newBatchMcaz}
+                  onChange={(e) => setNewBatchMcaz(e.target.value)}
+                  placeholder="e.g. MCAZ-88210 (or N/A)"
+                />
+              </label>
+              <label>
+                Expiry Date
+                <input
+                  type="date"
+                  value={newBatchExpiry}
+                  onChange={(e) => setNewBatchExpiry(e.target.value)}
+                  required
+                />
+              </label>
+              <label>
+                Batch Quantity
+                <input
+                  type="number"
+                  min="1"
+                  value={newBatchQty}
+                  onChange={(e) => setNewBatchQty(e.target.value)}
+                  required
+                />
+              </label>
+              <div className="form-actions">
+                <button type="submit" className="btn btn-primary">+ Log Batch Expiry</button>
+              </div>
+            </form>
+
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
@@ -960,30 +1026,38 @@ export function Products() {
                   </tr>
                 </thead>
                 <tbody>
-                  {batches.map((b) => (
-                    <tr key={b.id}>
-                      <td><code>{b.batchNo}</code></td>
-                      <td><strong>{b.mcazReg}</strong></td>
-                      <td>
-                        <strong>{b.productName}</strong> <span className="muted">({b.sku})</span>
-                      </td>
-                      <td>{b.expiryDate}</td>
-                      <td className="num">{b.qty} {b.unit}</td>
-                      <td>
-                        <span
-                          className={`status-pill ${
-                            b.fefoRank === 'EXPIRING_SOON' ? 'out' : b.fefoRank === 'ISSUE_FIRST' ? 'low' : 'optimal'
-                          }`}
-                        >
-                          {b.fefoRank === 'EXPIRING_SOON'
-                            ? '⚠️ Expiring Soon — Issue Immediately'
-                            : b.fefoRank === 'ISSUE_FIRST'
-                              ? 'FEFO #1 — Issue Before Newer Stock'
-                              : 'Healthy Shelf Life'}
-                        </span>
+                  {batches.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
+                        No batches registered yet. Use the form above to record batch numbers and expiry dates for FEFO stock rotation.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    batches.map((b) => (
+                      <tr key={b.id}>
+                        <td><code>{b.batchNo}</code></td>
+                        <td><strong>{b.mcazReg}</strong></td>
+                        <td>
+                          <strong>{b.productName}</strong> <span className="muted">({b.sku})</span>
+                        </td>
+                        <td>{b.expiryDate}</td>
+                        <td className="num">{b.qty} {b.unit}</td>
+                        <td>
+                          <span
+                            className={`status-pill ${
+                              b.fefoRank === 'EXPIRING_SOON' ? 'out' : b.fefoRank === 'ISSUE_FIRST' ? 'low' : 'optimal'
+                            }`}
+                          >
+                            {b.fefoRank === 'EXPIRING_SOON'
+                              ? '⚠️ Expiring Soon — Issue Immediately'
+                              : b.fefoRank === 'ISSUE_FIRST'
+                                ? 'FEFO #1 — Issue Before Newer Stock'
+                                : 'Healthy Shelf Life'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -1061,19 +1135,27 @@ export function Products() {
                   </tr>
                 </thead>
                 <tbody>
-                  {serials.map((s) => (
-                    <tr key={s.id}>
-                      <td><code>{s.serialOrImei}</code></td>
-                      <td><strong>{s.productName}</strong></td>
-                      <td className="num">{s.warrantyMonths} Months</td>
-                      <td>
-                        <span className={`status-pill ${s.soldDate === '-' ? 'optimal' : 'low'}`}>
-                          {s.customerOrStatus}
-                        </span>
+                  {serials.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
+                        No serialized items logged yet. Register high-value electronics and solar inverters using the form above.
                       </td>
-                      <td>{s.soldDate}</td>
                     </tr>
-                  ))}
+                  ) : (
+                    serials.map((s) => (
+                      <tr key={s.id}>
+                        <td><code>{s.serialOrImei}</code></td>
+                        <td><strong>{s.productName}</strong></td>
+                        <td className="num">{s.warrantyMonths} Months</td>
+                        <td>
+                          <span className={`status-pill ${s.soldDate === '-' ? 'optimal' : 'low'}`}>
+                            {s.customerOrStatus}
+                          </span>
+                        </td>
+                        <td>{s.soldDate}</td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -1113,57 +1195,65 @@ export function Products() {
                   </tr>
                 </thead>
                 <tbody>
-                  {laybyItems.map((item) => {
-                    const remaining = Math.max(0, item.paidQty - item.collectedQty);
-                    return (
-                      <tr key={item.id}>
-                        <td><code>{item.receiptNo}</code></td>
-                        <td>
-                          <strong>{item.customerName}</strong>
-                          <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>{item.phone}</div>
-                        </td>
-                        <td><strong>{item.productName}</strong></td>
-                        <td className="num">{item.paidQty} {item.unit}</td>
-                        <td className="num">{item.collectedQty} {item.unit}</td>
-                        <td className="num"><strong>{remaining} {item.unit}</strong></td>
-                        <td>
-                          <span
-                            className={`status-pill ${
-                              remaining === 0 ? 'optimal' : item.collectedQty > 0 ? 'low' : 'out'
-                            }`}
-                          >
-                            {remaining === 0 ? 'Fully Collected' : `${remaining} ${item.unit} Reserved in Yard`}
-                          </span>
-                        </td>
-                        <td className="num">
-                          {remaining > 0 && (
-                            <button
-                              type="button"
-                              className="btn btn-primary btn-sm"
-                              onClick={async () => {
-                                const numId = Number(item.id);
-                                if (Number.isFinite(numId) && numId > 0) {
-                                  await api.collectLayby(numId, remaining).catch(() => null);
-                                  await load();
-                                } else {
-                                  setLaybyItems((prev) =>
-                                    prev.map((x) =>
-                                      x.id === item.id
-                                        ? { ...x, collectedQty: x.paidQty, status: 'COLLECTED' }
-                                        : x,
-                                    ),
-                                  );
-                                }
-                                setMsg(`Marked remaining ${remaining} ${item.unit} for ${item.customerName} as collected.`);
-                              }}
+                  {laybyItems.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
+                        No paid &amp; uncollected items on lay-by. When customers purchase bulk items to collect later with their trucks, they will appear here.
+                      </td>
+                    </tr>
+                  ) : (
+                    laybyItems.map((item) => {
+                      const remaining = Math.max(0, item.paidQty - item.collectedQty);
+                      return (
+                        <tr key={item.id}>
+                          <td><code>{item.receiptNo}</code></td>
+                          <td>
+                            <strong>{item.customerName}</strong>
+                            <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>{item.phone}</div>
+                          </td>
+                          <td><strong>{item.productName}</strong></td>
+                          <td className="num">{item.paidQty} {item.unit}</td>
+                          <td className="num">{item.collectedQty} {item.unit}</td>
+                          <td className="num"><strong>{remaining} {item.unit}</strong></td>
+                          <td>
+                            <span
+                              className={`status-pill ${
+                                remaining === 0 ? 'optimal' : item.collectedQty > 0 ? 'low' : 'out'
+                              }`}
                             >
-                              ✓ Release to Customer Truck
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                              {remaining === 0 ? 'Fully Collected' : `${remaining} ${item.unit} Reserved in Yard`}
+                            </span>
+                          </td>
+                          <td className="num">
+                            {remaining > 0 && (
+                              <button
+                                type="button"
+                                className="btn btn-primary btn-sm"
+                                onClick={async () => {
+                                  const numId = Number(item.id);
+                                  if (Number.isFinite(numId) && numId > 0) {
+                                    await api.collectLayby(numId, remaining).catch(() => null);
+                                    await load();
+                                  } else {
+                                    setLaybyItems((prev) =>
+                                      prev.map((x) =>
+                                        x.id === item.id
+                                          ? { ...x, collectedQty: x.paidQty, status: 'COLLECTED' }
+                                          : x,
+                                      ),
+                                    );
+                                  }
+                                  setMsg(`Marked remaining ${remaining} ${item.unit} for ${item.customerName} as collected.`);
+                                }}
+                              >
+                                ✓ Release to Customer Truck
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>

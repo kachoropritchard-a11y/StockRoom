@@ -20,39 +20,6 @@ interface ChikweretiRecord {
   dueDate: string;
 }
 
-const INITIAL_DEBTORS: ChikweretiRecord[] = [
-  {
-    id: 'CK-01',
-    customerName: 'Sekuru Mutasa (Mhondoro A1 Plot)',
-    phone: '+263 77 319 4401',
-    category: 'A1 / A2 Farmer (Agro)',
-    itemsTaken: '4 × Compound D Fertilizer 50kg, 2 × Maize Seed 10kg',
-    totalUsd: 210.0,
-    paidUsd: 90.0,
-    dueDate: '2026-11-15 (Harvest Advance)',
-  },
-  {
-    id: 'CK-02',
-    customerName: 'Mai Chipo Tuckshop (Budiriro 5)',
-    phone: '+263 71 884 2210',
-    category: 'Tuckshop / Regular',
-    itemsTaken: '2 Cases Roil Cooking Oil, 3 Bales Roller Meal',
-    totalUsd: 96.0,
-    paidUsd: 60.0,
-    dueDate: '2026-10-30',
-  },
-  {
-    id: 'CK-03',
-    customerName: 'Moyo Civil Contractors',
-    phone: '+263 78 400 9182',
-    category: 'Builder / Contractor',
-    itemsTaken: '20 × PPC Cement 50kg',
-    totalUsd: 250.0,
-    paidUsd: 250.0,
-    dueDate: 'Paid in Full',
-  },
-];
-
 export function Warehouses() {
   const { user } = useAuth();
   const { formatMoney, subLabel } = useZim();
@@ -79,7 +46,9 @@ export function Warehouses() {
   const [deptName, setDeptName] = useState('');
 
   // Sub-Menu 2: Chikwereti Debtors Book state
-  const [debtors, setDebtors] = useState<ChikweretiRecord[]>(INITIAL_DEBTORS);
+  const [debtors, setDebtors] = useState<ChikweretiRecord[]>([]);
+  const [posDeptId, setPosDeptId] = useState<number | null>(null);
+  const [posDeptName, setPosDeptName] = useState<string>('');
   const [ckName, setCkName] = useState('');
   const [ckPhone, setCkPhone] = useState('');
   const [ckCat, setCkCat] = useState<ChikweretiRecord['category']>('Tuckshop / Regular');
@@ -90,22 +59,27 @@ export function Warehouses() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [brRes, whRes, dpRes, repRes, balRes, smeRes] = await Promise.all([
+      const [brRes, whRes, dpRes, repRes, balRes, smeRes, posRes] = await Promise.all([
         api.branches(),
         api.warehouses(),
         api.departments(),
         api.inventoryReports(),
         api.balances(selectedWhId),
         api.smeOverview().catch(() => null),
+        api.posCatalog().catch(() => null),
       ]);
       setBranches(brRes);
       setWarehouses(whRes);
       setDepartments(dpRes);
       setReports(repRes);
       setBalances(balRes.items);
-      if (smeRes && smeRes.debtors.length > 0) {
+      if (posRes) {
+        setPosDeptId(posRes.posDepartmentId ?? null);
+        setPosDeptName(posRes.posDepartmentName ?? '');
+      }
+      if (smeRes) {
         setDebtors(
-          smeRes.debtors.map((d) => ({
+          (smeRes.debtors || []).map((d) => ({
             id: String(d.id),
             customerName: d.customerName,
             phone: d.phone,
@@ -165,6 +139,32 @@ export function Warehouses() {
       setDeptName('');
       setShowManageDrawer(false);
       setMsg('Department created.');
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function handleDeleteDepartment(deptId: number, name: string) {
+    if (!window.confirm(`Are you sure you want to delete the department "${name}"?`)) return;
+    setError('');
+    setMsg('');
+    try {
+      await api.deleteDepartment(deptId);
+      setMsg(`Department "${name}" removed.`);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function handleDeleteWarehouse(whId: number, name: string) {
+    if (!window.confirm(`Are you sure you want to delete the warehouse "${name}"?`)) return;
+    setError('');
+    setMsg('');
+    try {
+      await api.deleteWarehouse(whId);
+      setMsg(`Warehouse "${name}" removed.`);
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -280,6 +280,96 @@ export function Warehouses() {
           {/* SUB-MENU 1: Store & Yard Zones */}
           {activeTab === 'zones' && (
             <div id="warehouses-panel-zones" role="tabpanel" aria-labelledby="warehouses-tab-zones">
+              {/* Active Storefloor Departments */}
+              <div className="section-head" style={{ marginBottom: '0.75rem' }}>
+                <div>
+                  <h3 style={{ margin: 0 }}>Active Storefloor Departments</h3>
+                  <span className="vernacular-sub" style={{ fontSize: '0.78rem' }}>
+                    Departments configured for your storefloor, retail counters, and POS checkout ({departments.length} registered).
+                  </span>
+                </div>
+                {isExec && (
+                  <button type="button" className="btn btn-outline btn-sm" onClick={() => setShowManageDrawer(true)}>
+                    + Add Department
+                  </button>
+                )}
+              </div>
+              <div className="table-wrap" style={{ marginBottom: '1.75rem' }}>
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Department Name</th>
+                      <th>Branch</th>
+                      <th>POS Checkout Binding</th>
+                      <th>Status</th>
+                      {isExec && <th className="num">Action</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {departments.length === 0 ? (
+                      <tr>
+                        <td colSpan={isExec ? 5 : 4} className="muted text-center" style={{ padding: '2rem' }}>
+                          No departments configured yet. Click &quot;+ Add Department&quot; above to add one.
+                        </td>
+                      </tr>
+                    ) : (
+                      departments.map((dept) => {
+                        const isPos = dept.id === posDeptId;
+                        return (
+                          <tr key={dept.id}>
+                            <td><strong>{dept.name}</strong></td>
+                            <td>{dept.branchName ?? 'Main Branch'}</td>
+                            <td>
+                              {isPos ? (
+                                <span className="status-pill optimal" style={{ fontWeight: 700 }}>
+                                  🎯 Active POS Checkout Counter
+                                </span>
+                              ) : (
+                                <span className="muted" style={{ fontSize: '0.82rem' }}>
+                                  Standard Department
+                                </span>
+                              )}
+                            </td>
+                            <td>
+                              <span className={`status-pill ${dept.active ? 'optimal' : 'out'}`}>
+                                {dept.active ? 'Active' : 'Inactive'}
+                              </span>
+                            </td>
+                            {isExec && (
+                              <td className="num">
+                                <button
+                                  type="button"
+                                  className="btn btn-outline btn-sm"
+                                  style={{ color: 'var(--crimson)', borderColor: 'var(--line)' }}
+                                  onClick={() => handleDeleteDepartment(dept.id, dept.name)}
+                                  title="Delete this department"
+                                >
+                                  🗑 Delete
+                                </button>
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Warehouses & Physical Storage Yards */}
+              <div className="section-head" style={{ marginBottom: '0.75rem' }}>
+                <div>
+                  <h3 style={{ margin: 0 }}>Warehouses &amp; Physical Storage Yards</h3>
+                  <span className="vernacular-sub" style={{ fontSize: '0.78rem' }}>
+                    Physical bulk storerooms, hardware timber yards, and warehouses.
+                  </span>
+                </div>
+                {isExec && (
+                  <button type="button" className="btn btn-outline btn-sm" onClick={() => setShowManageDrawer(true)}>
+                    + Add Warehouse
+                  </button>
+                )}
+              </div>
               <div className="table-wrap">
                 <table className="data-table">
                   <thead>
@@ -289,28 +379,56 @@ export function Warehouses() {
                       <th className="num">Active SKUs</th>
                       <th className="num">Total Units</th>
                       <th className="num">Stock Value</th>
-                      <th className="num">Filter Stock</th>
+                      <th className="num">Inspect Zone</th>
+                      {isExec && <th className="num">Action</th>}
                     </tr>
                   </thead>
                   <tbody>
-                    {(reports?.warehouseStockSummary ?? []).map((w) => (
-                      <tr key={w.warehouseId}>
-                        <td><strong>{w.warehouseName}</strong></td>
-                        <td>{w.branchName}</td>
-                        <td className="num">{w.skuCount}</td>
-                        <td className="num">{w.totalQuantity.toLocaleString()}</td>
-                        <td className="num"><strong>{formatMoney(w.totalValue)}</strong></td>
-                        <td className="num">
-                          <button
-                            type="button"
-                            className={`btn ${selectedWhId === w.warehouseId ? 'btn-primary' : 'btn-outline'} btn-sm`}
-                            onClick={() => setSelectedWhId(selectedWhId === w.warehouseId ? undefined : w.warehouseId)}
-                          >
-                            {selectedWhId === w.warehouseId ? 'Showing Only This' : 'Inspect Zone'}
-                          </button>
+                    {warehouses.length === 0 ? (
+                      <tr>
+                        <td colSpan={isExec ? 7 : 6} className="muted text-center" style={{ padding: '2rem' }}>
+                          No warehouses registered.
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      warehouses.map((wh) => {
+                        const summary = (reports?.warehouseStockSummary ?? []).find((s) => s.warehouseId === wh.id);
+                        const skuCount = summary?.skuCount ?? 0;
+                        const totalUnits = summary?.totalQuantity ?? 0;
+                        const totalValue = summary?.totalValue ?? 0;
+                        return (
+                          <tr key={wh.id}>
+                            <td><strong>{wh.name}</strong></td>
+                            <td>{wh.branchName ?? 'Main Branch'}</td>
+                            <td className="num">{skuCount}</td>
+                            <td className="num">{totalUnits.toLocaleString()}</td>
+                            <td className="num"><strong>{formatMoney(totalValue)}</strong></td>
+                            <td className="num">
+                              <button
+                                type="button"
+                                className={`btn ${selectedWhId === wh.id ? 'btn-primary' : 'btn-outline'} btn-sm`}
+                                onClick={() => setSelectedWhId(selectedWhId === wh.id ? undefined : wh.id)}
+                              >
+                                {selectedWhId === wh.id ? 'Showing Only This' : 'Inspect Zone'}
+                              </button>
+                            </td>
+                            {isExec && (
+                              <td className="num">
+                                <button
+                                  type="button"
+                                  className="btn btn-outline btn-sm"
+                                  style={{ color: 'var(--crimson)', borderColor: 'var(--line)' }}
+                                  onClick={() => handleDeleteWarehouse(wh.id, wh.name)}
+                                  title="Delete warehouse (if empty)"
+                                >
+                                  🗑 Delete
+                                </button>
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -473,8 +591,15 @@ export function Warehouses() {
                     </tr>
                   </thead>
                   <tbody>
-                    {debtors.map((d) => {
-                      const owed = Math.max(0, d.totalUsd - d.paidUsd);
+                    {debtors.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
+                          No customer credit accounts logged yet. Use the form above to record customer credit (&quot;Chikwereti&quot;).
+                        </td>
+                      </tr>
+                    ) : (
+                      debtors.map((d) => {
+                        const owed = Math.max(0, d.totalUsd - d.paidUsd);
                       const waReminder = `Mhoroi / Salibonani ${d.customerName}, friendly reminder from Great Zimbabwe Stockroom regarding your credit balance of ${formatMoney(owed)} for (${d.itemsTaken}) due on ${d.dueDate}. Thank you / Tatenda!`;
                       return (
                         <tr key={d.id}>
@@ -528,7 +653,7 @@ export function Warehouses() {
                           </td>
                         </tr>
                       );
-                    })}
+                    }))}
                   </tbody>
                 </table>
               </div>

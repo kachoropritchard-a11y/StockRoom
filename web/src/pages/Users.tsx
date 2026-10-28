@@ -18,46 +18,13 @@ interface FastPinStaffMember {
   active: boolean;
 }
 
-const INITIAL_PIN_STAFF: FastPinStaffMember[] = [
-  {
-    id: 'ST-1',
-    name: 'Tendai Moyo',
-    station: 'Till #1 & Grocery Counter',
-    fastPin: '1042',
-    phone: '+263 77 412 0091',
-    hideCostPrices: true,
-    restrictWriteOffs: true,
-    active: true,
-  },
-  {
-    id: 'ST-2',
-    name: 'Blessing Ndlovu',
-    station: 'Hardware Yard & Cement Dispatch',
-    fastPin: '2088',
-    phone: '+263 71 908 3312',
-    hideCostPrices: true,
-    restrictWriteOffs: true,
-    active: true,
-  },
-  {
-    id: 'ST-3',
-    name: 'Chipo Dube',
-    station: 'Butchery & Bakery Receiving',
-    fastPin: '3019',
-    phone: '+263 78 219 7740',
-    hideCostPrices: false,
-    restrictWriteOffs: false,
-    active: true,
-  },
-];
-
 export function Users() {
   const { user: currentUser } = useAuth();
   const { subLabel } = useZim();
   const isExec = currentUser?.role === 'executive_manager';
 
   const [activeTab, setActiveTab] = useState<UsersSubTab>('pins');
-  const [pinStaff, setPinStaff] = useState<FastPinStaffMember[]>(INITIAL_PIN_STAFF);
+  const [pinStaff, setPinStaff] = useState<FastPinStaffMember[]>([]);
   const [users, setUsers] = useState<
     { id: number; email: string; name: string; role: User['role']; branchId: number | null; branchName: string | null; active: boolean; lockedUntil: string | null }[]
   >([]);
@@ -89,9 +56,9 @@ export function Users() {
       ]);
       setBranches(bRes);
       if (bRes[0]) setUBranchId((prev) => prev || String(bRes[0].id));
-      if (smeRes && smeRes.staffPins.length > 0) {
+      if (smeRes) {
         setPinStaff(
-          smeRes.staffPins.map((p) => ({
+          (smeRes.staffPins || []).map((p) => ({
             id: String(p.id),
             name: p.staffName,
             station: `${p.roleTitle} (${p.departmentScope})`,
@@ -276,56 +243,64 @@ export function Users() {
                     </tr>
                   </thead>
                   <tbody>
-                    {pinStaff.map((s) => (
-                      <tr key={s.id}>
-                        <td>
-                          <strong>{s.name}</strong>
-                          <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>{s.phone}</div>
-                        </td>
-                        <td>{s.station}</td>
-                        <td>
-                          <code style={{ fontSize: '0.96rem', fontWeight: 800, letterSpacing: '0.12em' }}>
-                            PIN: {s.fastPin}
-                          </code>
-                        </td>
-                        <td>
-                          <span className={`status-pill ${s.hideCostPrices ? 'optimal' : 'low'}`}>
-                            {s.hideCostPrices ? '🔒 Cost Prices Hidden' : '👁️ Can View Costs'}
-                          </span>
-                        </td>
-                        <td>
-                          <span className={`status-pill ${s.restrictWriteOffs ? 'optimal' : 'low'}`}>
-                            {s.restrictWriteOffs ? '🔒 Write-Offs Locked' : 'Unlocked'}
-                          </span>
-                        </td>
-                        <td>
-                          <span className={`status-pill ${s.active ? 'optimal' : 'out'}`}>
-                            {s.active ? 'Active' : 'Suspended'}
-                          </span>
-                        </td>
-                        <td className="num">
-                          <button
-                            type="button"
-                            className="btn btn-outline btn-sm"
-                            onClick={async () => {
-                              const nextHide = !s.hideCostPrices;
-                              setPinStaff((prev) =>
-                                prev.map((x) => (x.id === s.id ? { ...x, hideCostPrices: nextHide } : x)),
-                              );
-                              if (typeof s.id === 'number') {
-                                try {
-                                  await api.updateStaffPin(s.id, { canViewCost: !nextHide });
-                                } catch {
-                                  /* keep optimistic update if offline */
-                                }
-                              }
-                            }}
-                          >
-                            {s.hideCostPrices ? 'Show Costs' : 'Hide Costs'}
-                          </button>
+                    {pinStaff.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
+                          No staff PIN codes registered yet. Add storefloor till operators or runners using the form above.
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      pinStaff.map((s) => (
+                        <tr key={s.id}>
+                          <td>
+                            <strong>{s.name}</strong>
+                            <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>{s.phone}</div>
+                          </td>
+                          <td>{s.station}</td>
+                          <td>
+                            <code style={{ fontSize: '0.96rem', fontWeight: 800, letterSpacing: '0.12em' }}>
+                              PIN: {s.fastPin}
+                            </code>
+                          </td>
+                          <td>
+                            <span className={`status-pill ${s.hideCostPrices ? 'optimal' : 'low'}`}>
+                              {s.hideCostPrices ? '🔒 Cost Prices Hidden' : '👁️ Can View Costs'}
+                            </span>
+                          </td>
+                          <td>
+                            <span className={`status-pill ${s.restrictWriteOffs ? 'optimal' : 'low'}`}>
+                              {s.restrictWriteOffs ? '🔒 Write-Offs Locked' : 'Unlocked'}
+                            </span>
+                          </td>
+                          <td>
+                            <span className={`status-pill ${s.active ? 'optimal' : 'out'}`}>
+                              {s.active ? 'Active' : 'Suspended'}
+                            </span>
+                          </td>
+                          <td className="num">
+                            <button
+                              type="button"
+                              className="btn btn-outline btn-sm"
+                              onClick={async () => {
+                                const nextHide = !s.hideCostPrices;
+                                setPinStaff((prev) =>
+                                  prev.map((x) => (x.id === s.id ? { ...x, hideCostPrices: nextHide } : x)),
+                                );
+                                if (typeof s.id === 'number') {
+                                  try {
+                                    await api.updateStaffPin(s.id, { canViewCost: !nextHide });
+                                  } catch {
+                                    /* keep optimistic update if offline */
+                                  }
+                                }
+                              }}
+                            >
+                              {s.hideCostPrices ? 'Show Costs' : 'Hide Costs'}
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>

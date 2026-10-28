@@ -33,12 +33,9 @@ export function SetupManager() {
   const [currencyCode, setCurrencyCode] = useState<'USD' | 'ZiG' | 'ZAR'>('USD');
 
   // Step 3: Departments & POS Counter
-  const [departments, setDepartments] = useState<string[]>([
-    'Groceries & FMCG',
-    'Hardware & Building Supplies',
-  ]);
+  const [departments, setDepartments] = useState<string[]>([]);
   const [customDeptInput, setCustomDeptInput] = useState('');
-  const [posDepartmentName, setPosDepartmentName] = useState('Groceries & FMCG');
+  const [posDepartmentName, setPosDepartmentName] = useState('');
 
   if (!loading && user) {
     return <Navigate to={portalPath(user.role)} replace />;
@@ -47,19 +44,24 @@ export function SetupManager() {
   function toggleDepartment(dept: string) {
     setDepartments((prev) => {
       if (prev.includes(dept)) {
-        if (prev.length <= 1) return prev; // Keep at least one
         const next = prev.filter((d) => d !== dept);
-        if (posDepartmentName === dept) setPosDepartmentName(next[0]);
+        if (posDepartmentName === dept) setPosDepartmentName(next[0] || '');
         return next;
       }
-      return [...prev, dept];
+      const next = [...prev, dept];
+      if (!posDepartmentName) setPosDepartmentName(dept);
+      return next;
     });
   }
 
   function addCustomDepartment() {
     const val = customDeptInput.trim();
     if (val && !departments.includes(val)) {
-      setDepartments((prev) => [...prev, val]);
+      setDepartments((prev) => {
+        const next = [...prev, val];
+        if (!posDepartmentName) setPosDepartmentName(val);
+        return next;
+      });
       setCustomDeptInput('');
     }
   }
@@ -85,6 +87,11 @@ export function SetupManager() {
       }
       setError('');
       setStep((s) => (s + 1) as 2 | 3);
+      return;
+    }
+
+    if (departments.length === 0) {
+      setError('Please add or select at least one department for your storefloor.');
       return;
     }
 
@@ -320,6 +327,43 @@ export function SetupManager() {
                       </button>
                     );
                   })}
+                  {departments
+                    .filter((d) => !DEFAULT_DEPARTMENTS.includes(d as (typeof DEFAULT_DEPARTMENTS)[number]))
+                    .map((customDept) => (
+                      <span
+                        key={customDept}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '0.35rem',
+                          padding: '0.45rem 0.85rem',
+                          borderRadius: '20px',
+                          border: '1.5px solid var(--zim-green-700)',
+                          background: 'var(--zim-green-50)',
+                          color: 'var(--zim-green-900)',
+                          fontWeight: 700,
+                          fontSize: '0.82rem',
+                        }}
+                      >
+                        ✓ {customDept}
+                        <button
+                          type="button"
+                          onClick={() => toggleDepartment(customDept)}
+                          title="Remove custom department"
+                          style={{
+                            border: 'none',
+                            background: 'transparent',
+                            color: 'var(--crimson)',
+                            cursor: 'pointer',
+                            fontSize: '0.9rem',
+                            padding: '0 0.2rem',
+                            lineHeight: 1,
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ))}
                 </div>
               </label>
 
@@ -327,7 +371,7 @@ export function SetupManager() {
               <div style={{ display: 'flex', gap: '0.5rem' }}>
                 <input
                   type="text"
-                  placeholder="Add custom department name…"
+                  placeholder="Add custom department name (e.g. SALES DPT)…"
                   value={customDeptInput}
                   onChange={(e) => setCustomDeptInput(e.target.value)}
                   style={{ flex: 1, fontSize: '0.85rem' }}
@@ -357,12 +401,18 @@ export function SetupManager() {
                 <select
                   value={posDepartmentName}
                   onChange={(e) => setPosDepartmentName(e.target.value)}
+                  disabled={departments.length === 0}
+                  required
                 >
-                  {departments.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
+                  {departments.length === 0 ? (
+                    <option value="">(Add at least one department above)</option>
+                  ) : (
+                    departments.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))
+                  )}
                 </select>
               </label>
             </div>

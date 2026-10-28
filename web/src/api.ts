@@ -653,12 +653,16 @@ export const api = {
     request<{ id: number }>('/api/warehouses', { method: 'POST', body: JSON.stringify(body) }),
   updateWarehouse: (id: number, body: { name?: string; active?: boolean }) =>
     request<{ ok: true }>(`/api/warehouses/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteWarehouse: (id: number) =>
+    request<{ ok: true }>(`/api/warehouses/${id}`, { method: 'DELETE' }),
 
   departments: () => request<{ id: number; branchId: number; branchName?: string; name: string; active: number }[]>('/api/departments'),
   createDepartment: (body: { branchId: number; name: string }) =>
     request<{ id: number }>('/api/departments', { method: 'POST', body: JSON.stringify(body) }),
   updateDepartment: (id: number, body: { name?: string; active?: boolean }) =>
     request<{ ok: true }>(`/api/departments/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteDepartment: (id: number) =>
+    request<{ ok: true }>(`/api/departments/${id}`, { method: 'DELETE' }),
 
   users: () =>
     request<{ id: number; email: string; name: string; role: User['role']; branchId: number | null; branchName: string | null; active: boolean; lockedUntil: string | null }[]>('/api/users'),

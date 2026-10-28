@@ -31,35 +31,6 @@ interface TillShiftRecord {
   closedAt: string;
 }
 
-const INITIAL_SHIFTS: TillShiftRecord[] = [
-  {
-    id: 'SH-201',
-    shiftLabel: 'Morning Shift #1 (Till A)',
-    cashier: 'Tendai Moyo (PIN 1042)',
-    usdCash: 485.0,
-    zigCash: 6420.0,
-    zarCash: 950.0,
-    ecocashUsd: 162.5,
-    innbucksUsd: 94.0,
-    onemoneyZig: 1180.0,
-    status: 'BALANCED',
-    closedAt: 'Today 14:00 CAT',
-  },
-  {
-    id: 'SH-202',
-    shiftLabel: 'Afternoon Shift #2 (Till B)',
-    cashier: 'Rudo Ncube (PIN 2088)',
-    usdCash: 310.0,
-    zigCash: 4190.0,
-    zarCash: 400.0,
-    ecocashUsd: 118.0,
-    innbucksUsd: 55.0,
-    onemoneyZig: 0,
-    status: 'BALANCED',
-    closedAt: 'Active Shift',
-  },
-];
-
 const SHRINKAGE_REASONS = [
   'ZESA Power Cut Spoilage (Cold Chain / Butchery / Dairy)',
   'Transit Breakage (Runner / Bus / Forklift Damage)',
@@ -129,14 +100,14 @@ export function Operations() {
   const [reason, setReason] = useState(SHRINKAGE_REASONS[0]);
 
   // Till Shifts & Cash-Up state
-  const [shifts, setShifts] = useState<TillShiftRecord[]>(INITIAL_SHIFTS);
-  const [cashierName, setCashierName] = useState('Chipo Dube (PIN 3019)');
-  const [tillUsd, setTillUsd] = useState('420');
-  const [tillZig, setTillZig] = useState('5800');
-  const [tillZar, setTillZar] = useState('600');
-  const [tillEcocash, setTillEcocash] = useState('145');
-  const [tillInnbucks, setTillInnbucks] = useState('80');
-  const [tillOnemoney, setTillOnemoney] = useState('950');
+  const [shifts, setShifts] = useState<TillShiftRecord[]>([]);
+  const [cashierName, setCashierName] = useState(user?.name ? `${user.name} (PIN ${user.id})` : 'Till Cashier');
+  const [tillUsd, setTillUsd] = useState('0');
+  const [tillZig, setTillZig] = useState('0');
+  const [tillZar, setTillZar] = useState('0');
+  const [tillEcocash, setTillEcocash] = useState('0');
+  const [tillInnbucks, setTillInnbucks] = useState('0');
+  const [tillOnemoney, setTillOnemoney] = useState('0');
 
   // Stocktake creation state
   const [csWhId, setCsWhId] = useState('');
@@ -177,24 +148,22 @@ export function Operations() {
       setMovements(mRes.items);
       setCountSheets(csRes.items);
       if (smeRes) {
-        if (smeRes.tillShifts.length > 0) {
-          setShifts(
-            smeRes.tillShifts.map((s) => ({
-              id: String(s.id),
-              shiftLabel: `${s.shiftRef} (${s.departmentName})`,
-              cashier: s.cashierName,
-              usdCash: s.countedUsd,
-              zigCash: s.countedZig,
-              zarCash: s.countedZar,
-              ecocashUsd: s.ecocashUsd,
-              innbucksUsd: s.innbucksUsd,
-              onemoneyZig: s.onemoneyZig,
-              status: s.status === 'BALANCED' ? 'BALANCED' : 'VARIANCE_FLAGGED',
-              closedAt: s.closedAt.slice(0, 16),
-            })),
-          );
-        }
-        setChangeVouchers(smeRes.changeVouchers);
+        setShifts(
+          (smeRes.tillShifts || []).map((s) => ({
+            id: String(s.id),
+            shiftLabel: `${s.shiftRef} (${s.departmentName})`,
+            cashier: s.cashierName,
+            usdCash: s.countedUsd,
+            zigCash: s.countedZig,
+            zarCash: s.countedZar,
+            ecocashUsd: s.ecocashUsd,
+            innbucksUsd: s.innbucksUsd,
+            onemoneyZig: s.onemoneyZig,
+            status: s.status === 'BALANCED' ? 'BALANCED' : 'VARIANCE_FLAGGED',
+            closedAt: s.closedAt.slice(0, 16),
+          })),
+        );
+        setChangeVouchers(smeRes.changeVouchers || []);
       }
 
       if (pRes.items[0]) {
@@ -987,32 +956,40 @@ export function Operations() {
                   </tr>
                 </thead>
                 <tbody>
-                  {shifts.map((s) => {
-                    const totalUsdEq =
-                      s.usdCash +
-                      s.ecocashUsd +
-                      s.innbucksUsd +
-                      (s.zigCash + s.onemoneyZig) / Math.max(1, rates.ZiG) +
-                      s.zarCash / Math.max(1, rates.ZAR);
-                    return (
-                      <tr key={s.id}>
-                        <td>
-                          <strong>{s.shiftLabel}</strong>
-                          <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>{s.cashier} · {s.closedAt}</div>
-                        </td>
-                        <td className="num">${s.usdCash.toFixed(2)}</td>
-                        <td className="num">ZiG {s.zigCash.toFixed(2)}</td>
-                        <td className="num">R {s.zarCash.toFixed(2)}</td>
-                        <td className="num">${s.ecocashUsd.toFixed(2)}</td>
-                        <td className="num">${s.innbucksUsd.toFixed(2)}</td>
-                        <td className="num">ZiG {s.onemoneyZig.toFixed(2)}</td>
-                        <td className="num"><strong>${totalUsdEq.toFixed(2)}</strong></td>
-                        <td>
-                          <span className="status-pill optimal">{s.status}</span>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {shifts.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
+                        No till shifts closed yet. Use the cash-up form above to reconcile the register at the end of the shift.
+                      </td>
+                    </tr>
+                  ) : (
+                    shifts.map((s) => {
+                      const totalUsdEq =
+                        s.usdCash +
+                        s.ecocashUsd +
+                        s.innbucksUsd +
+                        (s.zigCash + s.onemoneyZig) / Math.max(1, rates.ZiG) +
+                        s.zarCash / Math.max(1, rates.ZAR);
+                      return (
+                        <tr key={s.id}>
+                          <td>
+                            <strong>{s.shiftLabel}</strong>
+                            <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>{s.cashier} · {s.closedAt}</div>
+                          </td>
+                          <td className="num">${s.usdCash.toFixed(2)}</td>
+                          <td className="num">ZiG {s.zigCash.toFixed(2)}</td>
+                          <td className="num">R {s.zarCash.toFixed(2)}</td>
+                          <td className="num">${s.ecocashUsd.toFixed(2)}</td>
+                          <td className="num">${s.innbucksUsd.toFixed(2)}</td>
+                          <td className="num">ZiG {s.onemoneyZig.toFixed(2)}</td>
+                          <td className="num"><strong>${totalUsdEq.toFixed(2)}</strong></td>
+                          <td>
+                            <span className="status-pill optimal">{s.status}</span>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
