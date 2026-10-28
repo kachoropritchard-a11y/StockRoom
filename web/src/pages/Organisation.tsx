@@ -590,7 +590,7 @@ export function Organisation() {
                       onClick={() => setWizardOpen(true)}
                       style={{ padding: '0.65rem 1.25rem', fontWeight: 700 }}
                     >
-                      🚀 Launch StockRoom Setup Wizard
+                      Launch StockRoom Setup Wizard →
                     </button>
                   </div>
                 </div>
@@ -598,7 +598,7 @@ export function Organisation() {
                 {/* Danger Zone: Reset to Scratch */}
                 {isExec && (
                   <div className="subcard" style={{ borderLeft: '4px solid var(--danger)', gridColumn: '1 / -1' }}>
-                    <h3 style={{ color: 'var(--danger)' }}>⚠️ Factory Reset: Clear All Information to Scratch</h3>
+                    <h3 style={{ color: 'var(--danger)' }}>Factory Reset: Clear All Information to Scratch</h3>
                     <p className="muted" style={{ fontSize: '0.84rem' }}>
                       Wipe all demo inventory items, orders, sales transactions, movements, debtors, and users so you can test the system completely from a clean scratch slate starting with manager creation.
                     </p>
@@ -642,7 +642,7 @@ export function Organisation() {
                             }
                           }}
                         >
-                          {busyReset ? 'Wiping Database…' : '💥 Factory Reset to Scratch (Full Wipe)'}
+                          {busyReset ? 'Wiping Database…' : 'Factory Reset to Scratch (Full Wipe)'}
                         </button>
 
                         <button

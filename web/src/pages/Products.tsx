@@ -4,6 +4,7 @@ import { api, type BalanceItem, type ProductItem } from '../api';
 import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
+import { ProductRetailIcon } from '../components/Icons';
 
 const PAGE_SIZE = 10;
 type ProductTab = 'catalog' | 'batches' | 'serials' | 'layby';
@@ -58,19 +59,6 @@ const INITIAL_LAYBY: PaidUncollectedRecord[] = [
   { id: 'PU-1', receiptNo: 'INV-8821', customerName: 'VaChikowore Builders', phone: '+263 77 241 8890', productName: 'PPC Surebuild Cement 50kg (32.5N)', paidQty: 100, collectedQty: 40, unit: 'bag', status: 'PARTIAL_PICKUP' },
   { id: 'PU-2', receiptNo: 'INV-8849', customerName: 'Mai Tawanda (Mbare Hardware)', phone: '+263 71 902 1145', productName: 'IBR Chromadek Roofing Sheets 6m', paidQty: 24, collectedQty: 0, unit: 'sheet', status: 'AWAITING_COLLECTION' },
 ];
-
-function getProductIcon(name: string, category?: string | null): string {
-  const s = `${name} ${category ?? ''}`.toLowerCase();
-  if (s.includes('oil') || s.includes('cooking')) return '🫙';
-  if (s.includes('meal') || s.includes('maize') || s.includes('flour') || s.includes('grain')) return '🌽';
-  if (s.includes('sugar') || s.includes('salt')) return '🧂';
-  if (s.includes('cement') || s.includes('brick') || s.includes('roof') || s.includes('hardware')) return '🧱';
-  if (s.includes('solar') || s.includes('inverter') || s.includes('battery')) return '☀️';
-  if (s.includes('med') || s.includes('pharma') || s.includes('caps')) return '💊';
-  if (s.includes('soap') || s.includes('clean')) return '🧼';
-  if (s.includes('drink') || s.includes('mazoe') || s.includes('beverage')) return '🧃';
-  return '📦';
-}
 
 export function Products() {
   const [searchParams] = useSearchParams();
@@ -414,7 +402,7 @@ export function Products() {
             {showAddDrawer ? '✕ Close Form' : '+ Add New Product'}
           </button>
           <button type="button" className="btn btn-outline" onClick={() => setShowPkgDrawer((s) => !s)}>
-            {showPkgDrawer ? '✕ Close Packagings' : '📦 Packagings & Categories'}
+            {showPkgDrawer ? '✕ Close Packagings' : 'Packagings & Categories'}
           </button>
         </div>
       </div>
@@ -569,14 +557,14 @@ export function Products() {
                     className={`topbar-seg-btn ${viewMode === 'cards' ? 'active' : ''}`}
                     onClick={() => setViewMode('cards')}
                   >
-                    🖼️ Visual Picture Cards
+                    Visual Picture Cards
                   </button>
                   <button
                     type="button"
                     className={`topbar-seg-btn ${viewMode === 'table' ? 'active' : ''}`}
                     onClick={() => setViewMode('table')}
                   >
-                    📋 Compact Table
+                    Compact Table
                   </button>
                 </div>
               </div>
@@ -697,7 +685,9 @@ export function Products() {
               <Spinner label="Loading products" />
             ) : totalProducts === 0 ? (
               <div className="empty-state-box" style={{ padding: '3.5rem 1.5rem', textAlign: 'center' }}>
-                <div style={{ fontSize: '3rem', marginBottom: '0.75rem' }}>📦</div>
+                <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1rem', color: 'var(--zim-green-700)' }}>
+                  <ProductRetailIcon name="box" size={48} />
+                </div>
                 <h3 style={{ margin: '0 0 0.5rem', fontSize: '1.2rem', fontWeight: 800 }}>Your Stockroom is Empty</h3>
                 <p className="muted" style={{ maxWidth: '420px', margin: '0 auto 1.5rem', fontSize: '0.9rem' }}>
                   Get started by adding your first grocery or hardware item, setting retail pricing and reorder levels.
@@ -742,7 +732,7 @@ export function Products() {
                       <div>
                         <div className="picture-card-head">
                           <div className="picture-thumb" aria-hidden="true">
-                            {getProductIcon(p.name, p.categoryName)}
+                            <ProductRetailIcon name={p.name} category={p.categoryName} size={26} />
                           </div>
                           <div className="picture-meta">
                             <h3 className="picture-title">{p.name}</h3>

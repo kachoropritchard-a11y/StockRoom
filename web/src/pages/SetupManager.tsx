@@ -3,6 +3,7 @@ import { Navigate, useNavigate } from 'react-router-dom';
 import { ApiError } from '../api';
 import { portalPath, useAuth } from '../auth';
 import { Logo } from '../components/Logo';
+import { EyeIcon, EyeOffIcon, ShieldUserIcon } from '../components/Icons';
 
 const DEFAULT_DEPARTMENTS = [
   'Groceries & FMCG',
@@ -121,7 +122,7 @@ export function SetupManager() {
       <div className="card login-card animate-scale-up" style={{ maxWidth: '580px', width: '100%', padding: '2rem' }}>
         {/* Top Branding */}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '1.5rem' }}>
-          <Logo size={52} variant="full" />
+          <Logo size={52} variant="full" themeColor="dark" />
           <div className="ndebele-ribbon" style={{ marginTop: '0.85rem', borderRadius: '2px' }} />
         </div>
 
@@ -160,8 +161,9 @@ export function SetupManager() {
           {/* STEP 1: Executive Manager Details */}
           {step === 1 && (
             <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div className="info-banner" style={{ fontSize: '0.82rem', padding: '0.75rem 1rem', background: 'var(--zim-green-50)', borderRadius: '8px', borderLeft: '4px solid var(--zim-green-700)' }}>
-                <strong>👑 Executive Owner Account:</strong> This primary account controls all financial valuations, staff permissions, stock governance, and ZIMRA compliance.
+              <div className="info-banner" style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.84rem', padding: '0.75rem 1rem', background: 'var(--zim-green-50)', borderRadius: '8px', borderLeft: '4px solid var(--zim-green-700)', color: 'var(--zim-green-900)' }}>
+                <ShieldUserIcon size={20} style={{ color: 'var(--zim-green-700)', flexShrink: 0 }} />
+                <span><strong>Executive Owner Account:</strong> Controls all store valuations, staff permissions, stock governance, and ZIMRA compliance.</span>
               </div>
 
               <label>
@@ -202,6 +204,7 @@ export function SetupManager() {
                       type="button"
                       tabIndex={-1}
                       onClick={() => setShowPassword((p) => !p)}
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
                       style={{
                         position: 'absolute',
                         right: '10px',
@@ -210,10 +213,13 @@ export function SetupManager() {
                         background: 'transparent',
                         border: 'none',
                         cursor: 'pointer',
-                        fontSize: '0.85rem',
+                        color: 'var(--zim-charcoal-800)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        padding: '4px',
                       }}
                     >
-                      {showPassword ? '👁️' : '🔒'}
+                      {showPassword ? <EyeOffIcon size={16} /> : <EyeIcon size={16} />}
                     </button>
                   </div>
                 </label>
@@ -391,7 +397,7 @@ export function SetupManager() {
               ) : step < 3 ? (
                 'Continue →'
               ) : (
-                '🚀 Launch StockRoom'
+                'Launch StockRoom →'
               )}
             </button>
           </div>

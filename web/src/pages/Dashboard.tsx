@@ -6,6 +6,7 @@ import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs
 import { QuickTransferModal } from '../components/QuickTransferModal';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
+import { GoodsInIcon, QuickAdjustIcon, MoveTransferIcon, WhatsAppIcon } from '../components/Icons';
 
 const ZONE_ROWS = ['A', 'B', 'C', 'D'];
 const ZONE_COLS = [1, 2, 3, 4];
@@ -145,9 +146,10 @@ export function Dashboard() {
             type="button"
             className="btn btn-whatsapp"
             onClick={() => setWhatsappOpen(true)}
-            title="Generate 1-Tap WhatsApp Daily Summary & Reorder List for Owner or Supplier"
+            title="Generate WhatsApp Daily Summary & Reorder List for Owner or Supplier"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem' }}
           >
-            📲 1-Tap WhatsApp Summary &amp; Reorder List
+            <WhatsAppIcon size={16} /> WhatsApp Daily Summary
           </button>
           <button type="button" className="btn btn-outline" onClick={load}>
             ↻ Refresh
@@ -323,7 +325,9 @@ export function Dashboard() {
             </div>
             <div className="big-step-grid">
               <Link to={`${basePath}/procurement`} className="big-step-btn">
-                <span className="big-step-icon" aria-hidden="true">📥</span>
+                <span className="big-step-icon" aria-hidden="true">
+                  <GoodsInIcon size={30} />
+                </span>
                 <div>
                   <span className="big-step-title">Step 1: Receive Goods (GRN)</span>
                   <span className="big-step-sub">Kugamuchira Zvinhu • Ukuthola Impahla</span>
@@ -332,7 +336,9 @@ export function Dashboard() {
               </Link>
 
               <Link to={`${basePath}/products`} className="big-step-btn">
-                <span className="big-step-icon" aria-hidden="true">➕</span>
+                <span className="big-step-icon" aria-hidden="true">
+                  <QuickAdjustIcon size={30} />
+                </span>
                 <div>
                   <span className="big-step-title">Step 2: Quick +1 Add / -1 Issue</span>
                   <span className="big-step-sub">Wedzera kana Kubvisa • Engeza kumbe Susa</span>
@@ -341,7 +347,9 @@ export function Dashboard() {
               </Link>
 
               <button type="button" className="big-step-btn" onClick={() => setTransferTarget({})}>
-                <span className="big-step-icon" aria-hidden="true">⇄</span>
+                <span className="big-step-icon" aria-hidden="true">
+                  <MoveTransferIcon size={30} />
+                </span>
                 <div>
                   <span className="big-step-title">Step 3: Move or Break Bulk</span>
                   <span className="big-step-sub">Kufambisa Zvinhu • Ukuthutha Impahla</span>
@@ -350,7 +358,9 @@ export function Dashboard() {
               </button>
 
               <button type="button" className="big-step-btn" onClick={() => setWhatsappOpen(true)}>
-                <span className="big-step-icon" aria-hidden="true">📲</span>
+                <span className="big-step-icon" aria-hidden="true">
+                  <WhatsAppIcon size={30} />
+                </span>
                 <div>
                   <span className="big-step-title">Step 4: WhatsApp Owner Summary</span>
                   <span className="big-step-sub">Tumira paWhatsApp • Thumela kuWhatsApp</span>
@@ -474,8 +484,13 @@ export function Dashboard() {
                 </span>
               </div>
               <div className="action-row">
-                <button type="button" className="btn btn-whatsapp btn-sm" onClick={() => setWhatsappOpen(true)}>
-                  📲 Send Reorder List on WhatsApp
+                <button
+                  type="button"
+                  className="btn btn-whatsapp btn-sm"
+                  onClick={() => setWhatsappOpen(true)}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+                >
+                  <WhatsAppIcon size={14} /> Send Reorder List on WhatsApp
                 </button>
                 <Link to={`${basePath}/reports`} className="btn btn-outline btn-sm">
                   Full Reports →
@@ -573,7 +588,9 @@ export function Dashboard() {
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="whatsapp-modal-title">
           <div className="modal-card">
             <div className="modal-header-row">
-              <h3 id="whatsapp-modal-title">📲 WhatsApp Daily Summary &amp; Reorder List</h3>
+              <h3 id="whatsapp-modal-title" style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                <WhatsAppIcon size={20} /> WhatsApp Daily Summary &amp; Reorder List
+              </h3>
               <button type="button" className="btn-icon-close" aria-label="Close" onClick={() => setWhatsappOpen(false)}>
                 ✕
               </button>
@@ -597,16 +614,17 @@ export function Dashboard() {
                   setWhatsappOpen(false);
                 }}
               >
-                📋 Copy Text
+                Copy Text
               </button>
               <a
                 href={`https://wa.me/?text=${encodeURIComponent(whatsappText)}`}
                 target="_blank"
                 rel="noreferrer"
                 className="btn btn-whatsapp"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem' }}
                 onClick={() => setWhatsappOpen(false)}
               >
-                📲 Open in WhatsApp
+                <WhatsAppIcon size={16} /> Open in WhatsApp
               </a>
             </div>
           </div>

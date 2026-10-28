@@ -48,7 +48,7 @@ export function Login() {
     <div className="login-page">
       <form className="card login-card animate-scale-up" onSubmit={submit} noValidate>
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1.25rem' }}>
-          <Logo size={48} variant="full" />
+          <Logo size={48} variant="full" themeColor="dark" />
         </div>
         <h1>Sign in</h1>
         <p className="muted" style={{ marginTop: '-0.25rem', fontSize: '0.84rem' }}>
@@ -67,8 +67,9 @@ export function Login() {
               borderRadius: '8px',
             }}
           >
-            <div style={{ fontWeight: 700, color: 'var(--zim-charcoal-900)', fontSize: '0.88rem' }}>
-              ✨ Initial Setup Required
+            <div style={{ fontWeight: 800, color: 'var(--zim-charcoal-900)', fontSize: '0.88rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+              <span className="live-dot" style={{ background: 'var(--zim-gold-500)' }} />
+              Initial Setup Required
             </div>
             <p style={{ margin: '0.25rem 0 0.65rem', fontSize: '0.82rem', color: 'var(--zim-charcoal-800)' }}>
               No owner account exists. Initialize StockRoom to create your Executive Manager profile and set up departments.

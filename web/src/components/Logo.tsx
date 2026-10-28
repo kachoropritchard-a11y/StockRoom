@@ -85,8 +85,10 @@ export function Logo({ size = 36, variant = 'full', themeColor = 'auto', classNa
     return mark;
   }
 
+  const themeClass = themeColor === 'light' ? 'on-dark' : themeColor === 'dark' ? 'on-light' : '';
+
   return (
-    <div className={`stockroom-brand-badge ${variant === 'compact' ? 'compact' : ''}`}>
+    <div className={`stockroom-brand-badge ${variant === 'compact' ? 'compact' : ''} ${themeClass} ${className}`.trim()}>
       {mark}
       <div className="stockroom-brand-text">
         <div className="stockroom-title-row">

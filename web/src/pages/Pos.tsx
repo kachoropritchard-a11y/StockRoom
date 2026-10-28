@@ -4,6 +4,7 @@ import { api } from '../api';
 import { useAuth } from '../auth';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
+import { StorefloorIcon, CartIcon, PrinterIcon, CheckCircleIcon } from '../components/Icons';
 
 interface CartItem {
   productId: number;
@@ -246,8 +247,8 @@ export function Pos() {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <span className="pos-dept-title">Linked Department:</span>
-              <span className="status-pill optimal" style={{ fontWeight: 800 }}>
-                🏢 {posDeptName}
+              <span className="status-pill optimal" style={{ fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+                <StorefloorIcon size={14} /> {posDeptName}
               </span>
             </div>
             <span className="vernacular-sub" style={{ fontSize: '0.74rem' }}>
@@ -259,7 +260,7 @@ export function Pos() {
         {/* ZIMRA FDMS Status Indicator */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <div className="zimra-live-pill" title="ZIMRA FDMS Fiscal Device Status">
-            <span style={{ fontSize: '0.9rem' }}>🇿🇼</span>
+            <span className="stockroom-title-badge" style={{ fontSize: '0.65rem' }}>ZW</span>
             <div>
               <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--zim-green-700)' }}>ZIMRA FDMS ACTIVE</div>
               <div className="muted" style={{ fontSize: '0.68rem', margin: 0 }}>Device: ESD-ZW-88421 • Day #1</div>
@@ -298,7 +299,7 @@ export function Pos() {
                   ref={searchInputRef}
                   type="search"
                   className="search-input"
-                  placeholder="⚡ Scan Barcode or Type Product Name (F2)..."
+                  placeholder="Scan barcode or type product name (F2)..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   style={{ width: '100%', fontSize: '0.95rem', padding: '0.65rem 0.85rem' }}
@@ -333,7 +334,9 @@ export function Pos() {
               <Spinner label="Loading POS catalog" />
             ) : catalog.length === 0 ? (
               <div className="empty-state" style={{ padding: '3rem 1.5rem', textAlign: 'center' }}>
-                <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>🛒</div>
+                <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '0.75rem', color: 'var(--muted)' }}>
+                  <CartIcon size={44} />
+                </div>
                 <h3 style={{ margin: '0 0 0.5rem' }}>No Products in POS Department</h3>
                 <p className="muted" style={{ fontSize: '0.86rem', maxWidth: '400px', margin: '0 auto 1.25rem' }}>
                   There are no products currently assigned to <strong>&ldquo;{posDeptName}&rdquo;</strong>. Add grocery or hardware products in the Stock Catalog to start selling.
@@ -423,7 +426,9 @@ export function Pos() {
             <div className="pos-cart-items" style={{ maxHeight: '250px', overflowY: 'auto', marginBottom: '1rem', borderBottom: '1px solid var(--line)', paddingBottom: '0.5rem' }}>
               {cart.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--muted)' }}>
-                  <div style={{ fontSize: '2rem', marginBottom: '0.25rem' }}>🛒</div>
+                  <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '0.4rem' }}>
+                    <CartIcon size={32} />
+                  </div>
                   <p style={{ margin: 0, fontSize: '0.88rem' }}>Cart is empty. Tap items on the left to add.</p>
                 </div>
               ) : (
@@ -515,20 +520,20 @@ export function Pos() {
                 </label>
                 <div className="tender-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.35rem' }}>
                   {[
-                    { id: 'USD_CASH', label: '💵 USD' },
-                    { id: 'ZIG_CASH', label: '🇿🇼 ZiG' },
-                    { id: 'ZAR_CASH', label: '🇿🇦 ZAR' },
-                    { id: 'ECOCASH_USD', label: '📱 EcoCash $' },
-                    { id: 'ECOCASH_ZIG', label: '📱 EcoCash ZiG' },
-                    { id: 'INNBUCKS', label: '🍗 InnBucks' },
-                    { id: 'CREDIT', label: '📝 Chikwereti' },
-                    { id: 'ONEMONEY_ZIG', label: '📱 OneMoney' },
+                    { id: 'USD_CASH', label: 'USD ($)' },
+                    { id: 'ZIG_CASH', label: 'ZiG (Cash)' },
+                    { id: 'ZAR_CASH', label: 'ZAR (R)' },
+                    { id: 'ECOCASH_USD', label: 'EcoCash $' },
+                    { id: 'ECOCASH_ZIG', label: 'EcoCash ZiG' },
+                    { id: 'INNBUCKS', label: 'InnBucks' },
+                    { id: 'CREDIT', label: 'Chikwereti' },
+                    { id: 'ONEMONEY_ZIG', label: 'OneMoney' },
                   ].map((t) => (
                     <button
                       key={t.id}
                       type="button"
                       className={`btn btn-sm ${tenderType === t.id ? 'btn-primary' : 'btn-outline'}`}
-                      style={{ padding: '0.4rem 0.2rem', fontSize: '0.74rem', fontWeight: 700 }}
+                      style={{ padding: '0.45rem 0.2rem', fontSize: '0.76rem', fontWeight: 700 }}
                       onClick={() => setTenderType(t.id as any)}
                     >
                       {t.label}
@@ -569,7 +574,7 @@ export function Pos() {
                     checked={holdForYardCollection}
                     onChange={(e) => setHoldForYardCollection(e.target.checked)}
                   />
-                  <span>🏗️ <strong>Hold in Yard for Later Collection</strong> (Hardware Lay-By)</span>
+                  <span><strong>Hold in Yard for Later Collection</strong> (Hardware Lay-By)</span>
                 </label>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -608,9 +613,9 @@ export function Pos() {
                 {busyCheckout ? (
                   <span>Processing Fiscal Sale…</span>
                 ) : (
-                  <>
-                    <span>⚡ Complete Fiscal Sale ({formatMoney(totalUsd)})</span>
-                  </>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <CheckCircleIcon size={20} /> Complete Fiscal Sale • {formatMoney(totalUsd)}
+                  </span>
                 )}
               </button>
             </form>
@@ -671,13 +676,13 @@ export function Pos() {
 
               {receiptModal.issuedVoucherCode && (
                 <div style={{ background: '#fef3c7', padding: '0.4rem', borderRadius: '4px', textAlign: 'center', margin: '0.5rem 0', fontWeight: 700 }}>
-                  🎟️ Change Voucher Issued: {receiptModal.issuedVoucherCode} (${changeVoucherAmountUsd.toFixed(2)})
+                  Change Voucher Issued: {receiptModal.issuedVoucherCode} (${changeVoucherAmountUsd.toFixed(2)})
                 </div>
               )}
 
               {/* ZIMRA QR Code Stamp */}
               <div style={{ textAlign: 'center', marginTop: '0.75rem', padding: '0.5rem', background: '#f9f9f9', border: '1px solid #eee' }}>
-                <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#114B3E' }}>🇿🇼 VERIFIED FISCAL DOCUMENT</div>
+                <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#114B3E' }}>VERIFIED FISCAL DOCUMENT</div>
                 <div style={{ fontSize: '0.68rem', wordBreak: 'break-all', color: '#666', marginTop: '0.2rem' }}>
                   {receiptModal.fiscalReceipt?.verificationUrl ?? 'https://fdms.zimra.co.zw/verify'}
                 </div>
@@ -688,8 +693,13 @@ export function Pos() {
             </div>
 
             <div className="form-actions" style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem' }}>
-              <button type="button" className="btn btn-primary" style={{ flex: 1 }} onClick={() => window.print()}>
-                🖨️ Print Slip (Esc)
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.45rem' }}
+                onClick={() => window.print()}
+              >
+                <PrinterIcon size={16} /> Print Slip (Esc)
               </button>
               <button type="button" className="btn btn-outline" onClick={() => setReceiptModal(null)}>
                 Close

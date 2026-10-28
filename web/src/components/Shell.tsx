@@ -5,6 +5,7 @@ import { portalPath, useAuth } from '../auth';
 import { useZim, type CurrencyCode, type VernacularMode } from '../zimContext';
 import { QuickTransferModal } from './QuickTransferModal';
 import { Logo } from './Logo';
+import { StorefloorIcon, ExecutiveIcon, EyeIcon, BellIcon, SunIcon, MoonIcon, ZapIcon } from './Icons';
 
 interface NavItem {
   to: string;
@@ -137,7 +138,7 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
       {/* TIER 1: Collapsible Left Sidebar with 10 Core Modules + ZESA Load-Shedding Offline Status Widget */}
       <aside className="sidebar" aria-label="Primary navigation">
         <div className="brand" style={{ padding: '0.75rem 1rem' }}>
-          <Logo size={36} variant="full" />
+          <Logo size={36} variant="full" themeColor="light" />
         </div>
         <div className="denderedzwa-frieze sidebar-frieze" aria-hidden="true" />
 
@@ -154,9 +155,11 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
         {/* Bottom ZESA Load-Shedding Offline Status & Sync Widget */}
         <div className="zesa-widget" role="region" aria-label="ZESA Power and Offline Sync status">
           <div className="zesa-widget-top">
-            <strong>⚡ ZESA / Solar UPS</strong>
+            <strong style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+              <ZapIcon size={14} style={{ color: 'var(--zim-gold-400)' }} /> ZESA / Solar UPS
+            </strong>
             <span className={`zesa-status-pill ${zesaGridOnline ? 'online' : 'battery'}`}>
-              {zesaGridOnline ? '● Grid Online' : '🔋 Inverter Backup'}
+              {zesaGridOnline ? '● Grid Online' : 'Inverter Backup'}
             </span>
           </div>
           <span style={{ fontSize: '0.71rem', opacity: 0.9 }}>
@@ -237,16 +240,18 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
                 className={`topbar-seg-btn ${roleView === 'inventory' ? 'active' : ''}`}
                 onClick={() => setRoleView('inventory')}
                 title="Operational Storefloor Focus"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
               >
-                🏪 Storefloor View
+                <StorefloorIcon size={14} /> Storefloor View
               </button>
               <button
                 type="button"
                 className={`topbar-seg-btn ${roleView === 'executive' ? 'active' : ''}`}
                 onClick={() => setRoleView('executive')}
                 title="Capital Valuation, Margin & ZIMRA VAT Focus"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
               >
-                📊 Executive View
+                <ExecutiveIcon size={14} /> Executive View
               </button>
             </div>
 
@@ -273,7 +278,7 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
               style={{ minHeight: '34px', padding: '0.22rem 0.55rem', fontSize: '0.78rem', borderRadius: '999px', fontWeight: 700 }}
               title="Toggle plain-language Shona & Ndebele helper subtitles"
             >
-              <option value="bilingual">🇿🇼 EN + Shona / Ndebele</option>
+              <option value="bilingual">EN + Shona / Ndebele</option>
               <option value="shona">ChiShona Subtitles</option>
               <option value="ndebele">IsiNdebele Subtitles</option>
               <option value="english">English Only</option>
@@ -286,8 +291,9 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
               onClick={() => setEasyMode(!easyMode)}
               aria-pressed={easyMode}
               title="Toggle larger touch buttons and zero-jargon visual helpers"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
             >
-              👁️ Easy Mode: <strong>{easyMode ? 'ON' : 'OFF'}</strong>
+              <EyeIcon size={14} /> Easy Mode: <strong>{easyMode ? 'ON' : 'OFF'}</strong>
             </button>
 
             <button
@@ -306,8 +312,9 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
               aria-label={`Notifications (${notifications.length})`}
               aria-expanded={notifOpen}
               title="Live System Notifications"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
             >
-              🔔 Alerts
+              <BellIcon size={14} /> Alerts
               {notifications.length > 0 && (
                 <span className="badge badge-warn" style={{ marginLeft: '0.25rem' }}>
                   {notifications.length}
@@ -321,8 +328,9 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
               onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
               aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
               title="Toggle Light / Dark theme"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
             >
-              {theme === 'dark' ? '☀️ Light' : '🌙 Dark'}
+              {theme === 'dark' ? <><SunIcon size={14} /> Light</> : <><MoonIcon size={14} /> Dark</>}
             </button>
 
             <span className="user-chip" title={user?.email}>
@@ -377,7 +385,9 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
             <section className="card" aria-label="Live Notifications Drawer" style={{ marginBottom: '1.2rem', borderColor: 'var(--gold)' }}>
               <div className="section-head">
                 <div>
-                  <h2>🔔 Live System Notifications ({notifications.length})</h2>
+                  <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                    <BellIcon size={18} /> Live System Notifications ({notifications.length})
+                  </h2>
                   <p className="muted" style={{ margin: 0, fontSize: '0.84rem' }}>
                     Real-time alerts computed from stock balances, batch expiry dates, approval queues, and system security.
                   </p>
