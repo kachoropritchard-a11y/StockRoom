@@ -482,27 +482,27 @@ export function Pos() {
             </div>
 
             {/* Price Breakdown Totals */}
-            <div className="pos-totals-box" style={{ background: 'var(--surface-alt)', padding: '0.75rem', borderRadius: '8px', marginBottom: '1rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', margin: '0.2rem 0' }}>
+            <div className="pos-totals-box" style={{ background: 'var(--surface-alt)', border: '1.5px solid var(--line)', padding: '0.85rem', borderRadius: '10px', marginBottom: '1rem', boxShadow: 'var(--shadow-sm)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', margin: '0.2rem 0', fontWeight: 600 }}>
                 <span className="muted">Subtotal:</span>
                 <span>{formatMoney(subtotalUsd)}</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', margin: '0.2rem 0' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', margin: '0.2rem 0', fontWeight: 600 }}>
                 <span className="muted">ZIMRA 15% VAT Portion:</span>
-                <span style={{ color: 'var(--zim-gold-700)', fontWeight: 600 }}>{formatMoney(vat15Usd)}</span>
+                <span style={{ color: 'var(--zim-gold-700)', fontWeight: 700 }}>{formatMoney(vat15Usd)}</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1.25rem', fontWeight: 800, borderTop: '1px solid var(--line)', paddingTop: '0.5rem', marginTop: '0.4rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1.3rem', fontWeight: 900, borderTop: '2px solid var(--line)', paddingTop: '0.5rem', marginTop: '0.4rem', color: '#0F172A' }}>
                 <span>Total Due:</span>
                 <span style={{ color: 'var(--zim-green-800)' }}>{formatMoney(totalUsd)}</span>
               </div>
 
               {/* Multi-Currency Equivalents */}
-              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', fontSize: '0.78rem', background: '#fff', padding: '0.4rem 0.6rem', borderRadius: '6px' }}>
+              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', fontSize: '0.78rem', background: 'var(--surface)', border: '1px solid var(--line)', padding: '0.45rem 0.65rem', borderRadius: '6px' }}>
                 <div style={{ flex: 1 }}>
-                  <span className="muted">ZiG Equiv:</span> <strong>{totalZig.toFixed(2)} ZiG</strong>
+                  <span className="muted" style={{ marginRight: '4px' }}>ZiG:</span> <strong>{totalZig.toFixed(2)} ZiG</strong>
                 </div>
                 <div style={{ flex: 1 }}>
-                  <span className="muted">ZAR Equiv:</span> <strong>R {totalZar.toFixed(2)}</strong>
+                  <span className="muted" style={{ marginRight: '4px' }}>ZAR:</span> <strong>R {totalZar.toFixed(2)}</strong>
                 </div>
               </div>
             </div>
