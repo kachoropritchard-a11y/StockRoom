@@ -190,4 +190,99 @@ describe('role-based routing', () => {
     fireEvent.click(zigBtn);
     expect((await screen.findAllByText(/ZiG/i)).length).toBeGreaterThan(0);
   });
+
+  it('renders real configured store departments and POS counter on the Store & Yard map rather than mock grids', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url === '/api/auth/me') return new Response(JSON.stringify({ user: { id: 1, name: 'Ina', role: 'inventory_manager', email: 'i@x.com' } }), { status: 200 });
+        if (url === '/api/dashboard/summary') {
+          return new Response(
+            JSON.stringify({
+              role: 'inventory_manager',
+              branches: 1,
+              warehouses: 1,
+              departments: 3,
+              products: 2,
+              totalStockUnits: 50,
+              totalStockValue: 200,
+              warehouseSummary: [{ warehouseId: 1, warehouseName: 'Main Store & Yard', branchName: 'Harare HQ', totalUnits: 50, stockValue: 200 }],
+              lowStockCount: 0,
+            }),
+            { status: 200 },
+          );
+        }
+        if (url === '/api/notifications') return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        if (url === '/api/departments') {
+          return new Response(
+            JSON.stringify([
+              { id: 1, name: 'Hardware & Building Supplies', branchId: 1, branchName: 'Harare HQ', active: 1 },
+              { id: 2, name: 'Groceries & FMCG', branchId: 1, branchName: 'Harare HQ', active: 1 },
+              { id: 3, name: 'SALES DPT', branchId: 1, branchName: 'Harare HQ', active: 1 },
+            ]),
+            { status: 200 },
+          );
+        }
+        if (url === '/api/warehouses') {
+          return new Response(
+            JSON.stringify([
+              { id: 1, name: 'Main Store & Yard', branchId: 1, branchName: 'Harare HQ', active: 1 },
+            ]),
+            { status: 200 },
+          );
+        }
+        if (url === '/api/organisation') {
+          return new Response(
+            JSON.stringify({
+              id: 1,
+              name: 'Humba Groceries',
+              currencyCode: 'USD',
+              posDepartmentId: 3,
+              posDepartmentName: 'SALES DPT',
+            }),
+            { status: 200 },
+          );
+        }
+        if (url.startsWith('/api/products')) {
+          return new Response(
+            JSON.stringify({
+              items: [
+                { id: 10, sku: 'GRO-001', name: 'Roller Meal 10kg', departmentId: 2, departmentName: 'Groceries & FMCG', baseUnit: 'bag', totalStock: 30, unitCost: 4.5, sellingPrice: 6.0, reorderLevel: 10 },
+                { id: 11, sku: 'HDW-001', name: 'PC15 Cement 50kg', departmentId: 1, departmentName: 'Hardware & Building Supplies', baseUnit: 'bag', totalStock: 20, unitCost: 10.0, sellingPrice: 12.5, reorderLevel: 5 },
+              ],
+              total: 2,
+            }),
+            { status: 200 },
+          );
+        }
+        if (url === '/api/stock/balances') return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        return new Response('{}', { status: 404 });
+      }),
+    );
+
+    renderAt('/inventory');
+    // Switch to Sub-Tab 2: Visual Charts & Trends
+    const chartsTab = await screen.findByRole('tab', { name: /Visual Charts & Trends/i });
+    fireEvent.click(chartsTab);
+
+    // Verify the architectural map heading is rendered
+    expect(await screen.findByText('STORE & YARD ARCHITECTURAL MAP')).toBeTruthy();
+
+    // Verify real departments are rendered with their exact names
+    expect(await screen.findByText('SALES DPT')).toBeTruthy();
+    expect(await screen.findByText('Hardware & Building Supplies')).toBeTruthy();
+    expect(await screen.findByText('Groceries & FMCG')).toBeTruthy();
+    expect((await screen.findAllByText('Main Store & Yard')).length).toBeGreaterThanOrEqual(1);
+
+    // Verify Frontstore POS badge is attached to SALES DPT
+    expect(await screen.findByText(/POS Active/i)).toBeTruthy();
+
+    // Verify real product quantities on shelf appear
+    expect(await screen.findByText('Roller Meal 10kg')).toBeTruthy();
+    expect(await screen.findByText('PC15 Cement 50kg')).toBeTruthy();
+
+    // Verify that the old mock A1..D4 grid is NOT rendered
+    expect(screen.queryByText('A1')).toBeNull();
+    expect(screen.queryByText('D4')).toBeNull();
+  });
 });

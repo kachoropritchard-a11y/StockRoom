@@ -1,17 +1,49 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, type BalanceItem, type Summary } from '../api';
+import { api, type BalanceItem, type Summary, type ProductItem } from '../api';
 import { portalPath, useAuth } from '../auth';
 import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { QuickTransferModal } from '../components/QuickTransferModal';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
-import { GoodsInIcon, QuickAdjustIcon, MoveTransferIcon, WhatsAppIcon } from '../components/Icons';
-
-const ZONE_ROWS = ['A', 'B', 'C', 'D'];
-const ZONE_COLS = [1, 2, 3, 4];
+import {
+  GoodsInIcon,
+  QuickAdjustIcon,
+  MoveTransferIcon,
+  WhatsAppIcon,
+  StorefloorIcon,
+  CartIcon,
+  ProductRetailIcon,
+  CheckCircleIcon,
+} from '../components/Icons';
 
 type DashSubTab = 'overview' | 'charts' | 'reorder' | 'activity';
+
+interface StoreZoneItem {
+  key: string;
+  id: number;
+  entityType: 'department' | 'warehouse';
+  name: string;
+  branchName: string;
+  category: 'frontstore_pos' | 'groceries' | 'hardware_yard' | 'storeroom' | 'agrovet' | 'general';
+  isPos: boolean;
+  skuCount: number;
+  totalUnits: number;
+  totalValue: number;
+  lowStockCount: number;
+  status: 'optimal' | 'low_stock' | 'empty';
+  products: {
+    id: number;
+    sku: string;
+    name: string;
+    stock: number;
+    unit: string;
+    unitCost: number;
+    sellingPrice?: number;
+    reorderLevel: number;
+    isLowStock: boolean;
+  }[];
+}
 
 export function Dashboard() {
   const { user } = useAuth();
@@ -19,6 +51,12 @@ export function Dashboard() {
   const [activeSubTab, setActiveSubTab] = useState<DashSubTab>('overview');
   const [data, setData] = useState<Summary | null>(null);
   const [balances, setBalances] = useState<BalanceItem[]>([]);
+  const [departments, setDepartments] = useState<{ id: number; name: string; branchId: number; branchName?: string }[]>([]);
+  const [warehouses, setWarehouses] = useState<{ id: number; name: string; branchId: number; branchName?: string }[]>([]);
+  const [products, setProducts] = useState<ProductItem[]>([]);
+  const [posDeptId, setPosDeptId] = useState<number | null>(null);
+  const [posDeptName, setPosDeptName] = useState<string>('');
+  const [mapFilter, setMapFilter] = useState<'all' | 'pos' | 'retail' | 'storage'>('all');
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
   const [transferTarget, setTransferTarget] = useState<{ productId?: number; warehouseId?: number } | null>(null);
   const [whatsappOpen, setWhatsappOpen] = useState(false);
@@ -30,10 +68,21 @@ export function Dashboard() {
     Promise.all([
       api.summary(),
       api.balances().catch(() => ({ items: [] as BalanceItem[] })),
+      api.departments().catch(() => []),
+      api.warehouses().catch(() => []),
+      api.organisation().catch(() => null),
+      api.products('', { limit: 500 }).catch(() => ({ items: [] as ProductItem[], total: 0 })),
     ])
-      .then(([sumRes, balRes]) => {
+      .then(([sumRes, balRes, deptRes, whRes, orgRes, prodRes]) => {
         setData(sumRes);
-        setBalances(balRes.items);
+        setBalances(balRes.items ?? []);
+        setDepartments(deptRes ?? []);
+        setWarehouses(whRes ?? []);
+        if (orgRes) {
+          setPosDeptId(orgRes.posDepartmentId ?? null);
+          setPosDeptName(orgRes.posDepartmentName ?? '');
+        }
+        setProducts(prodRes.items ?? []);
       })
       .catch((e: Error) => setError(e.message));
   }, []);
@@ -60,28 +109,113 @@ export function Dashboard() {
       ? data.totalStockValue
       : (data?.warehouseSummary ?? []).reduce((acc, w) => acc + w.stockValue, 0);
 
-  // Build 16 zone cells (A1..D4) mapped strictly to real warehouse stock balances
-  const zoneCells = ZONE_ROWS.flatMap((r, rIdx) =>
-    ZONE_COLS.map((c, cIdx) => {
-      const idx = rIdx * 4 + cIdx;
-      const code = `${r}${c}`;
-      const bal = balances[idx];
-      const ratio = bal
-        ? bal.reorderLevel > 0
-          ? Math.min(1, bal.quantity / (bal.reorderLevel * 2))
-          : bal.quantity > 0
-            ? 0.75
-            : 0
-        : 0;
-      const tier: 'low' | 'mid' | 'high' = ratio >= 0.7 ? 'high' : ratio >= 0.3 ? 'mid' : 'low';
-      return {
-        code,
-        tier,
-        pct: Math.round(ratio * 100),
-        balance: bal,
-      };
-    }),
-  );
+  // Map strictly to real departments and storerooms configured by the user
+  const deptZones: StoreZoneItem[] = departments.map((d) => {
+    const isPos =
+      (posDeptId !== null && d.id === posDeptId) ||
+      (posDeptName && d.name.toLowerCase() === posDeptName.toLowerCase()) ||
+      d.name.toLowerCase().includes('pos') ||
+      d.name.toLowerCase().includes('counter') ||
+      d.name.toLowerCase().includes('sales');
+
+    const s = d.name.toLowerCase();
+    let category: StoreZoneItem['category'] = 'general';
+    if (isPos) category = 'frontstore_pos';
+    else if (s.includes('grocer') || s.includes('food') || s.includes('fmcg') || s.includes('tuckshop')) category = 'groceries';
+    else if (s.includes('hardware') || s.includes('yard') || s.includes('build') || s.includes('brick') || s.includes('timber') || s.includes('cement')) category = 'hardware_yard';
+    else if (s.includes('store') || s.includes('bulk') || s.includes('reserve') || s.includes('warehouse')) category = 'storeroom';
+    else if (s.includes('agro') || s.includes('seed') || s.includes('fert')) category = 'agrovet';
+
+    const deptProds = products.filter((p) => p.departmentId === d.id);
+    const skuCount = deptProds.length;
+    const totalUnits = deptProds.reduce((sum, p) => sum + (p.totalStock ?? 0), 0);
+    const totalValue = deptProds.reduce((sum, p) => sum + (p.totalStock ?? 0) * (p.unitCost ?? 0), 0);
+    const lowCount = deptProds.filter((p) => (p.totalStock ?? 0) <= p.reorderLevel && p.reorderLevel > 0).length;
+
+    return {
+      key: `dept-${d.id}`,
+      id: d.id,
+      entityType: 'department',
+      name: d.name,
+      branchName: d.branchName || 'Main Branch',
+      category,
+      isPos,
+      skuCount,
+      totalUnits,
+      totalValue,
+      lowStockCount: lowCount,
+      status: skuCount === 0 || totalUnits === 0 ? 'empty' : lowCount > 0 ? 'low_stock' : 'optimal',
+      products: deptProds.map((p) => ({
+        id: p.id,
+        sku: p.sku,
+        name: p.name,
+        stock: p.totalStock ?? 0,
+        unit: p.baseUnit,
+        unitCost: p.unitCost,
+        sellingPrice: p.sellingPrice,
+        reorderLevel: p.reorderLevel,
+        isLowStock: (p.totalStock ?? 0) <= p.reorderLevel && p.reorderLevel > 0,
+      })),
+    };
+  });
+
+  const whZones: StoreZoneItem[] = warehouses.map((w) => {
+    const s = w.name.toLowerCase();
+    let category: StoreZoneItem['category'] = 'storeroom';
+    if (s.includes('yard') || s.includes('outdoor') || s.includes('timber') || s.includes('brick')) category = 'hardware_yard';
+
+    const whBals = balances.filter((b) => b.warehouseId === w.id);
+    const skuCount = whBals.length;
+    const totalUnits = whBals.reduce((sum, b) => sum + (b.quantity ?? 0), 0);
+    const totalValue = whBals.reduce((sum, b) => sum + (b.stockValue ?? 0), 0);
+    const lowCount = whBals.filter((b) => (b.quantity ?? 0) <= b.reorderLevel && b.reorderLevel > 0).length;
+
+    return {
+      key: `wh-${w.id}`,
+      id: w.id,
+      entityType: 'warehouse',
+      name: w.name,
+      branchName: w.branchName || 'Main Branch',
+      category,
+      isPos: false,
+      skuCount,
+      totalUnits,
+      totalValue,
+      lowStockCount: lowCount,
+      status: skuCount === 0 || totalUnits === 0 ? 'empty' : lowCount > 0 ? 'low_stock' : 'optimal',
+      products: whBals.map((b) => ({
+        id: b.productId,
+        sku: b.sku,
+        name: b.productName,
+        stock: b.quantity,
+        unit: b.unit,
+        unitCost: b.unitCost,
+        sellingPrice: undefined,
+        reorderLevel: b.reorderLevel,
+        isLowStock: b.quantity <= b.reorderLevel && b.reorderLevel > 0,
+      })),
+    };
+  });
+
+  // Combine and sort with POS Counter first, followed by retail floors, then storerooms/yards
+  const allZones = [...deptZones, ...whZones].sort((a, b) => {
+    if (a.isPos) return -1;
+    if (b.isPos) return 1;
+    if (a.category === 'groceries') return -1;
+    if (b.category === 'groceries') return 1;
+    if (a.category === 'hardware_yard') return -1;
+    if (b.category === 'hardware_yard') return 1;
+    return 0;
+  });
+
+  const filteredZones = allZones.filter((z) => {
+    if (mapFilter === 'pos') return z.isPos;
+    if (mapFilter === 'retail') return z.category === 'groceries' || z.category === 'agrovet' || z.category === 'general';
+    if (mapFilter === 'storage') return z.category === 'storeroom' || z.category === 'hardware_yard';
+    return true;
+  });
+
+  const activeZone = allZones.find((z) => z.key === selectedZone);
 
   const subTabs: TabDefinition<DashSubTab>[] = [
     {
@@ -372,68 +506,379 @@ export function Dashboard() {
         </div>
       )}
 
-      {/* SUB-MENU 2: Visual Charts & Trends */}
+      {/* SUB-MENU 2: Visual Charts & Trends (Real Store & Yard Floorplan Map) */}
       {activeSubTab === 'charts' && (
         <div id="dashboard-panel-charts" role="tabpanel" aria-labelledby="dashboard-tab-charts">
           <div className="ops-command-grid">
-            <section className="card ops-heatmap-card" aria-labelledby="heatmap-heading">
+            <section className="card" aria-labelledby="heatmap-heading">
               <div className="section-head">
                 <div>
-                  <h2 id="heatmap-heading" className="ops-panel-title">STORE &amp; YARD ZONE HEATMAP</h2>
+                  <h2 id="heatmap-heading" className="ops-panel-title">STORE &amp; YARD ARCHITECTURAL MAP</h2>
                   <span className="vernacular-sub">
-                    {subLabel('Mamepu eMatura', 'Imephu Yezigaba Zesitolo')}
+                    {subLabel('Mamepu eMatura eChitoro neYadhi', 'Imephu Yezigaba Zesitolo Leyadhi')}
                   </span>
                 </div>
                 {selectedZone && (
                   <button type="button" className="btn btn-outline btn-sm" onClick={() => setSelectedZone(null)}>
-                    Clear ({selectedZone})
+                    Clear Selection
                   </button>
                 )}
               </div>
-              <p className="muted" style={{ marginBottom: '.75rem', fontSize: '.84rem' }}>
-                Click any zone tile to inspect bin stock or trigger a Quick Transfer.
-              </p>
 
-              <div className="heatmap-layout">
-                <div className="heatmap-col-headers">
-                  <span className="zone-corner">Zone</span>
-                  {ZONE_COLS.map((c) => (
-                    <span key={c} className="zone-col-label">{c}</span>
-                  ))}
+              <div className="store-map-filter-bar">
+                <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${mapFilter === 'all' ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => setMapFilter('all')}
+                  >
+                    All Zones ({allZones.length})
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${mapFilter === 'pos' ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => setMapFilter('pos')}
+                  >
+                    Front Store &amp; POS
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${mapFilter === 'retail' ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => setMapFilter('retail')}
+                  >
+                    Retail Depts
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm ${mapFilter === 'storage' ? 'btn-primary' : 'btn-outline'}`}
+                    onClick={() => setMapFilter('storage')}
+                  >
+                    Storerooms &amp; Yards
+                  </button>
                 </div>
-                {ZONE_ROWS.map((r) => (
-                  <div key={r} className="heatmap-row">
-                    <span className="zone-row-label">{r}</span>
-                    {ZONE_COLS.map((c) => {
-                      const code = `${r}${c}`;
-                      const cell = zoneCells.find((z) => z.code === code)!;
-                      const isSelected = selectedZone === code;
-                      return (
-                        <button
-                          key={code}
-                          type="button"
-                          className={`zone-tile tier-${cell.tier}${isSelected ? ' is-selected' : ''}`}
-                          onClick={() => setSelectedZone(isSelected ? null : code)}
-                          title={
-                            cell.balance
-                              ? `Zone ${code}: ${cell.balance.productName} (${cell.balance.quantity} ${cell.balance.unit} in ${cell.balance.warehouseName})`
-                              : `Zone ${code} (${cell.pct}%)`
-                          }
-                        >
-                          <strong>{code}</strong>
-                        </button>
-                      );
-                    })}
-                  </div>
-                ))}
+                <span className="muted" style={{ fontSize: '0.78rem' }}>
+                  Click any store area to inspect live on-shelf products and initiate transfers.
+                </span>
               </div>
 
-              <div className="heatmap-legend">
-                <span><i className="leg-dot low" /> Low (0–30%)</span>
-                <span><i className="leg-dot mid" /> Medium (30–70%)</span>
-                <span><i className="leg-dot high" /> Full (70–100%)</span>
+              {filteredZones.length === 0 ? (
+                <div className="empty-state-box" style={{ padding: '3rem 1.5rem', textAlign: 'center' }}>
+                  <h3 style={{ margin: '0 0 0.5rem' }}>No Store or Yard Zones Configured Yet</h3>
+                  <p className="muted" style={{ maxWidth: '420px', margin: '0 auto 1.25rem', fontSize: '0.88rem' }}>
+                    Set up your departments (e.g. Front Store POS, Groceries, Hardware Yard, Storeroom) to visualize live inventory.
+                  </p>
+                  <Link to={`${basePath}/warehouses`} className="btn btn-primary btn-sm">
+                    + Configure Departments &amp; Warehouses
+                  </Link>
+                </div>
+              ) : (
+                <div className="store-map-grid" style={{ marginTop: '1rem' }}>
+                  {filteredZones.map((z) => {
+                    const isSelected = selectedZone === z.key;
+                    return (
+                      <div
+                        key={z.key}
+                        className={`store-zone-card ${z.isPos ? 'pos-active-zone' : ''} ${isSelected ? 'selected' : ''}`}
+                        onClick={() => setSelectedZone(isSelected ? null : z.key)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setSelectedZone(isSelected ? null : z.key);
+                          }
+                        }}
+                      >
+                        <div>
+                          <div className="zone-header-row">
+                            <div className="zone-title-group">
+                              <div className="zone-icon-box" aria-hidden="true">
+                                {z.isPos ? (
+                                  <StorefloorIcon size={22} />
+                                ) : z.category === 'hardware_yard' ? (
+                                  <ProductRetailIcon name="brick" size={22} />
+                                ) : z.category === 'groceries' ? (
+                                  <CartIcon size={22} />
+                                ) : z.category === 'agrovet' ? (
+                                  <ProductRetailIcon name="meal" size={22} />
+                                ) : (
+                                  <ProductRetailIcon name="box" size={22} />
+                                )}
+                              </div>
+                              <div>
+                                <h3 className="zone-name">{z.name}</h3>
+                                <div className="zone-branch-tag">{z.branchName}</div>
+                              </div>
+                            </div>
+                            <div>
+                              {z.isPos ? (
+                                <span
+                                  className="zone-type-badge"
+                                  style={{
+                                    background: 'var(--zim-gold-100)',
+                                    color: 'var(--zim-charcoal-900)',
+                                    border: '1px solid var(--zim-gold-500)',
+                                  }}
+                                >
+                                  <span className="live-dot" style={{ background: '#10b981' }} />
+                                  POS Active
+                                </span>
+                              ) : z.category === 'hardware_yard' ? (
+                                <span className="zone-type-badge" style={{ background: '#fef3c7', color: '#92400e' }}>
+                                  Hardware Yard
+                                </span>
+                              ) : z.category === 'groceries' ? (
+                                <span className="zone-type-badge" style={{ background: 'var(--zim-green-50)', color: 'var(--zim-green-800)' }}>
+                                  Grocery Floor
+                                </span>
+                              ) : z.category === 'agrovet' ? (
+                                <span className="zone-type-badge" style={{ background: '#ecfdf5', color: '#065f46' }}>
+                                  Agrovet Bay
+                                </span>
+                              ) : (
+                                <span className="zone-type-badge" style={{ background: '#f1f5f9', color: '#334155' }}>
+                                  Storeroom
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="zone-metrics-strip">
+                            <div className="zone-metric-item">
+                              <span className="zone-metric-label">SKUs</span>
+                              <span className="zone-metric-val">{z.skuCount}</span>
+                            </div>
+                            <div className="zone-metric-item">
+                              <span className="zone-metric-label">Total Units</span>
+                              <span className="zone-metric-val">{z.totalUnits.toLocaleString()}</span>
+                            </div>
+                            <div className="zone-metric-item">
+                              <span className="zone-metric-label">Valuation</span>
+                              <span className="zone-metric-val" style={{ color: 'var(--zim-green-800)' }}>
+                                {formatMoney(z.totalValue)}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Top 3 Live Products Preview */}
+                          {z.products.length > 0 ? (
+                            <div className="zone-items-preview">
+                              {z.products.slice(0, 3).map((p) => (
+                                <div key={p.id} className="zone-item-line">
+                                  <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '65%' }}>
+                                    {p.name}
+                                  </span>
+                                  <span style={{ color: p.isLowStock ? 'var(--warning)' : 'var(--zim-green-700)', fontWeight: 700 }}>
+                                    {p.stock} {p.unit}
+                                  </span>
+                                </div>
+                              ))}
+                              {z.products.length > 3 && (
+                                <span className="muted" style={{ fontSize: '0.72rem', textAlign: 'right' }}>
+                                  +{z.products.length - 3} more items in this zone
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="zone-items-preview" style={{ color: 'var(--muted)', fontStyle: 'italic', padding: '0.35rem 0' }}>
+                              No products assigned to this zone yet.
+                            </div>
+                          )}
+                        </div>
+
+                        <div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                            {z.status === 'optimal' ? (
+                              <span className="status-pill optimal">● Optimal Stock</span>
+                            ) : z.status === 'low_stock' ? (
+                              <span className="status-pill warn">▲ {z.lowStockCount} Low Stock</span>
+                            ) : (
+                              <span className="status-pill" style={{ background: '#f1f5f9', color: '#64748b' }}>
+                                ○ Ready for Stock
+                              </span>
+                            )}
+                            <span style={{ fontSize: '0.76rem', color: isSelected ? 'var(--zim-gold-700)' : 'var(--muted)', fontWeight: 700 }}>
+                              {isSelected ? 'Selected (Active)' : 'Click to Inspect →'}
+                            </span>
+                          </div>
+
+                          <div className="zone-action-row" onClick={(e) => e.stopPropagation()}>
+                            {z.isPos ? (
+                              <Link
+                                to={`${basePath}/pos`}
+                                className="btn btn-sm btn-primary"
+                                style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem' }}
+                              >
+                                <CartIcon size={14} /> Open POS Counter
+                              </Link>
+                            ) : (
+                              <Link
+                                to={`${basePath}/products?dept=${z.id}`}
+                                className="btn btn-sm btn-outline"
+                                style={{ flex: 1, textAlign: 'center' }}
+                              >
+                                + Stock Item
+                              </Link>
+                            )}
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-secondary"
+                              onClick={() => setTransferTarget({ warehouseId: z.entityType === 'warehouse' ? z.id : undefined })}
+                              title="Transfer stock to/from this zone"
+                            >
+                              ⇄ Move
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Legend */}
+              <div className="store-map-legend">
+                <span>
+                  <span className="live-dot" style={{ background: '#10b981', marginRight: '4px' }} />
+                  Front Store &amp; Fast POS Counter
+                </span>
+                <span>
+                  <i className="leg-dot mid" style={{ background: 'var(--zim-green-700)' }} />
+                  Optimal Stock Level
+                </span>
+                <span>
+                  <i className="leg-dot warn" style={{ background: 'var(--warning)' }} />
+                  Low Stock Reorder Alert
+                </span>
+                <span>
+                  <i className="leg-dot low" style={{ background: '#cbd5e1' }} />
+                  Empty / Ready for Stocking
+                </span>
               </div>
             </section>
+
+            {/* Selected Zone Deep Inspector Panel */}
+            {activeZone && (
+              <section className="card zone-inspector-panel animate-scale-up" aria-label="Zone Inventory Inspector">
+                <div className="section-head">
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                      <span className="pos-station-badge">
+                        <span className="live-dot" style={{ background: '#10b981' }} />
+                        {activeZone.isPos ? 'FRONT STORE & POS COUNTER' : activeZone.entityType.toUpperCase()}
+                      </span>
+                      <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 800 }}>{activeZone.name}</h2>
+                    </div>
+                    <span className="vernacular-sub">
+                      Branch: {activeZone.branchName} • {activeZone.skuCount} Registered Items • Total Units: {activeZone.totalUnits.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="action-row">
+                    {activeZone.isPos && (
+                      <Link to={`${basePath}/pos`} className="btn btn-primary btn-sm">
+                        🛒 Open POS Counter
+                      </Link>
+                    )}
+                    <Link to={`${basePath}/products?dept=${activeZone.id}`} className="btn btn-outline btn-sm">
+                      + Add Products to Zone
+                    </Link>
+                    <Link to={`${basePath}/procurement`} className="btn btn-outline btn-sm">
+                      📥 Receive Goods (GRN)
+                    </Link>
+                    <button type="button" className="btn btn-outline btn-sm" onClick={() => setSelectedZone(null)}>
+                      ✕ Close
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', marginBottom: '1.25rem' }}>
+                  <div className="subcard" style={{ padding: '0.75rem' }}>
+                    <span className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase' }}>Active Stock Units</span>
+                    <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--zim-charcoal-900)' }}>
+                      {activeZone.totalUnits.toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="subcard" style={{ padding: '0.75rem' }}>
+                    <span className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase' }}>Current Valuation</span>
+                    <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--zim-green-700)' }}>
+                      {formatMoney(activeZone.totalValue)}
+                    </div>
+                  </div>
+                  <div className="subcard" style={{ padding: '0.75rem' }}>
+                    <span className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase' }}>Registered SKUs</span>
+                    <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--zim-charcoal-900)' }}>
+                      {activeZone.skuCount}
+                    </div>
+                  </div>
+                  <div className="subcard" style={{ padding: '0.75rem' }}>
+                    <span className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase' }}>Stock Health</span>
+                    <div style={{ fontSize: '1.1rem', fontWeight: 800, color: activeZone.lowStockCount > 0 ? 'var(--warning)' : 'var(--zim-green-700)' }}>
+                      {activeZone.lowStockCount > 0 ? `${activeZone.lowStockCount} Low Items` : activeZone.skuCount > 0 ? '100% Healthy' : 'Ready'}
+                    </div>
+                  </div>
+                </div>
+
+                {activeZone.products.length === 0 ? (
+                  <div className="empty-state-box" style={{ padding: '2rem 1rem', textAlign: 'center' }}>
+                    <p className="muted" style={{ margin: '0 0 1rem' }}>
+                      There are no items currently assigned to <strong>&ldquo;{activeZone.name}&rdquo;</strong>.
+                    </p>
+                    <Link to={`${basePath}/products?dept=${activeZone.id}`} className="btn btn-primary btn-sm">
+                      + Add Products to this Zone
+                    </Link>
+                  </div>
+                ) : (
+                  <div className="table-wrap">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>SKU</th>
+                          <th>Product Name</th>
+                          <th className="num">Stock on Hand</th>
+                          <th className="num">Cost Price</th>
+                          <th className="num">Retail Price</th>
+                          <th>Status</th>
+                          <th className="num">Quick Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeZone.products.map((p) => (
+                          <tr key={p.id}>
+                            <td><code>{p.sku}</code></td>
+                            <td><strong>{p.name}</strong></td>
+                            <td className="num">
+                              <strong>{p.stock}</strong> <small>{p.unit}</small>
+                            </td>
+                            <td className="num">{formatMoney(p.unitCost)}</td>
+                            <td className="num">
+                              {p.sellingPrice ? formatMoney(p.sellingPrice) : '—'}
+                            </td>
+                            <td>
+                              {p.stock <= 0 ? (
+                                <span className="status-pill danger">Out of Stock</span>
+                              ) : p.isLowStock ? (
+                                <span className="status-pill warn">Low Stock (≤{p.reorderLevel})</span>
+                              ) : (
+                                <span className="status-pill optimal">In Stock</span>
+                              )}
+                            </td>
+                            <td className="num">
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => setTransferTarget({ productId: p.id, warehouseId: activeZone.entityType === 'warehouse' ? activeZone.id : undefined })}
+                              >
+                                ⇄ Transfer
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            )}
 
             <section className="card">
               <div className="section-head">
