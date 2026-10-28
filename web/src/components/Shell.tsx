@@ -350,27 +350,29 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
           </form>
 
           <div className="topbar-actions">
-            {/* 1. Role View Switcher */}
-            <div className="topbar-seg-group" role="group" aria-label="Role view switcher">
-              <button
-                type="button"
-                className={`topbar-seg-btn ${roleView === 'inventory' ? 'active' : ''}`}
-                onClick={() => setRoleView('inventory')}
-                title="Operational Storefloor Focus"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
-              >
-                <StorefloorIcon size={13} /> Storefloor
-              </button>
-              <button
-                type="button"
-                className={`topbar-seg-btn ${roleView === 'executive' ? 'active' : ''}`}
-                onClick={() => setRoleView('executive')}
-                title="Capital Valuation, Margin & ZIMRA VAT Focus"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
-              >
-                <ExecutiveIcon size={13} /> Executive
-              </button>
-            </div>
+            {/* 1. Role View Switcher (for Executive Managers who oversee both operational and executive layers) */}
+            {user?.role === 'executive_manager' && (
+              <div className="topbar-seg-group" role="group" aria-label="Role view switcher">
+                <button
+                  type="button"
+                  className={`topbar-seg-btn ${roleView === 'inventory' ? 'active' : ''}`}
+                  onClick={() => setRoleView('inventory')}
+                  title="Operational Storefloor Focus"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
+                >
+                  <StorefloorIcon size={13} /> Storefloor
+                </button>
+                <button
+                  type="button"
+                  className={`topbar-seg-btn ${roleView === 'executive' ? 'active' : ''}`}
+                  onClick={() => setRoleView('executive')}
+                  title="Capital Valuation, Margin & ZIMRA VAT Focus"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
+                >
+                  <ExecutiveIcon size={13} /> Executive
+                </button>
+              </div>
+            )}
 
             {/* 2. Multi-Currency Switcher (USD $, ZiG, ZAR R) */}
             <div className="topbar-seg-group" role="group" aria-label="Multi-currency switcher">

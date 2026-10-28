@@ -78,7 +78,7 @@ export function ZimProvider({ children, defaultRoleView = 'inventory' }: { child
 
   const [vernacular, setVernacularState] = useState<VernacularMode>(() => {
     const saved = localStorage.getItem('zim_vernacular') as VernacularMode | null;
-    return saved === 'bilingual' || saved === 'shona' || saved === 'ndebele' || saved === 'english' ? saved : 'bilingual';
+    return saved === 'bilingual' || saved === 'shona' || saved === 'ndebele' || saved === 'english' ? saved : 'english';
   });
 
   const [easyMode, setEasyModeState] = useState<boolean>(() => {

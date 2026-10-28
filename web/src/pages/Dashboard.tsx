@@ -495,8 +495,8 @@ export function Dashboard() {
                 </span>
                 <div>
                   <span className="big-step-title">Step 1: Stock Intake (GRN)</span>
-                  <span className="big-step-sub">Kugamuchira Zvinhu • Ukuthola Impahla</span>
-                  <span className="big-step-desc">Record supplier deliveries, bought stock, or cartons into store.</span>
+                  <span className="big-step-sub">{subLabel('Kugamuchira Zvinhu', 'Ukuthola Impahla', 'Record supplier deliveries & bought stock')}</span>
+                  <span className="big-step-desc">Enter supplier deliveries, cartons, or bales with automatic break-bulk.</span>
                 </div>
               </Link>
 
@@ -506,7 +506,7 @@ export function Dashboard() {
                 </span>
                 <div>
                   <span className="big-step-title">Step 2: Quick +1 Add / -1 Issue</span>
-                  <span className="big-step-sub">Wedzera kana Kubvisa • Engeza kumbe Susa</span>
+                  <span className="big-step-sub">{subLabel('Wedzera kana Kubvisa', 'Engeza kumbe Susa', 'Visual 1-tap shelf stock adjustments')}</span>
                   <span className="big-step-desc">Open visual product cards with oversized +1, -1, and +Bulk buttons.</span>
                 </div>
               </Link>
@@ -517,7 +517,7 @@ export function Dashboard() {
                 </span>
                 <div>
                   <span className="big-step-title">Step 3: Move Stock</span>
-                  <span className="big-step-sub">Kufambisa Zvinhu • Ukuthutha Impahla</span>
+                  <span className="big-step-sub">{subLabel('Kufambisa Zvinhu', 'Ukuthutha Impahla', 'Transfer between departments & rooms')}</span>
                   <span className="big-step-desc">Move stock between store zones, departments, or storerooms.</span>
                 </div>
               </button>
@@ -528,7 +528,7 @@ export function Dashboard() {
                 </span>
                 <div>
                   <span className="big-step-title">Step 4: WhatsApp Owner Summary</span>
-                  <span className="big-step-sub">Tumira paWhatsApp • Thumela kuWhatsApp</span>
+                  <span className="big-step-sub">{subLabel('Tumira paWhatsApp', 'Thumela kuWhatsApp', 'Share daily stock report to owner')}</span>
                   <span className="big-step-desc">Send today&apos;s stock balance and low-stock reorder list via WhatsApp.</span>
                 </div>
               </button>

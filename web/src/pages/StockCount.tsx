@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { api, type BalanceItem, type CountSheetSummary, type ProductItem } from '../api';
 import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { Spinner } from '../components/Spinner';
@@ -205,7 +206,19 @@ export function StockCount() {
               </p>
             </div>
 
-            <form className="form-grid subcard" style={{ marginBottom: '1.5rem' }} onSubmit={handleCreateCountSheet}>
+            {products.length === 0 ? (
+              <div className="empty-state-box" style={{ padding: '2.5rem 1.5rem', marginBottom: '1.25rem' }}>
+                <div style={{ fontSize: '2.2rem' }}>📋</div>
+                <h3 style={{ margin: 0, color: 'var(--charcoal)' }}>No Products Available for Stock Count</h3>
+                <p style={{ margin: 0, maxWidth: '480px', fontSize: '0.88rem' }}>
+                  There are no products in your catalog yet to verify. Add products in the Products &amp; Catalog section first.
+                </p>
+                <Link to="/inventory/products" className="btn btn-primary" style={{ marginTop: '0.5rem' }}>
+                  + Go to Products &amp; Catalog
+                </Link>
+              </div>
+            ) : (
+              <form className="form-grid subcard" style={{ marginBottom: '1.5rem' }} onSubmit={handleCreateCountSheet}>
               <label>
                 Store / Warehouse Location
                 <select value={selectedWhId} onChange={(e) => setSelectedWhId(e.target.value)} required>
@@ -318,6 +331,7 @@ export function StockCount() {
                 </button>
               </div>
             </form>
+            )}
           </div>
         )}
 

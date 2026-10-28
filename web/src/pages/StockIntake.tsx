@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { api, type ProductItem, type PurchaseOrderSummary } from '../api';
 import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { Spinner } from '../components/Spinner';
@@ -284,7 +285,19 @@ export function StockIntake() {
               </p>
             </div>
 
-            <form className="form-grid subcard" style={{ marginBottom: '1.25rem' }} onSubmit={handleFastIntake}>
+            {products.length === 0 ? (
+              <div className="empty-state-box" style={{ padding: '2.5rem 1.5rem', marginBottom: '1.25rem' }}>
+                <div style={{ fontSize: '2.2rem' }}>📦</div>
+                <h3 style={{ margin: 0, color: 'var(--charcoal)' }}>No Products Registered in Catalog Yet</h3>
+                <p style={{ margin: 0, maxWidth: '480px', fontSize: '0.88rem' }}>
+                  Before recording supplier stock intake, please add your products and packaging units (cartons, cases, bales, or singles) in the Products &amp; Catalog section.
+                </p>
+                <Link to="/inventory/products" className="btn btn-primary" style={{ marginTop: '0.5rem' }}>
+                  + Go to Products &amp; Catalog
+                </Link>
+              </div>
+            ) : (
+              <form className="form-grid subcard" style={{ marginBottom: '1.25rem' }} onSubmit={handleFastIntake}>
               <label>
                 Supplier
                 <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} required>
@@ -442,6 +455,7 @@ export function StockIntake() {
                 </button>
               </div>
             </form>
+            )}
           </div>
         )}
 
