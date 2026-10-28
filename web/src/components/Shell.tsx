@@ -449,7 +449,7 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
             {vernacular !== 'english' && currentNav && (
               <>
                 <span className="crumb-sep">•</span>
-                <span style={{ color: 'var(--zim-gold-700)', fontWeight: 600 }}>
+                <span style={{ color: 'var(--zim-gold-500)', fontWeight: 600 }}>
                   {vernacular === 'shona'
                     ? currentNav.shona
                     : vernacular === 'ndebele'

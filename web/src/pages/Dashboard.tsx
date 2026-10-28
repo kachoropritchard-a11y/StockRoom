@@ -615,8 +615,8 @@ export function Dashboard() {
                                 <span
                                   className="zone-type-badge"
                                   style={{
-                                    background: 'var(--zim-gold-100)',
-                                    color: 'var(--zim-charcoal-900)',
+                                    background: 'rgba(217, 119, 6, 0.15)',
+                                    color: 'var(--zim-gold-500)',
                                     border: '1px solid var(--zim-gold-500)',
                                   }}
                                 >
@@ -624,19 +624,19 @@ export function Dashboard() {
                                   POS Active
                                 </span>
                               ) : z.category === 'hardware_yard' ? (
-                                <span className="zone-type-badge" style={{ background: 'var(--zim-gold-50)', color: 'var(--zim-gold-700)' }}>
+                                <span className="zone-type-badge" style={{ background: 'rgba(217, 119, 6, 0.15)', color: 'var(--zim-gold-500)' }}>
                                   Hardware Yard
                                 </span>
                               ) : z.category === 'groceries' ? (
-                                <span className="zone-type-badge" style={{ background: 'var(--zim-green-50)', color: 'var(--zim-green-700)' }}>
+                                <span className="zone-type-badge" style={{ background: 'rgba(5, 150, 105, 0.15)', color: 'var(--emerald)' }}>
                                   Grocery Floor
                                 </span>
                               ) : z.category === 'agrovet' ? (
-                                <span className="zone-type-badge" style={{ background: 'var(--zim-green-100)', color: 'var(--zim-green-800)' }}>
+                                <span className="zone-type-badge" style={{ background: 'rgba(5, 150, 105, 0.2)', color: 'var(--emerald)' }}>
                                   Agrovet Bay
                                 </span>
                               ) : (
-                                <span className="zone-type-badge" style={{ background: 'var(--surface-alt)', color: 'var(--charcoal)' }}>
+                                <span className="zone-type-badge" style={{ background: 'var(--surface-alt)', color: 'var(--charcoal)', border: '1px solid var(--line)' }}>
                                   Storeroom
                                 </span>
                               )}
@@ -654,7 +654,7 @@ export function Dashboard() {
                             </div>
                             <div className="zone-metric-item">
                               <span className="zone-metric-label">Valuation</span>
-                              <span className="zone-metric-val" style={{ color: 'var(--zim-green-800)' }}>
+                              <span className="zone-metric-val" style={{ color: 'var(--emerald)' }}>
                                 {formatMoney(z.totalValue)}
                               </span>
                             </div>
@@ -668,7 +668,7 @@ export function Dashboard() {
                                   <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '65%' }}>
                                     {p.name}
                                   </span>
-                                  <span style={{ color: p.isLowStock ? 'var(--warning)' : 'var(--zim-green-700)', fontWeight: 700 }}>
+                                  <span style={{ color: p.isLowStock ? 'var(--warning)' : 'var(--emerald)', fontWeight: 700 }}>
                                     {p.stock} {p.unit}
                                   </span>
                                 </div>
@@ -693,11 +693,11 @@ export function Dashboard() {
                             ) : z.status === 'low_stock' ? (
                               <span className="status-pill warn">▲ {z.lowStockCount} Low Stock</span>
                             ) : (
-                              <span className="status-pill" style={{ background: '#f1f5f9', color: '#64748b' }}>
+                              <span className="status-pill" style={{ background: 'var(--surface-alt)', color: 'var(--muted)', border: '1px solid var(--line)' }}>
                                 ○ Ready for Stock
                               </span>
                             )}
-                            <span style={{ fontSize: '0.76rem', color: isSelected ? 'var(--zim-gold-700)' : 'var(--muted)', fontWeight: 700 }}>
+                            <span style={{ fontSize: '0.76rem', color: isSelected ? 'var(--emerald)' : 'var(--muted)', fontWeight: 700 }}>
                               {isSelected ? 'Selected (Active)' : 'Click to Inspect →'}
                             </span>
                           </div>
@@ -794,13 +794,13 @@ export function Dashboard() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', marginBottom: '1.25rem' }}>
                   <div className="subcard" style={{ padding: '0.75rem' }}>
                     <span className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase' }}>Active Stock Units</span>
-                    <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--zim-charcoal-900)' }}>
+                    <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--charcoal)' }}>
                       {activeZone.totalUnits.toLocaleString()}
                     </div>
                   </div>
                   <div className="subcard" style={{ padding: '0.75rem' }}>
                     <span className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase' }}>Current Valuation</span>
-                    <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--zim-green-700)' }}>
+                    <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--emerald)' }}>
                       {formatMoney(activeZone.totalValue)}
                     </div>
                   </div>
@@ -812,7 +812,7 @@ export function Dashboard() {
                   </div>
                   <div className="subcard" style={{ padding: '0.75rem' }}>
                     <span className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase' }}>Stock Health</span>
-                    <div style={{ fontSize: '1.1rem', fontWeight: 800, color: activeZone.lowStockCount > 0 ? 'var(--warning)' : 'var(--zim-green-700)' }}>
+                    <div style={{ fontSize: '1.1rem', fontWeight: 800, color: activeZone.lowStockCount > 0 ? 'var(--warning)' : 'var(--emerald)' }}>
                       {activeZone.lowStockCount > 0 ? `${activeZone.lowStockCount} Low Items` : activeZone.skuCount > 0 ? '100% Healthy' : 'Ready'}
                     </div>
                   </div>

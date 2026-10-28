@@ -563,9 +563,9 @@ export function Users() {
                                     letterSpacing: '0.12em',
                                     padding: '0.2rem 0.5rem',
                                     borderRadius: '6px',
-                                    background: 'var(--zim-gold-50)',
-                                    color: 'var(--zim-gold-700)',
-                                    border: '1px solid var(--zim-gold-100)',
+                                    background: 'rgba(217, 119, 6, 0.12)',
+                                    color: 'var(--zim-gold-500)',
+                                    border: '1px solid rgba(217, 119, 6, 0.35)',
                                   }}
                                 >
                                   PIN: {u.pinCode}
@@ -611,7 +611,7 @@ export function Users() {
                                       <button
                                         type="button"
                                         className="btn btn-outline btn-sm"
-                                        style={{ color: 'var(--crimson)', borderColor: 'var(--line)' }}
+                                        style={{ color: 'var(--danger)', borderColor: 'var(--line)' }}
                                         onClick={() => handleDeleteUser(u)}
                                         title="Delete user account"
                                       >

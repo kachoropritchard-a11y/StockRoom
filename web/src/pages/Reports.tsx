@@ -273,7 +273,7 @@ export function Reports() {
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
           {/* Department Filter (Per Department & Whole System) */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
-            <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)' }}>
+            <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--muted)' }}>
               🏢 Department Report Scope:
             </span>
             <select
@@ -302,7 +302,7 @@ export function Reports() {
 
           {/* Time Period Filter */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
-            <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)' }}>
+            <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--muted)' }}>
               📅 Time Period:
             </span>
             <div className="topbar-seg-group" role="group" aria-label="Time period filter">
@@ -347,7 +347,7 @@ export function Reports() {
               </div>
               <div className="kpi-card">
                 <span className="kpi-label">Out of Stock (Zero Stock)</span>
-                <strong className="kpi-value neg" style={{ color: 'var(--crimson)' }}>
+                <strong className="kpi-value neg" style={{ color: 'var(--danger)' }}>
                   {restockOutOfStockCount}
                 </strong>
                 <span className="kpi-hint">Requires immediate reorder</span>
@@ -522,7 +522,7 @@ export function Reports() {
               </div>
             </div>
 
-            <div className="subcard" style={{ marginBottom: '1.25rem', borderLeft: '4px solid var(--zim-green-700)' }}>
+            <div className="subcard" style={{ marginBottom: '1.25rem', borderLeft: '4px solid var(--emerald)' }}>
               <div className="section-head">
                 <div>
                   <h3 style={{ margin: 0 }}>ZIMRA FDMS Fiscal Device &amp; 15% VAT Schedule</h3>
@@ -638,7 +638,7 @@ export function Reports() {
               </div>
               <div className="kpi-card">
                 <span className="kpi-label">2. Total Sales Revenue</span>
-                <strong className="kpi-value" style={{ color: 'var(--zim-green-700)' }}>
+                <strong className="kpi-value" style={{ color: 'var(--emerald)' }}>
                   {formatMoney(totalRevenueAgg)}
                 </strong>
                 <span className="kpi-hint">
@@ -712,7 +712,7 @@ export function Reports() {
                           <td><strong>{d.departmentName}</strong></td>
                           <td className="num">{d.skuCount}</td>
                           <td className="num"><strong>{d.soldUnits.toLocaleString()}</strong></td>
-                          <td className="num" style={{ color: 'var(--zim-green-700)' }}>
+                          <td className="num" style={{ color: 'var(--emerald)' }}>
                             <strong>{formatMoney(d.revenue)}</strong>
                           </td>
                           <td className="num">{formatMoney(d.cogs)}</td>
@@ -772,7 +772,7 @@ export function Reports() {
                       </td>
                       <td className="num">{formatMoney(item.avgSellingPrice)}</td>
                       <td className="num">{formatMoney(item.unitCost)}</td>
-                      <td className="num" style={{ color: 'var(--zim-green-700)' }}>
+                      <td className="num" style={{ color: 'var(--emerald)' }}>
                         <strong>{formatMoney(item.revenue)}</strong>
                       </td>
                       <td className="num">{formatMoney(item.cogs)}</td>
@@ -805,7 +805,7 @@ export function Reports() {
             <div className="ops-kpi-row" style={{ gridTemplateColumns: 'repeat(4, 1fr)', marginBottom: '1.25rem' }}>
               <div className="kpi-card">
                 <span className="kpi-label">Total Financial Loss (USD $)</span>
-                <strong className="kpi-value neg" style={{ color: 'var(--crimson)' }}>
+                <strong className="kpi-value neg" style={{ color: 'var(--danger)' }}>
                   {formatMoney(totalWriteOffLossAgg)}
                 </strong>
                 <span className="kpi-hint">
@@ -819,7 +819,7 @@ export function Reports() {
               </div>
               <div className="kpi-card">
                 <span className="kpi-label">Primary Loss Cause</span>
-                <strong className="kpi-value" style={{ fontSize: '1.15rem', color: 'var(--text-main)' }}>
+                <strong className="kpi-value" style={{ fontSize: '1.15rem', color: 'var(--charcoal)' }}>
                   {writeOffReasons[0]?.reason ? writeOffReasons[0].reason.slice(0, 26) + '...' : 'None Recorded'}
                 </strong>
                 <span className="kpi-hint">
@@ -837,7 +837,7 @@ export function Reports() {
 
             {/* Reason Loss Analysis Mini Cards */}
             {writeOffReasons.length > 0 && (
-              <div className="subcard" style={{ marginBottom: '1.25rem', borderLeft: '4px solid var(--crimson)' }}>
+              <div className="subcard" style={{ marginBottom: '1.25rem', borderLeft: '4px solid var(--danger)' }}>
                 <div className="section-head" style={{ marginBottom: '0.75rem' }}>
                   <h4 style={{ margin: 0 }}>Loss Breakdown by Non-Selling Cause</h4>
                   <span className="muted" style={{ fontSize: '0.82rem' }}>
@@ -877,7 +877,7 @@ export function Reports() {
 
             {/* Reason Filter Buttons */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '1rem', alignItems: 'center' }}>
-              <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)', marginRight: '0.25rem' }}>
+              <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--muted)', marginRight: '0.25rem' }}>
                 Filter Reason:
               </span>
               <button

@@ -168,8 +168,8 @@ export function SetupManager() {
           {/* STEP 1: Executive Manager Details */}
           {step === 1 && (
             <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div className="info-banner" style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.84rem', padding: '0.75rem 1rem', background: 'var(--zim-green-50)', borderRadius: '8px', borderLeft: '4px solid var(--zim-green-700)', color: 'var(--zim-green-900)' }}>
-                <ShieldUserIcon size={20} style={{ color: 'var(--zim-green-700)', flexShrink: 0 }} />
+              <div className="info-banner" style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.84rem', padding: '0.75rem 1rem', background: 'var(--surface-alt)', borderRadius: '8px', borderLeft: '4px solid var(--emerald)', color: 'var(--charcoal)' }}>
+                <ShieldUserIcon size={20} style={{ color: 'var(--emerald)', flexShrink: 0 }} />
                 <span><strong>Executive Owner Account:</strong> Controls all store valuations, staff permissions, stock governance, and ZIMRA compliance.</span>
               </div>
 
@@ -220,7 +220,7 @@ export function SetupManager() {
                         background: 'transparent',
                         border: 'none',
                         cursor: 'pointer',
-                        color: 'var(--zim-charcoal-800)',
+                        color: 'var(--muted)',
                         display: 'flex',
                         alignItems: 'center',
                         padding: '4px',
@@ -315,9 +315,9 @@ export function SetupManager() {
                         style={{
                           padding: '0.45rem 0.85rem',
                           borderRadius: '20px',
-                          border: active ? '1.5px solid var(--zim-green-700)' : '1px solid var(--line)',
-                          background: active ? 'var(--zim-green-50)' : '#fff',
-                          color: active ? 'var(--zim-green-900)' : 'var(--charcoal)',
+                          border: active ? '1.5px solid var(--emerald)' : '1px solid var(--line)',
+                          background: active ? 'var(--surface-alt)' : 'var(--surface)',
+                          color: active ? 'var(--emerald)' : 'var(--charcoal)',
                           fontWeight: active ? 700 : 500,
                           fontSize: '0.82rem',
                           cursor: 'pointer',
@@ -338,9 +338,9 @@ export function SetupManager() {
                           gap: '0.35rem',
                           padding: '0.45rem 0.85rem',
                           borderRadius: '20px',
-                          border: '1.5px solid var(--zim-green-700)',
-                          background: 'var(--zim-green-50)',
-                          color: 'var(--zim-green-900)',
+                          border: '1.5px solid var(--emerald)',
+                          background: 'var(--surface-alt)',
+                          color: 'var(--emerald)',
                           fontWeight: 700,
                           fontSize: '0.82rem',
                         }}
@@ -353,7 +353,7 @@ export function SetupManager() {
                           style={{
                             border: 'none',
                             background: 'transparent',
-                            color: 'var(--crimson)',
+                            color: 'var(--danger)',
                             cursor: 'pointer',
                             fontSize: '0.9rem',
                             padding: '0 0.2rem',

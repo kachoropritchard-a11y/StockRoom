@@ -347,7 +347,7 @@ export function Procurement() {
         {activeTab === 'wizard' && (
           <div id="procurement-panel-wizard" role="tabpanel" aria-labelledby="procurement-tab-wizard">
             {/* Step-by-Step Guided 1-2-3 Wizard Card */}
-            <div className="subcard" style={{ marginBottom: '1.35rem', borderLeft: '4px solid var(--zim-green-700)' }}>
+            <div className="subcard" style={{ marginBottom: '1.35rem', borderLeft: '4px solid var(--emerald)' }}>
               <div className="section-head">
                 <div>
                   <h3>1-2-3 Guided Goods Receiving / New Order Wizard</h3>
@@ -761,7 +761,7 @@ export function Procurement() {
                   </div>
                   <div className="kpi-card">
                     <span className="kpi-label">True Landed Cost per Unit</span>
-                    <strong className="kpi-value" style={{ color: 'var(--zim-green-700)' }}>
+                    <strong className="kpi-value" style={{ color: 'var(--emerald)' }}>
                       {formatMoney(trueUnitCostUsd, 'USD')}
                     </strong>
                     <span className="kpi-hint">
@@ -769,9 +769,9 @@ export function Procurement() {
                     </span>
                   </div>
                 </div>
-                <div className="subcard" style={{ background: 'var(--zim-green-50)' }}>
+                <div className="subcard" style={{ background: 'var(--surface-alt)' }}>
                   <strong>Recommended Shelf Selling Price ({marginPct}% margin):</strong>
-                  <div style={{ fontSize: '1.35rem', fontWeight: 800, marginTop: '0.25rem', color: 'var(--zim-green-800)' }}>
+                  <div style={{ fontSize: '1.35rem', fontWeight: 800, marginTop: '0.25rem', color: 'var(--emerald)' }}>
                     {formatMoney(recommendedSellUsd, 'USD')} &nbsp;|&nbsp; {formatMoney(recommendedSellUsd, 'ZiG')} &nbsp;|&nbsp; {formatMoney(recommendedSellUsd, 'ZAR')}
                   </div>
                 </div>

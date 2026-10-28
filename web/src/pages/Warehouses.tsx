@@ -389,7 +389,7 @@ export function Warehouses() {
                                 <button
                                   type="button"
                                   className="btn btn-outline btn-sm"
-                                  style={{ color: 'var(--crimson)', borderColor: 'var(--line)' }}
+                                  style={{ color: 'var(--danger)', borderColor: 'var(--line)' }}
                                   onClick={() => handleDeleteDepartment(dept.id, dept.name)}
                                   title="Delete this department"
                                 >
@@ -466,7 +466,7 @@ export function Warehouses() {
                                 <button
                                   type="button"
                                   className="btn btn-outline btn-sm"
-                                  style={{ color: 'var(--crimson)', borderColor: 'var(--line)' }}
+                                  style={{ color: 'var(--danger)', borderColor: 'var(--line)' }}
                                   onClick={() => handleDeleteWarehouse(wh.id, wh.name)}
                                   title="Delete warehouse (if empty)"
                                 >

@@ -740,7 +740,7 @@ export function Products() {
                             </span>
                             <span>
                               Buy: <strong>{formatMoney(p.unitCost)}</strong> · Sell:{' '}
-                              <strong style={{ color: 'var(--zim-green-700)' }}>
+                              <strong style={{ color: 'var(--emerald)' }}>
                                 {formatMoney(p.sellingPrice ?? p.unitCost * 1.3)}
                               </strong>
                             </span>

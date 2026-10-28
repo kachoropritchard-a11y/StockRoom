@@ -61,17 +61,17 @@ export function Login() {
             style={{
               marginBottom: '1rem',
               textAlign: 'left',
-              background: 'var(--zim-gold-50)',
+              background: 'var(--surface-alt)',
               borderLeft: '4px solid var(--zim-gold-500)',
               padding: '0.75rem 1rem',
               borderRadius: '8px',
             }}
           >
-            <div style={{ fontWeight: 800, color: 'var(--zim-charcoal-900)', fontSize: '0.88rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+            <div style={{ fontWeight: 800, color: 'var(--charcoal)', fontSize: '0.88rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
               <span className="live-dot" style={{ background: 'var(--zim-gold-500)' }} />
               Initial Setup Required
             </div>
-            <p style={{ margin: '0.25rem 0 0.65rem', fontSize: '0.82rem', color: 'var(--zim-charcoal-800)' }}>
+            <p style={{ margin: '0.25rem 0 0.65rem', fontSize: '0.82rem', color: 'var(--muted)' }}>
               No owner account exists. Initialize StockRoom to create your Executive Manager profile and set up departments.
             </p>
             <Link to="/setup" className="btn btn-sm btn-primary" style={{ display: 'inline-block' }}>

@@ -262,7 +262,7 @@ export function Pos() {
           <div className="zimra-live-pill" title="ZIMRA FDMS Fiscal Device Status">
             <span className="stockroom-title-badge" style={{ fontSize: '0.65rem' }}>ZW</span>
             <div>
-              <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--zim-green-700)' }}>ZIMRA FDMS ACTIVE</div>
+              <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--emerald)' }}>ZIMRA FDMS ACTIVE</div>
               <div className="muted" style={{ fontSize: '0.68rem', margin: 0 }}>Device: ESD-ZW-88421 • Day #1</div>
             </div>
           </div>
@@ -386,10 +386,10 @@ export function Pos() {
                       </div>
 
                       <div style={{ marginTop: 'auto', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                        <span style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--zim-green-800)' }}>
+                        <span style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--emerald)' }}>
                           {formatMoney(p.sellingPrice)}
                         </span>
-                        <span style={{ fontSize: '0.74rem', color: isOutOfStock ? '#dc2626' : '#059669', fontWeight: 600 }}>
+                        <span style={{ fontSize: '0.74rem', color: isOutOfStock ? 'var(--danger)' : 'var(--emerald)', fontWeight: 600 }}>
                           {p.currentStock} {p.unitCode}
                         </span>
                       </div>
@@ -416,7 +416,7 @@ export function Pos() {
                 </span>
               </div>
               {cart.length > 0 && (
-                <button type="button" className="btn btn-outline btn-sm" onClick={clearCart} style={{ color: '#dc2626' }}>
+                <button type="button" className="btn btn-outline btn-sm" onClick={clearCart} style={{ color: 'var(--danger)', borderColor: 'var(--line)' }}>
                   Clear Cart
                 </button>
               )}
@@ -472,7 +472,7 @@ export function Pos() {
                           <button
                             type="button"
                             className="btn btn-link btn-sm"
-                            style={{ color: '#dc2626', padding: 0 }}
+                            style={{ color: 'var(--danger)', padding: 0 }}
                             onClick={() => removeItem(item.productId)}
                             title="Remove"
                           >
@@ -494,11 +494,11 @@ export function Pos() {
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', margin: '0.2rem 0', fontWeight: 600 }}>
                 <span className="muted">ZIMRA 15% VAT Portion:</span>
-                <span style={{ color: 'var(--zim-gold-700)', fontWeight: 700 }}>{formatMoney(vat15Usd)}</span>
+                <span style={{ color: 'var(--zim-gold-500)', fontWeight: 700 }}>{formatMoney(vat15Usd)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1.3rem', fontWeight: 900, borderTop: '2px solid var(--line)', paddingTop: '0.5rem', marginTop: '0.4rem', color: 'var(--charcoal)' }}>
                 <span>Total Due:</span>
-                <span style={{ color: 'var(--zim-green-800)' }}>{formatMoney(totalUsd)}</span>
+                <span style={{ color: 'var(--emerald)' }}>{formatMoney(totalUsd)}</span>
               </div>
 
               {/* Multi-Currency Equivalents */}

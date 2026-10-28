@@ -192,12 +192,12 @@ export function ProfileModal({ open, onClose, theme, setTheme }: ProfileModalPro
 
             {/* Account Overview Header */}
             <div
+              className="modal-account-box"
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: '1rem',
                 padding: '0.85rem 1rem',
-                background: 'var(--surface-alt)',
                 borderRadius: '12px',
                 border: '1.5px solid var(--line)',
               }}
@@ -235,7 +235,7 @@ export function ProfileModal({ open, onClose, theme, setTheme }: ProfileModalPro
 
             {/* SECTION 1: Personal Details */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <h4 style={{ margin: '0 0 0.25rem', fontSize: '0.9rem', color: 'var(--zim-gold-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              <h4 className="modal-section-title">
                 1. Personal Details
               </h4>
               <label>
@@ -262,19 +262,18 @@ export function ProfileModal({ open, onClose, theme, setTheme }: ProfileModalPro
 
             {/* SECTION 2: Fast 4-Digit PIN */}
             <div
+              className="modal-pin-box"
               style={{
                 display: 'flex',
                 flexDirection: 'column',
                 gap: '0.75rem',
                 padding: '1rem',
                 borderRadius: '10px',
-                background: 'var(--surface-alt)',
-                border: '1.5px solid var(--zim-gold-500)',
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
-                  <h4 style={{ margin: 0, fontSize: '0.9rem', color: 'var(--zim-gold-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  <h4 className="modal-section-title" style={{ margin: 0 }}>
                     2. Fast 4-Digit Sign-in PIN
                   </h4>
                   <span className="muted" style={{ fontSize: '0.74rem' }}>
@@ -284,16 +283,8 @@ export function ProfileModal({ open, onClose, theme, setTheme }: ProfileModalPro
                 {currentPin && (
                   <button
                     type="button"
+                    className="modal-pin-toggle"
                     onClick={() => setShowPin((s) => !s)}
-                    style={{
-                      border: 'none',
-                      background: 'none',
-                      cursor: 'pointer',
-                      fontSize: '0.78rem',
-                      color: 'var(--zim-gold-500)',
-                      fontWeight: 700,
-                      textDecoration: 'underline',
-                    }}
                   >
                     {showPin ? `Current: ${currentPin}` : 'Show Current PIN'}
                   </button>
@@ -318,7 +309,7 @@ export function ProfileModal({ open, onClose, theme, setTheme }: ProfileModalPro
             {/* SECTION 3: Password Update */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               <div>
-                <h4 style={{ margin: 0, fontSize: '0.9rem', color: 'var(--zim-gold-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                <h4 className="modal-section-title" style={{ margin: 0 }}>
                   3. Change Web Password
                 </h4>
                 <span className="muted" style={{ fontSize: '0.74rem' }}>
@@ -360,7 +351,7 @@ export function ProfileModal({ open, onClose, theme, setTheme }: ProfileModalPro
 
             {/* SECTION 4: Preferences & Display */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <h4 style={{ margin: '0 0 0.25rem', fontSize: '0.9rem', color: 'var(--zim-gold-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              <h4 className="modal-section-title">
                 4. Display &amp; Regional Preferences
               </h4>
 
@@ -423,7 +414,7 @@ export function ProfileModal({ open, onClose, theme, setTheme }: ProfileModalPro
               <button
                 type="button"
                 className="btn btn-outline btn-sm"
-                style={{ color: '#dc2626', borderColor: '#fca5a5' }}
+                style={{ color: 'var(--danger)', borderColor: 'var(--line)' }}
                 onClick={async () => {
                   await logout();
                   onClose();
