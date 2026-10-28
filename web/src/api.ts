@@ -732,9 +732,9 @@ export const api = {
   deleteWarehouse: (id: number) =>
     request<{ ok: true }>(`/api/warehouses/${id}`, { method: 'DELETE' }),
 
-  departments: () => request<{ id: number; branchId: number; branchName?: string; name: string; active: number }[]>('/api/departments'),
-  createDepartment: (body: { branchId: number; name: string }) =>
-    request<{ id: number }>('/api/departments', { method: 'POST', body: JSON.stringify(body) }),
+  departments: () => request<{ id: number; branchId: number; branchName?: string; name: string; code?: string; active: number }[]>('/api/departments'),
+  createDepartment: (body: { branchId: number; name: string; code?: string }) =>
+    request<{ id: number; code?: string }>('/api/departments', { method: 'POST', body: JSON.stringify(body) }),
   updateDepartment: (id: number, body: { branchId?: number; name?: string; active?: boolean; isPosDepartment?: boolean }) =>
     request<{ ok: true }>(`/api/departments/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteDepartment: (id: number) =>
@@ -811,15 +811,15 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  categories: () => request<{ id: number; name: string; parentId: number | null; active: number }[]>('/api/categories'),
-  createCategory: (body: { name: string }) =>
-    request<{ id: number }>('/api/categories', { method: 'POST', body: JSON.stringify(body) }),
+  categories: () => request<{ id: number; name: string; code?: string; parentId: number | null; active: number }[]>('/api/categories'),
+  createCategory: (body: { name: string; code?: string }) =>
+    request<{ id: number; code?: string }>('/api/categories', { method: 'POST', body: JSON.stringify(body) }),
   updateCategory: (id: number, body: { name?: string; active?: boolean }) =>
     request<{ ok: true }>(`/api/categories/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
   units: () => request<{ id: number; code: string; name: string }[]>('/api/units'),
-  createUnit: (body: { code: string; name: string }) =>
-    request<{ id: number }>('/api/units', { method: 'POST', body: JSON.stringify(body) }),
+  createUnit: (body: { code?: string; name: string }) =>
+    request<{ id: number; code?: string }>('/api/units', { method: 'POST', body: JSON.stringify(body) }),
 
   suppliers: () => request<{ id: number; name: string; email: string | null; phone: string | null; active: number }[]>('/api/suppliers'),
   createSupplier: (body: { name: string; email?: string; phone?: string }) =>
@@ -838,7 +838,7 @@ export const api = {
     return request<{ items: ProductItem[]; total: number }>(`/api/products${qs ? `?${qs}` : ''}`);
   },
   createProduct: (body: {
-    sku: string;
+    sku?: string;
     name: string;
     description?: string;
     categoryId?: number | null;
@@ -849,7 +849,7 @@ export const api = {
     wholesalePrice?: number;
     vatCategory?: 'standard_15' | 'zero_rated' | 'exempt';
     reorderLevel: number;
-  }) => request<{ id: number }>('/api/products', { method: 'POST', body: JSON.stringify(body) }),
+  }) => request<{ id: number; sku?: string }>('/api/products', { method: 'POST', body: JSON.stringify(body) }),
   updateProduct: (
     id: number,
     body: {

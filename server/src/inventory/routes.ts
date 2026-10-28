@@ -343,26 +343,40 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   for (const table of ['warehouses', 'departments'] as const) {
     app.get(`/api/${table}`, { preHandler: anyUser }, async (req) => {
       const u = req.user!;
+      const codeSelect = table === 'departments' ? ", COALESCE(t.code, 'DPT-' || printf('%03d', t.id)) AS code" : '';
       if (u.role === 'inventory_manager' && u.branchId !== null) {
         return db
           .prepare(
-            `SELECT t.id, t.branch_id AS branchId, b.name AS branchName, t.name, t.active
+            `SELECT t.id, t.branch_id AS branchId, b.name AS branchName, t.name${codeSelect}, t.active
                FROM ${table} t JOIN branches b ON b.id = t.branch_id
               WHERE b.organisation_id = ? AND t.branch_id = ? ORDER BY t.name`,
           )
           .all(u.organisationId, u.branchId);
       }
       return db
-        .prepare(`SELECT t.id, t.branch_id AS branchId, b.name AS branchName, t.name, t.active FROM ${table} t JOIN branches b ON b.id = t.branch_id WHERE b.organisation_id = ? ORDER BY t.name`)
+        .prepare(`SELECT t.id, t.branch_id AS branchId, b.name AS branchName, t.name${codeSelect}, t.active FROM ${table} t JOIN branches b ON b.id = t.branch_id WHERE b.organisation_id = ? ORDER BY t.name`)
         .all(u.organisationId);
     });
     app.post(`/api/${table}`, { preHandler: exec }, async (req, reply) => {
-      const b = z.object({ branchId: id, name }).strict().parse(req.body);
+      const b = z.object({ branchId: id, name, code: z.string().trim().max(30).optional() }).strict().parse(req.body);
       ownedBranch(b.branchId, req.user!.organisationId);
-      const r = db.prepare(`INSERT INTO ${table} (branch_id, name) VALUES (?, ?)`).run(b.branchId, b.name);
+      let assignedCode = b.code?.trim();
+      if (table === 'departments' && !assignedCode) {
+        const countRow = db.prepare('SELECT COUNT(*) as c FROM departments d JOIN branches b ON b.id = d.branch_id WHERE b.organisation_id = ?').get(req.user!.organisationId) as { c: number };
+        let seq = (countRow?.c ?? 0) + 1;
+        let candidate = `DPT-${String(seq).padStart(3, '0')}`;
+        while (db.prepare('SELECT 1 FROM departments d JOIN branches b ON b.id = d.branch_id WHERE b.organisation_id = ? AND d.code = ?').get(req.user!.organisationId, candidate)) {
+          seq += 1;
+          candidate = `DPT-${String(seq).padStart(3, '0')}`;
+        }
+        assignedCode = candidate;
+      }
+      const r = table === 'departments'
+        ? db.prepare(`INSERT INTO departments (branch_id, name, code) VALUES (?, ?, ?)`).run(b.branchId, b.name, assignedCode ?? null)
+        : db.prepare(`INSERT INTO warehouses (branch_id, name) VALUES (?, ?)`).run(b.branchId, b.name);
       const createdId = Number(r.lastInsertRowid);
-      recordAudit(db, req.user!, `${table.slice(0, -1)}.create`, table.slice(0, -1), createdId, b);
-      return reply.code(201).send({ id: createdId });
+      recordAudit(db, req.user!, `${table.slice(0, -1)}.create`, table.slice(0, -1), createdId, { ...b, code: assignedCode });
+      return reply.code(201).send({ id: createdId, code: assignedCode });
     });
     app.patch(`/api/${table}/:id`, { preHandler: exec }, async (req) => {
       const { id: rowId } = idParam.parse(req.params);
@@ -371,6 +385,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         .object({
           branchId: id.optional(),
           name: name.optional(),
+          code: z.string().trim().max(30).optional(),
           active: z.boolean().optional(),
           isPosDepartment: z.boolean().optional(),
         })
@@ -379,6 +394,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       if (b.branchId) ownedBranch(b.branchId, req.user!.organisationId);
       const cols: Record<string, unknown> = {
         name: b.name,
+        code: b.code,
         branch_id: b.branchId,
         active: flag(b.active),
       };
@@ -430,19 +446,31 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
 
   // ---------- master data (executive and inventory managers) ----------
   app.get('/api/categories', { preHandler: anyUser }, async (req) =>
-    db.prepare('SELECT id, parent_id AS parentId, name, active FROM categories WHERE organisation_id = ? ORDER BY name').all(req.user!.organisationId),
+    db.prepare("SELECT id, parent_id AS parentId, name, COALESCE(code, 'CAT-' || printf('%03d', id)) AS code, active FROM categories WHERE organisation_id = ? ORDER BY name").all(req.user!.organisationId),
   );
   app.post('/api/categories', { preHandler: staff }, async (req, reply) => {
-    const b = z.object({ name, parentId: id.nullish() }).strict().parse(req.body);
+    const b = z.object({ name, parentId: id.nullish(), code: z.string().trim().max(30).optional() }).strict().parse(req.body);
     if (b.parentId) owned('categories', b.parentId, req.user!.organisationId, 'category_not_found');
-    const r = db.prepare('INSERT INTO categories (organisation_id, parent_id, name) VALUES (?, ?, ?)').run(req.user!.organisationId, b.parentId ?? null, b.name);
-    return reply.code(201).send({ id: Number(r.lastInsertRowid) });
+    let assignedCode = b.code?.trim();
+    if (!assignedCode) {
+      const countRow = db.prepare('SELECT COUNT(*) as c FROM categories WHERE organisation_id = ?').get(req.user!.organisationId) as { c: number };
+      let seq = (countRow?.c ?? 0) + 1;
+      let candidate = `CAT-${String(seq).padStart(3, '0')}`;
+      while (db.prepare('SELECT 1 FROM categories WHERE organisation_id = ? AND code = ?').get(req.user!.organisationId, candidate)) {
+        seq += 1;
+        candidate = `CAT-${String(seq).padStart(3, '0')}`;
+      }
+      assignedCode = candidate;
+    }
+    const r = db.prepare('INSERT INTO categories (organisation_id, parent_id, name, code) VALUES (?, ?, ?, ?)').run(req.user!.organisationId, b.parentId ?? null, b.name, assignedCode);
+    const createdId = Number(r.lastInsertRowid);
+    return reply.code(201).send({ id: createdId, code: assignedCode });
   });
   app.patch('/api/categories/:id', { preHandler: staff }, async (req) => {
     const { id: rowId } = idParam.parse(req.params);
     owned('categories', rowId, req.user!.organisationId, 'not_found');
-    const b = z.object({ name: name.optional(), active: z.boolean().optional() }).strict().parse(req.body);
-    update(db, 'categories', rowId, { name: b.name, active: flag(b.active) });
+    const b = z.object({ name: name.optional(), code: z.string().trim().max(30).optional(), active: z.boolean().optional() }).strict().parse(req.body);
+    update(db, 'categories', rowId, { name: b.name, code: b.code, active: flag(b.active) });
     return { ok: true };
   });
 
@@ -450,9 +478,20 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     db.prepare('SELECT id, code, name FROM units_of_measure WHERE organisation_id = ? ORDER BY code').all(req.user!.organisationId),
   );
   app.post('/api/units', { preHandler: staff }, async (req, reply) => {
-    const b = z.object({ code: z.string().trim().min(1).max(12), name }).strict().parse(req.body);
-    const r = db.prepare('INSERT INTO units_of_measure (organisation_id, code, name) VALUES (?, ?, ?)').run(req.user!.organisationId, b.code, b.name);
-    return reply.code(201).send({ id: Number(r.lastInsertRowid) });
+    const b = z.object({ code: z.string().trim().max(12).optional(), name }).strict().parse(req.body);
+    let finalCode = b.code?.trim();
+    if (!finalCode) {
+      const clean = b.name.trim().replace(/[^a-zA-Z0-9]/g, '').slice(0, 5).toUpperCase();
+      let candidate = clean || 'UNIT';
+      let suffix = 1;
+      while (db.prepare('SELECT 1 FROM units_of_measure WHERE organisation_id = ? AND code = ? COLLATE NOCASE').get(req.user!.organisationId, candidate)) {
+        candidate = `${clean.slice(0, 4)}-${suffix}`;
+        suffix += 1;
+      }
+      finalCode = candidate;
+    }
+    const r = db.prepare('INSERT INTO units_of_measure (organisation_id, code, name) VALUES (?, ?, ?)').run(req.user!.organisationId, finalCode, b.name);
+    return reply.code(201).send({ id: Number(r.lastInsertRowid), code: finalCode });
   });
 
   app.get('/api/suppliers', { preHandler: anyUser }, async (req) =>
@@ -564,7 +603,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     const orgId = req.user!.organisationId;
     const b = z
       .object({
-        sku: z.string().trim().min(1).max(60),
+        sku: z.string().trim().max(60).optional(),
         name,
         description: text(500),
         categoryId: id.nullish(),
@@ -578,6 +617,19 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       })
       .strict()
       .parse(req.body);
+
+    let finalSku = b.sku?.trim();
+    if (!finalSku) {
+      const countRow = db.prepare('SELECT COUNT(*) as c FROM products WHERE organisation_id = ?').get(orgId) as { c: number };
+      let seq = (countRow?.c ?? 0) + 1;
+      let candidate = `PRD-${String(seq).padStart(4, '0')}`;
+      while (db.prepare('SELECT 1 FROM products WHERE organisation_id = ? AND sku = ? COLLATE NOCASE').get(orgId, candidate)) {
+        seq += 1;
+        candidate = `PRD-${String(seq).padStart(4, '0')}`;
+      }
+      finalSku = candidate;
+    }
+
     owned('units_of_measure', b.baseUnitId, orgId, 'unit_not_found');
     if (b.categoryId) owned('categories', b.categoryId, orgId, 'category_not_found');
     if (b.departmentId) {
@@ -595,7 +647,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       )
       .run(
         orgId,
-        b.sku,
+        finalSku,
         b.name,
         b.description,
         b.categoryId ?? null,
@@ -607,7 +659,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         b.vatCategory,
         toMilli(b.reorderLevel),
       );
-    return reply.code(201).send({ id: Number(r.lastInsertRowid) });
+    return reply.code(201).send({ id: Number(r.lastInsertRowid), sku: finalSku });
   });
   // The SKU and base unit are fixed once created: posted history is expressed in them.
   app.patch('/api/products/:id', { preHandler: staff }, async (req) => {

@@ -1065,3 +1065,43 @@ test('Stage 7 Zimbabwean SME dual-department trading: retail pricing, counter sa
   assert.deepEqual(verifyLedger(t.db), { ok: true, problems: [] });
 });
 
+test('Stage 8 auto-generated codes: products (SKU), categories, departments, and units generate codes automatically if omitted', async () => {
+  const t = await setup();
+  // 1. Department auto-generated code
+  const deptRes = await t.call('POST', '/api/departments', t.exec, { branchId: 1, name: 'Beverages Bay' });
+  assert.equal(deptRes.status, 201);
+  assert.ok(deptRes.body.code.startsWith('DPT-'));
+
+  const depts = await t.call('GET', '/api/departments', t.exec);
+  const foundDept = depts.body.find((d: { name: string }) => d.name === 'Beverages Bay');
+  assert.ok(foundDept.code.startsWith('DPT-'));
+
+  // 2. Category auto-generated code
+  const catRes = await t.call('POST', '/api/categories', t.exec, { name: 'Dairy & Milk' });
+  assert.equal(catRes.status, 201);
+  assert.ok(catRes.body.code.startsWith('CAT-'));
+
+  const cats = await t.call('GET', '/api/categories', t.exec);
+  const foundCat = cats.body.find((c: { name: string }) => c.name === 'Dairy & Milk');
+  assert.ok(foundCat.code.startsWith('CAT-'));
+
+  // 3. Unit auto-generated code
+  const unitRes = await t.call('POST', '/api/units', t.exec, { name: 'Bale 10 Pack' });
+  assert.equal(unitRes.status, 201);
+  assert.ok(unitRes.body.code);
+
+  // 4. Product auto-generated SKU
+  const prodRes = await t.call('POST', '/api/products', t.exec, {
+    name: 'Fresh Pasteurised Milk 500ml',
+    baseUnitId: t.units.each,
+    categoryId: foundCat.id,
+    departmentId: foundDept.id,
+  });
+  assert.equal(prodRes.status, 201);
+  assert.ok(prodRes.body.sku.startsWith('PRD-'));
+
+  const prods = await t.call('GET', '/api/products', t.exec);
+  const foundProd = prods.body.items.find((p: { name: string }) => p.name === 'Fresh Pasteurised Milk 500ml');
+  assert.ok(foundProd.sku.startsWith('PRD-'));
+});
+
