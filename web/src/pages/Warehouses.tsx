@@ -7,18 +7,7 @@ import { QuickTransferModal } from '../components/QuickTransferModal';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
 
-type DeptSubTab = 'zones' | 'chikwereti';
-
-interface ChikweretiRecord {
-  id: string;
-  customerName: string;
-  phone: string;
-  category: 'Tuckshop / Regular' | 'A1 / A2 Farmer (Agro)' | 'Builder / Contractor';
-  itemsTaken: string;
-  totalUsd: number;
-  paidUsd: number;
-  dueDate: string;
-}
+type DeptSubTab = 'zones' | 'stock';
 
 export function Warehouses() {
   const { user } = useAuth();
@@ -55,27 +44,17 @@ export function Warehouses() {
   } | null>(null);
   const [editDeptSaving, setEditDeptSaving] = useState(false);
 
-  // Sub-Menu 2: Chikwereti Debtors Book state
-  const [debtors, setDebtors] = useState<ChikweretiRecord[]>([]);
   const [posDeptId, setPosDeptId] = useState<number | null>(null);
-  const [posDeptName, setPosDeptName] = useState<string>('');
-  const [ckName, setCkName] = useState('');
-  const [ckPhone, setCkPhone] = useState('');
-  const [ckCat, setCkCat] = useState<ChikweretiRecord['category']>('Tuckshop / Regular');
-  const [ckItems, setCkItems] = useState('');
-  const [ckTotalUsd, setCkTotalUsd] = useState('45');
-  const [ckDue, setCkDue] = useState('2026-11-07');
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [brRes, whRes, dpRes, repRes, balRes, smeRes, posRes] = await Promise.all([
+      const [brRes, whRes, dpRes, repRes, balRes, posRes] = await Promise.all([
         api.branches(),
         api.warehouses(),
         api.departments(),
         api.inventoryReports(),
         api.balances(selectedWhId),
-        api.smeOverview().catch(() => null),
         api.posCatalog().catch(() => null),
       ]);
       setBranches(brRes);
@@ -85,26 +64,6 @@ export function Warehouses() {
       setBalances(balRes.items);
       if (posRes) {
         setPosDeptId(posRes.posDepartmentId ?? null);
-        setPosDeptName(posRes.posDepartmentName ?? '');
-      }
-      if (smeRes) {
-        setDebtors(
-          (smeRes.debtors || []).map((d) => ({
-            id: String(d.id),
-            customerName: d.customerName,
-            phone: d.phone,
-            category:
-              d.departmentName.toLowerCase().includes('hardware') || d.departmentName.toLowerCase().includes('build')
-                ? 'Builder / Contractor'
-                : d.departmentName.toLowerCase().includes('agro')
-                  ? 'A1 / A2 Farmer (Agro)'
-                  : 'Tuckshop / Regular',
-            itemsTaken: d.itemsSummary,
-            totalUsd: d.balance > 0 ? d.balance : d.creditLimit,
-            paidUsd: d.balance === 0 ? d.creditLimit : 0,
-            dueDate: d.status === 'CLEARED' ? 'Paid in Full' : d.dueDate,
-          })),
-        );
       }
       if (brRes[0]) {
         const defaultBr = String(brRes[0].id);
@@ -212,10 +171,10 @@ export function Warehouses() {
       purpose: 'Inspect each warehouse store, hardware yard zone, and internal department consumption.',
     },
     {
-      key: 'chikwereti',
-      label: '2. Customer Credit & Farmers Debtors Book ("Chikwereti")',
-      badge: debtors.filter((d) => d.totalUsd > d.paidUsd).length,
-      purpose: 'Track customer credit ("Chikwereti"), A1/A2 farmer input advances, and send 1-tap WhatsApp payment reminders.',
+      key: 'stock',
+      label: '2. Live Stock Balances',
+      badge: balances.length,
+      purpose: 'Inspect on-shelf inventory levels, valuation, and inter-zone transfer shortcuts.',
     },
   ];
 
@@ -223,11 +182,12 @@ export function Warehouses() {
     <>
       <div className="page-header">
         <div>
-          <h1>Store Departments &amp; Customer Credit</h1>
+          <h1>Store Departments &amp; Storage Yards</h1>
           <span className="vernacular-sub">
             {subLabel(
-              'Matura, Zvikamu zveChitoro & Bhuku reChikwereti cheVatengi neVarimi',
-              'Izigaba Zesitolo &ugwalo Lwezikwelede Zabathengi Labalimi',
+              'Matura neZvikamu zveChitoro',
+              'Izigaba Zesitolo Lamathala',
+              'Storefloor Departments, Retail Checkout Counters & Storage Yards',
             )}
           </span>
         </div>
@@ -556,156 +516,85 @@ export function Warehouses() {
             </div>
           )}
 
-          {/* SUB-MENU 2: Customer Credit & Farmers Debtors Book ("Chikwereti") */}
-          {activeTab === 'chikwereti' && (
-            <div id="warehouses-panel-chikwereti" role="tabpanel" aria-labelledby="warehouses-tab-chikwereti">
+          {/* SUB-MENU 2: Live Stock Balances */}
+          {activeTab === 'stock' && (
+            <div id="warehouses-panel-stock" role="tabpanel" aria-labelledby="warehouses-tab-stock">
               <div className="section-head">
                 <div>
-                  <h2>Customer Credit &amp; Farmers Debtors Book (&quot;Chikwereti&quot;)</h2>
-                  <span className="vernacular-sub">
-                    {subLabel(
-                      'Bhuku reChikwereti (Vatengi veTuckshop, Varimi veA1/A2 neVavaki)',
-                      'Ugwalo Lwezikwelede Zabathengi Labalimi',
-                    )}
+                  <h3>
+                    Stock On Hand — {selectedWhId ? warehouses.find((w) => w.id === selectedWhId)?.name : 'All Store & Yard Zones'}
+                  </h3>
+                  <span className="vernacular-sub" style={{ fontSize: '0.78rem' }}>
+                    Live on-shelf inventory levels, valuation, and inter-zone transfers ({balances.length} balance records).
                   </span>
                 </div>
+                <select
+                  aria-label="Filter stock by warehouse"
+                  value={selectedWhId ?? ''}
+                  onChange={(e) => setSelectedWhId(e.target.value ? Number(e.target.value) : undefined)}
+                >
+                  <option value="">All Warehouses</option>
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={w.id}>{w.name} ({w.branchName})</option>
+                  ))}
+                </select>
               </div>
-
-              <form
-                className="form-grid subcard"
-                style={{ marginBottom: '1.25rem' }}
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  if (!ckName.trim()) return;
-                  await api
-                    .createDebtor({
-                      customerName: ckName.trim(),
-                      phone: ckPhone.trim() || '+263 77 000 0000',
-                      departmentName: ckCat,
-                      creditLimit: Math.max(100, Number(ckTotalUsd) * 2),
-                      balance: Number(ckTotalUsd) || 0,
-                      dueDate: ckDue,
-                      itemsSummary: ckItems.trim() || 'Assorted Store Goods',
-                    })
-                    .catch(() => null);
-                  setCkName('');
-                  setCkPhone('');
-                  setCkItems('');
-                  setMsg('Recorded new customer credit ("Chikwereti") account.');
-                  await load();
-                }}
-              >
-                <label>
-                  Customer / Farmer Name
-                  <input value={ckName} onChange={(e) => setCkName(e.target.value)} placeholder="e.g. Baba Tawanda" required />
-                </label>
-                <label>
-                  WhatsApp Phone
-                  <input value={ckPhone} onChange={(e) => setCkPhone(e.target.value)} placeholder="+263 77..." required />
-                </label>
-                <label>
-                  Account Type
-                  <select value={ckCat} onChange={(e) => setCkCat(e.target.value as ChikweretiRecord['category'])}>
-                    <option value="Tuckshop / Regular">Tuckshop / Regular Customer</option>
-                    <option value="A1 / A2 Farmer (Agro)">A1 / A2 Farmer (Agro Inputs)</option>
-                    <option value="Builder / Contractor">Builder / Hardware Account</option>
-                  </select>
-                </label>
-                <label>
-                  Goods Taken on Credit
-                  <input value={ckItems} onChange={(e) => setCkItems(e.target.value)} placeholder="e.g. 2 × Fertilizer 50kg" required />
-                </label>
-                <label>
-                  Credit Amount (USD $)
-                  <input type="number" step="0.01" value={ckTotalUsd} onChange={(e) => setCkTotalUsd(e.target.value)} required />
-                </label>
-                <label>
-                  Promised Payment Date
-                  <input value={ckDue} onChange={(e) => setCkDue(e.target.value)} required />
-                </label>
-                <div className="form-actions">
-                  <button type="submit" className="btn btn-primary">+ Log Chikwereti</button>
-                </div>
-              </form>
-
               <div className="table-wrap">
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Customer / Farmer</th>
-                      <th>Category</th>
-                      <th>Items Taken on Credit</th>
-                      <th className="num">Total Credit</th>
-                      <th className="num">Paid</th>
-                      <th className="num">Balance Owed</th>
-                      <th>Due Date</th>
-                      <th className="num">Actions</th>
+                      <th>Zone / Store</th>
+                      <th>SKU</th>
+                      <th>Product</th>
+                      <th>Stock Level</th>
+                      <th className="num">Stock Value</th>
+                      <th>Status</th>
+                      <th className="num">Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {debtors.length === 0 ? (
+                    {balances.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
-                          No customer credit accounts logged yet. Use the form above to record customer credit (&quot;Chikwereti&quot;).
+                        <td colSpan={7} className="muted text-center" style={{ padding: '2rem' }}>
+                          No stock balances found in this zone.
                         </td>
                       </tr>
                     ) : (
-                      debtors.map((d) => {
-                        const owed = Math.max(0, d.totalUsd - d.paidUsd);
-                      const waReminder = `Mhoroi / Salibonani ${d.customerName}, friendly reminder from Great Zimbabwe Stockroom regarding your credit balance of ${formatMoney(owed)} for (${d.itemsTaken}) due on ${d.dueDate}. Thank you / Tatenda!`;
-                      return (
-                        <tr key={d.id}>
-                          <td>
-                            <strong>{d.customerName}</strong>
-                            <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>{d.phone}</div>
-                          </td>
-                          <td>{d.category}</td>
-                          <td>{d.itemsTaken}</td>
-                          <td className="num">{formatMoney(d.totalUsd)}</td>
-                          <td className="num pos">{formatMoney(d.paidUsd)}</td>
-                          <td className="num">
-                            <strong className={owed > 0 ? 'neg' : 'pos'}>{formatMoney(owed)}</strong>
-                          </td>
-                          <td>
-                            <span className={`status-pill ${owed === 0 ? 'optimal' : 'low'}`}>
-                              {owed === 0 ? 'Paid in Full' : d.dueDate}
-                            </span>
-                          </td>
-                          <td className="num">
-                            {owed > 0 && (
-                              <div className="action-row" style={{ justifyContent: 'flex-end' }}>
-                                <a
-                                  href={`https://wa.me/?text=${encodeURIComponent(waReminder)}`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="btn btn-whatsapp btn-sm"
-                                >
-                                  📲 WhatsApp Reminder
-                                </a>
-                                <button
-                                  type="button"
-                                  className="btn btn-outline btn-sm"
-                                  onClick={async () => {
-                                    const numId = Number(d.id);
-                                    if (Number.isFinite(numId) && numId > 0) {
-                                      await api.repayDebtor(numId, owed).catch(() => null);
-                                      await load();
-                                    } else {
-                                      setDebtors((prev) =>
-                                        prev.map((x) => (x.id === d.id ? { ...x, paidUsd: x.totalUsd, dueDate: 'Paid in Full' } : x)),
-                                      );
-                                    }
-                                    setMsg(`Marked ${d.customerName}'s Chikwereti balance as settled!`);
-                                  }}
-                                >
-                                  ✓ Clear Debt
-                                </button>
+                      balances.map((b) => {
+                        const statusClass = b.quantity <= 0 ? 'out' : b.lowStock ? 'low' : 'optimal';
+                        const pct = b.reorderLevel > 0 ? Math.min(100, Math.round((b.quantity / (b.reorderLevel * 2)) * 100)) : 80;
+                        return (
+                          <tr key={`${b.productId}-${b.warehouseId}`}>
+                            <td>{b.warehouseName}</td>
+                            <td><code>{b.sku}</code></td>
+                            <td><strong>{b.productName}</strong></td>
+                            <td style={{ minWidth: '150px' }}>
+                              <div className="stock-level-cell">
+                                <div className="stock-bar-track">
+                                  <div className={`stock-bar-fill ${statusClass}`} style={{ width: `${Math.max(8, pct)}%` }} />
+                                </div>
+                                <span className="stock-level-num">{b.quantity} {b.unit}</span>
                               </div>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    }))}
+                            </td>
+                            <td className="num">{formatMoney(b.stockValue)}</td>
+                            <td>
+                              <span className={`status-pill ${statusClass}`}>
+                                {b.lowStock ? `Low (≤ ${b.reorderLevel})` : 'In Stock'}
+                              </span>
+                            </td>
+                            <td className="num">
+                              <button
+                                type="button"
+                                className="btn btn-outline btn-sm"
+                                onClick={() => setTransferTarget({ productId: b.productId, warehouseId: b.warehouseId })}
+                              >
+                                ⇄ Transfer
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               </div>
