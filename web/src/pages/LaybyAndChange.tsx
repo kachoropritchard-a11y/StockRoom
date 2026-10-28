@@ -4,7 +4,7 @@ import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
 
-type LaybySubTab = 'layby' | 'change';
+type LaybySubTab = 'layby' | 'credit' | 'change';
 
 interface LaybyRow {
   id: number;
@@ -22,6 +22,19 @@ interface LaybyRow {
   totalPaid: number;
   status: 'AWAITING_COLLECTION' | 'PARTIAL_COLLECTED' | 'COMPLETED';
   createdAt: string;
+}
+
+interface DebtorRow {
+  id: number;
+  customerName: string;
+  phone: string;
+  departmentName: string;
+  creditLimit: number;
+  balance: number;
+  dueDate: string;
+  itemsSummary: string;
+  status: 'CURRENT' | 'DUE_SOON' | 'OVERDUE' | 'CLEARED';
+  updatedAt: string;
 }
 
 interface ChangeVoucherRow {
@@ -46,6 +59,7 @@ export function LaybyAndChange() {
 
   // Data
   const [laybys, setLaybys] = useState<LaybyRow[]>([]);
+  const [debtors, setDebtors] = useState<DebtorRow[]>([]);
   const [changeVouchers, setChangeVouchers] = useState<ChangeVoucherRow[]>([]);
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: number; name: string }[]>([]);
@@ -53,10 +67,12 @@ export function LaybyAndChange() {
   // Filters & Search
   const [laybySearch, setLaybySearch] = useState('');
   const [laybyStatusFilter, setLaybyStatusFilter] = useState<string>('all');
+  const [debtorSearch, setDebtorSearch] = useState('');
+  const [debtorStatusFilter, setDebtorStatusFilter] = useState<string>('all');
   const [changeSearch, setChangeSearch] = useState('');
   const [changeStatusFilter, setChangeStatusFilter] = useState<string>('all');
 
-  // Modals & Forms
+  // Modals & Forms: Lay-by
   const [showAddLayby, setShowAddLayby] = useState(false);
   const [laybyCustomerName, setLaybyCustomerName] = useState('');
   const [laybyCustomerPhone, setLaybyCustomerPhone] = useState('');
@@ -73,7 +89,21 @@ export function LaybyAndChange() {
   const [collectQty, setCollectQty] = useState('1');
   const [collectNotes, setCollectNotes] = useState('');
 
-  // Change Voucher Form
+  // Modals & Forms: Chikwereti (Customer Debt)
+  const [showAddDebtor, setShowAddDebtor] = useState(false);
+  const [debName, setDebName] = useState('');
+  const [debPhone, setDebPhone] = useState('');
+  const [debDept, setDebDept] = useState('Groceries');
+  const [debLimit, setDebLimit] = useState('100.00');
+  const [debBalance, setDebBalance] = useState('25.00');
+  const [debDueDate, setDebDueDate] = useState('');
+  const [debItems, setDebItems] = useState('2x 10kg Meal, 2L Cooking Oil');
+
+  // Repay Debt Modal
+  const [repayingDebtor, setRepayingDebtor] = useState<DebtorRow | null>(null);
+  const [repayAmount, setRepayAmount] = useState('10.00');
+
+  // Modals & Forms: Change Voucher
   const [showAddChange, setShowAddChange] = useState(false);
   const [changeCustName, setChangeCustName] = useState('Walk-In Customer');
   const [changeCustPhone, setChangeCustPhone] = useState('');
@@ -90,6 +120,7 @@ export function LaybyAndChange() {
         api.warehouses(),
       ]);
       setLaybys(smeRes.laybys || []);
+      setDebtors(smeRes.debtors || []);
       setChangeVouchers(smeRes.changeVouchers || []);
       setProducts(pRes.items);
       setWarehouses(wRes);
@@ -171,6 +202,56 @@ export function LaybyAndChange() {
     }
   }
 
+  // Handle Create Debtor (Chikwereti)
+  async function handleCreateDebtor(e: FormEvent) {
+    e.preventDefault();
+    setError('');
+    setMsg('');
+    try {
+      const due = debDueDate || new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
+      await api.createDebtor({
+        customerName: debName.trim(),
+        phone: debPhone.trim(),
+        departmentName: debDept,
+        creditLimit: Number(debLimit) || 100,
+        balance: Number(debBalance) || 0,
+        dueDate: due,
+        itemsSummary: debItems.trim(),
+      });
+      setShowAddDebtor(false);
+      setDebName('');
+      setDebPhone('');
+      setDebBalance('25.00');
+      setDebItems('');
+      setMsg(`✓ Customer credit account (Chikwereti) created for ${debName}.`);
+      await loadData();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  // Handle Repay Debtor
+  async function handleRepaySubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!repayingDebtor) return;
+    setError('');
+    setMsg('');
+    const amt = Number(repayAmount);
+    if (amt <= 0) {
+      setError('Repayment amount must be positive.');
+      return;
+    }
+    try {
+      const res = await api.repayDebtor(repayingDebtor.id, amt);
+      setRepayingDebtor(null);
+      setRepayAmount('10.00');
+      setMsg(`✓ Payment of ${formatMoney(amt, 'USD')} recorded for ${repayingDebtor.customerName}. New balance: ${formatMoney(res.balance, 'USD')}.`);
+      await loadData();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   // Handle Issue Change Slip
   async function handleIssueChange(e: FormEvent) {
     e.preventDefault();
@@ -217,10 +298,14 @@ export function LaybyAndChange() {
   // KPI Calculations
   const pendingLaybys = laybys.filter((l) => l.status !== 'COMPLETED');
   const totalLaybyValue = pendingLaybys.reduce((sum, l) => sum + l.totalPaid, 0);
+
+  const activeDebtors = debtors.filter((d) => d.status !== 'CLEARED');
+  const totalDebtorBalance = activeDebtors.reduce((sum, d) => sum + d.balance, 0);
+
   const unredeemedChange = changeVouchers.filter((c) => c.status === 'UNREDEEMED');
   const totalChangeLiability = unredeemedChange.reduce((sum, c) => sum + c.amountUsd, 0);
 
-  // Filtered Laybys
+  // Filtered Lists
   const filteredLaybys = laybys.filter((l) => {
     if (laybyStatusFilter !== 'all' && l.status !== laybyStatusFilter) return false;
     if (laybySearch.trim()) {
@@ -235,7 +320,20 @@ export function LaybyAndChange() {
     return true;
   });
 
-  // Filtered Change Vouchers
+  const filteredDebtors = debtors.filter((d) => {
+    if (debtorStatusFilter !== 'all' && d.status !== debtorStatusFilter) return false;
+    if (debtorSearch.trim()) {
+      const q = debtorSearch.toLowerCase();
+      return (
+        d.customerName.toLowerCase().includes(q) ||
+        d.phone.toLowerCase().includes(q) ||
+        d.itemsSummary.toLowerCase().includes(q) ||
+        d.departmentName.toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
+
   const filteredChange = changeVouchers.filter((c) => {
     if (changeStatusFilter !== 'all' && c.status !== changeStatusFilter) return false;
     if (changeSearch.trim()) {
@@ -255,35 +353,41 @@ export function LaybyAndChange() {
       key: 'layby',
       label: '1. Paid & Uncollected Stock (Lay-by)',
       badge: pendingLaybys.length,
-      purpose: 'Manage goods that customers have already paid for but have not yet collected from the store floor or yard.',
+      purpose: 'Manage goods paid for by customers that are still awaiting pickup from the store floor or yard.',
+    },
+    {
+      key: 'credit',
+      label: '2. Customer Credit & Debt (Chikwereti)',
+      badge: activeDebtors.length,
+      purpose: 'Manage trusted customer credit ledgers, goods taken on credit, and debt repayments.',
     },
     {
       key: 'change',
-      label: '2. Customer Till Change Management',
+      label: '3. Customer Till Change Management',
       badge: unredeemedChange.length,
       purpose: 'Manage and redeem change credit balances when the till lacks sufficient small change or coins.',
     },
   ];
 
-  if (loading && laybys.length === 0 && changeVouchers.length === 0) {
-    return <Spinner label="Loading Lay-by & Customer Balances..." fullPage />;
+  if (loading && laybys.length === 0 && debtors.length === 0 && changeVouchers.length === 0) {
+    return <Spinner label="Loading Customer Balances & Lay-By..." fullPage />;
   }
 
   return (
     <>
       <div className="page-header">
         <div>
-          <h1>Paid &amp; Uncollected Stock &amp; Customer Change</h1>
+          <h1>Lay-By, Customer Debt (Chikwereti) &amp; Till Change</h1>
           <span className="vernacular-sub">
             {subLabel(
-              'Zvinhu Zvakabhadharwa Zvisati Zvatorwa • Mari yeChange Inosara paTill',
-              'Impahla Ebhadhalweyo Engathathwanga • Inthshintshi Esele e-Till',
-              'Hardware Yard Pickup, Lay-By Reserves & Till Small-Change Credit Slips',
+              'Zvinhu Zvakabhadharwa • Chikwereti cheVatengi • Mari yeChange Inosara paTill',
+              'Impahla Ebhadaliweyo • Isikwelede Sabathengi • Inthshintshi Esele e-Till',
+              'Hardware Yard Pickups, Lay-By Stock, Customer Debt Ledger (Chikwereti) & Till Change Slips',
             )}
           </span>
         </div>
         <div className="quick-actions">
-          {activeTab === 'layby' ? (
+          {activeTab === 'layby' && (
             <button
               type="button"
               className="btn btn-primary"
@@ -291,7 +395,17 @@ export function LaybyAndChange() {
             >
               + New Lay-by / Paid Order
             </button>
-          ) : (
+          )}
+          {activeTab === 'credit' && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setShowAddDebtor(true)}
+            >
+              + Record Customer Credit (Chikwereti)
+            </button>
+          )}
+          {activeTab === 'change' && (
             <button
               type="button"
               className="btn btn-primary"
@@ -305,7 +419,7 @@ export function LaybyAndChange() {
 
       <AccessibleTabs
         idPrefix="layby-change"
-        ariaLabel="Layby and Customer Change Tabs"
+        ariaLabel="Layby, Chikwereti and Customer Change Tabs"
         tabs={tabs}
         active={activeTab}
         onChange={(k) => setActiveTab(k)}
@@ -487,7 +601,149 @@ export function LaybyAndChange() {
         </>
       )}
 
-      {/* ================= TAB 2: CUSTOMER TILL CHANGE MANAGEMENT ================= */}
+      {/* ================= TAB 2: CUSTOMER CREDIT & DEBT (CHIKWERETI) ================= */}
+      {activeTab === 'credit' && (
+        <>
+          {/* KPI Cards */}
+          <div className="metrics-grid" style={{ marginBottom: '1.25rem' }}>
+            <div className="metric-card">
+              <span className="metric-label">Total Chikwereti Owed</span>
+              <div className="metric-value" style={{ color: totalDebtorBalance > 0 ? 'var(--danger, #dc2626)' : 'var(--success, #16a34a)' }}>
+                {formatMoney(totalDebtorBalance, 'USD')}
+              </div>
+              <span className="metric-sub">Outstanding customer debt</span>
+            </div>
+            <div className="metric-card">
+              <span className="metric-label">Active Debtors</span>
+              <div className="metric-value">{activeDebtors.length}</div>
+              <span className="metric-sub">Accounts with balance</span>
+            </div>
+            <div className="metric-card">
+              <span className="metric-label">Overdue Debtors</span>
+              <div className="metric-value" style={{ color: 'var(--danger, #dc2626)' }}>
+                {debtors.filter((d) => d.status === 'OVERDUE').length}
+              </div>
+              <span className="metric-sub">Past repayment due date</span>
+            </div>
+          </div>
+
+          {/* Controls Bar */}
+          <div className="card" style={{ marginBottom: '1.25rem', padding: '0.75rem 1rem' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', gap: '0.75rem', flex: 1, minWidth: '280px' }}>
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="Search debtor name, phone, items taken, or department..."
+                  value={debtorSearch}
+                  onChange={(e) => setDebtorSearch(e.target.value)}
+                  style={{ flex: 1 }}
+                />
+                <select
+                  className="input"
+                  style={{ width: 'auto' }}
+                  value={debtorStatusFilter}
+                  onChange={(e) => setDebtorStatusFilter(e.target.value)}
+                >
+                  <option value="all">All Debtors ({debtors.length})</option>
+                  <option value="CURRENT">Current</option>
+                  <option value="DUE_SOON">Due Soon</option>
+                  <option value="OVERDUE">Overdue</option>
+                  <option value="CLEARED">Cleared / Settled</option>
+                </select>
+              </div>
+              <div style={{ fontSize: '0.875rem', opacity: 0.8 }}>
+                Showing {filteredDebtors.length} of {debtors.length} customer credit accounts
+              </div>
+            </div>
+          </div>
+
+          {/* Table */}
+          <div className="card">
+            <div className="table-wrapper">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Customer Name &amp; Phone</th>
+                    <th>Department</th>
+                    <th>Items Taken on Credit</th>
+                    <th style={{ textAlign: 'right' }}>Credit Limit</th>
+                    <th style={{ textAlign: 'right' }}>Balance Owed</th>
+                    <th>Due Date</th>
+                    <th>Status</th>
+                    <th style={{ textAlign: 'center' }}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredDebtors.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} style={{ textAlign: 'center', padding: '2.5rem', opacity: 0.7 }}>
+                        No customer credit accounts found matching criteria.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredDebtors.map((d) => (
+                      <tr key={d.id}>
+                        <td>
+                          <div style={{ fontWeight: 600 }}>{d.customerName}</div>
+                          <div style={{ fontSize: '0.8rem', opacity: 0.8 }}>📞 {d.phone}</div>
+                        </td>
+                        <td>{d.departmentName}</td>
+                        <td>
+                          <span style={{ fontSize: '0.88rem' }}>{d.itemsSummary || 'General goods'}</span>
+                        </td>
+                        <td style={{ textAlign: 'right' }}>{formatMoney(d.creditLimit, 'USD')}</td>
+                        <td style={{ textAlign: 'right', fontWeight: 700, fontSize: '1.05rem', color: d.balance > 0 ? 'var(--danger, #dc2626)' : 'var(--success, #16a34a)' }}>
+                          {formatMoney(d.balance, 'USD')}
+                        </td>
+                        <td>
+                          <div>{d.dueDate}</div>
+                          <div style={{ fontSize: '0.75rem', opacity: 0.7 }}>Updated {d.updatedAt.slice(0, 10)}</div>
+                        </td>
+                        <td>
+                          <span
+                            className={`badge ${
+                              d.status === 'CLEARED'
+                                ? 'badge-success'
+                                : d.status === 'OVERDUE'
+                                  ? 'badge-danger'
+                                  : d.status === 'DUE_SOON'
+                                    ? 'badge-warning'
+                                    : 'badge-primary'
+                            }`}
+                          >
+                            {d.status}
+                          </span>
+                        </td>
+                        <td style={{ textAlign: 'center' }}>
+                          {d.balance > 0 ? (
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-success"
+                              onClick={() => {
+                                setRepayingDebtor(d);
+                                setRepayAmount(String(d.balance));
+                              }}
+                            >
+                              💵 Repay Debt
+                            </button>
+                          ) : (
+                            <span style={{ fontSize: '0.8rem', color: 'var(--success, #16a34a)', fontWeight: 600 }}>
+                              ✓ Settled
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ================= TAB 3: CUSTOMER TILL CHANGE MANAGEMENT ================= */}
       {activeTab === 'change' && (
         <>
           {/* Explanation Banner */}
@@ -819,6 +1075,158 @@ export function LaybyAndChange() {
                   className="btn btn-primary"
                 >
                   Save Lay-by Order
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: ADD CHIKWERETI DEBTOR ================= */}
+      {showAddDebtor && (
+        <div className="modal-backdrop">
+          <div className="modal-card" style={{ maxWidth: '540px' }}>
+            <h3>+ Record Customer Credit (Chikwereti)</h3>
+            <p style={{ opacity: 0.85, fontSize: '0.9rem', marginBottom: '1rem' }}>
+              Record goods taken on credit by trusted customers with a repayment due date.
+            </p>
+
+            <form onSubmit={handleCreateDebtor}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                <div className="form-group">
+                  <label className="label">Customer Name *</label>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="e.g. Mai Tanaka or Mr. Dube"
+                    value={debName}
+                    onChange={(e) => setDebName(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="label">Phone Number *</label>
+                  <input
+                    type="tel"
+                    className="input"
+                    placeholder="+263 7..."
+                    value={debPhone}
+                    onChange={(e) => setDebPhone(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="form-group" style={{ marginBottom: '0.75rem' }}>
+                <label className="label">Items Taken on Credit *</label>
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="e.g. 2x 10kg Roller Meal, 2L Cooking Oil, 2kg Sugar"
+                  value={debItems}
+                  onChange={(e) => setDebItems(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem', marginBottom: '1.25rem' }}>
+                <div className="form-group">
+                  <label className="label">Amount Owed ($ USD) *</label>
+                  <input
+                    type="number"
+                    className="input"
+                    min="0.01"
+                    step="0.01"
+                    value={debBalance}
+                    onChange={(e) => setDebBalance(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="label">Credit Limit ($ USD)</label>
+                  <input
+                    type="number"
+                    className="input"
+                    min="1"
+                    step="0.01"
+                    value={debLimit}
+                    onChange={(e) => setDebLimit(e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="label">Repayment Due Date</label>
+                  <input
+                    type="date"
+                    className="input"
+                    value={debDueDate}
+                    onChange={(e) => setDebDueDate(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setShowAddDebtor(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                >
+                  Save Credit Account
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: REPAY DEBT ================= */}
+      {repayingDebtor && (
+        <div className="modal-backdrop">
+          <div className="modal-card" style={{ maxWidth: '440px' }}>
+            <h3>Record Debt Repayment</h3>
+            <p style={{ opacity: 0.85, fontSize: '0.9rem', marginBottom: '1rem' }}>
+              Customer: <strong>{repayingDebtor.customerName}</strong> ({repayingDebtor.phone})
+            </p>
+
+            <div style={{ backgroundColor: 'var(--card-subtle-bg, rgba(0,0,0,0.03))', padding: '0.75rem', borderRadius: '6px', marginBottom: '1rem' }}>
+              <div>Current Balance Owed: <strong style={{ color: 'var(--danger, #dc2626)', fontSize: '1.1rem' }}>{formatMoney(repayingDebtor.balance, 'USD')}</strong></div>
+              <div style={{ fontSize: '0.85rem', opacity: 0.85, marginTop: '0.2rem' }}>Items: {repayingDebtor.itemsSummary}</div>
+            </div>
+
+            <form onSubmit={handleRepaySubmit}>
+              <div className="form-group" style={{ marginBottom: '1.25rem' }}>
+                <label className="label">Amount Paid ($ USD) *</label>
+                <input
+                  type="number"
+                  className="input"
+                  min="0.01"
+                  max={repayingDebtor.balance}
+                  step="0.01"
+                  value={repayAmount}
+                  onChange={(e) => setRepayAmount(e.target.value)}
+                  required
+                  style={{ fontSize: '1.15rem', fontWeight: 700 }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setRepayingDebtor(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                >
+                  Confirm Payment
                 </button>
               </div>
             </form>

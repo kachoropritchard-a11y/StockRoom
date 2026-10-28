@@ -5,11 +5,11 @@ import { QuickTransferModal } from '../components/QuickTransferModal';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
 
-type TransferSubTab = 'move' | 'auto_breakbulk';
+type TransferSubTab = 'transfer' | 'history';
 
 export function Transfers() {
   const { subLabel } = useZim();
-  const [activeTab, setActiveTab] = useState<TransferSubTab>('move');
+  const [activeTab, setActiveTab] = useState<TransferSubTab>('transfer');
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: number; name: string }[]>([]);
   const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
@@ -19,7 +19,7 @@ export function Transfers() {
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
 
-  // Sub-Menu 1: Move Between Depts / Branches state
+  // Transfer Form State
   const [reqKind, setReqKind] = useState<'warehouse_transfer' | 'department_issue'>('warehouse_transfer');
   const [fromWhId, setFromWhId] = useState('');
   const [toWhId, setToWhId] = useState('');
@@ -27,10 +27,8 @@ export function Transfers() {
   const [prodId, setProdId] = useState('');
   const [unitId, setUnitId] = useState('');
   const [qty, setQty] = useState('10');
-
-  // Sub-Menu 2: Auto Break-Bulk Calculator state
-  const [calcProdId, setCalcProdId] = useState('');
-  const [calcPacksCount, setCalcPacksCount] = useState('5');
+  const [transferNotes, setTransferNotes] = useState('');
+  const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -53,7 +51,6 @@ export function Transfers() {
           setUnitId(String(first.baseUnitId));
           return String(first.id);
         });
-        setCalcProdId((prev) => prev || String(first.id));
       }
       if (wRes[0]) {
         const w0 = String(wRes[0].id);
@@ -83,6 +80,14 @@ export function Transfers() {
     e.preventDefault();
     setError('');
     setMsg('');
+    setBusy(true);
+
+    if (reqKind === 'warehouse_transfer' && fromWhId === toWhId) {
+      setError('Source and destination locations cannot be the same.');
+      setBusy(false);
+      return;
+    }
+
     try {
       const created = await api.createRequisition({
         kind: reqKind,
@@ -90,6 +95,7 @@ export function Transfers() {
         departmentId: reqKind === 'department_issue' ? Number(deptId) : null,
         toWarehouseId: reqKind === 'warehouse_transfer' ? Number(toWhId) : null,
         reference: `TRF-${Date.now().toString().slice(-5)}`,
+        notes: transferNotes.trim() || undefined,
         lines: [
           {
             productId: Number(prodId),
@@ -98,74 +104,67 @@ export function Transfers() {
           },
         ],
       });
-      setMsg(`Transfer / Requisition #${created.id} (${created.reference}) created.`);
-      await load();
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
 
-  async function handleFulfillReq(id: number) {
-    setError('');
-    setMsg('');
-    try {
-      await api.fulfillRequisition(id, 'Dispatched on storefloor');
-      setMsg(`Requisition #${id} fulfilled and posted to the stock ledger.`);
+      // Immediately fulfill the transfer so stock moves in real time
+      await api.fulfillRequisition(created.id, 'Storefloor transfer dispatch');
+
+      const movedProd = products.find((p) => String(p.id) === prodId);
+      const fromName = warehouses.find((w) => String(w.id) === fromWhId)?.name ?? 'Source';
+      const toName =
+        reqKind === 'warehouse_transfer'
+          ? warehouses.find((w) => String(w.id) === toWhId)?.name ?? 'Destination'
+          : departments.find((d) => String(d.id) === deptId)?.name ?? 'Department';
+
+      setMsg(`✓ Successfully moved ${qty} ${movedProd?.baseUnit ?? 'units'} of "${movedProd?.name}" from ${fromName} to ${toName}.`);
+      setTransferNotes('');
       await load();
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
 
   const selectedProduct = products.find((p) => String(p.id) === prodId);
-  const availableUnits = selectedProduct
-    ? [
-        { id: selectedProduct.baseUnitId, label: `${selectedProduct.baseUnit} (Base Unit × 1)` },
-        ...selectedProduct.packagings.map((g) => ({
-          id: g.unitId,
-          label: `${g.unit} (Bulk Pack × ${g.factor} ${selectedProduct.baseUnit})`,
-        })),
-      ]
-    : [];
-
-  const calcProduct = products.find((p) => String(p.id) === calcProdId) ?? products[0];
-  const primaryPack = calcProduct?.packagings[0];
-  const calcFactor = primaryPack?.factor ?? 1;
-  const calcPacks = Math.max(0, Number(calcPacksCount) || 0);
-  const calcResultSingles = calcPacks * calcFactor;
-
-  const productsWithPackaging = products.filter((p) => p.packagings.length > 0);
+  const fromWh = warehouses.find((w) => String(w.id) === fromWhId);
+  const toWh = warehouses.find((w) => String(w.id) === toWhId);
+  const targetDept = departments.find((d) => String(d.id) === deptId);
 
   const tabs: TabDefinition<TransferSubTab>[] = [
     {
-      key: 'move',
-      label: '1. Move Between Depts & Branches',
-      badge: requisitions.length,
-      purpose: 'Transfer stock between warehouses or issue stock to active storefloor departments.',
+      key: 'transfer',
+      label: '1. Department & Warehouse Stock Transfer',
+      badge: undefined,
+      purpose: 'Move stock directly between storefloor departments, reserves, and outdoor storage yards.',
     },
     {
-      key: 'auto_breakbulk',
-      label: '2. Auto Break-Bulk & Pack Rules',
-      badge: productsWithPackaging.length,
-      purpose: 'The system breaks bulk itself: cartons and bales automatically unpack into retail singles upon receipt.',
+      key: 'history',
+      label: '2. Inter-Department Transfer History',
+      badge: requisitions.length,
+      purpose: 'Authoritative audit history of stock transfers and department issues across the business.',
     },
   ];
+
+  if (loading && products.length === 0) {
+    return <Spinner label="Loading Stock Transfers..." fullPage />;
+  }
 
   return (
     <>
       <div className="page-header">
         <div>
-          <h1>Department &amp; Store Transfers</h1>
+          <h1>Department &amp; Stock Transfers</h1>
           <span className="vernacular-sub">
             {subLabel(
-              'Kufambisa Zvinhu Pakati peMathipatimendi neMaturu • Kupatsanura Mabhero Nekukasira',
-              'Ukuthutha Impahla Phakathi Kwamawodi Lesitolo • Ukuhlukanisa Amabhele',
+              'Kufambisa Zvinhu Pakati peMathipatimendi neMaturu',
+              'Ukuthutha Impahla Phakathi Kwamawodi Lesitolo',
+              'Move stock between departments, retail storefloors, and storage yards with live ledger verification.',
             )}
           </span>
         </div>
         <div className="quick-actions">
           <button type="button" className="btn btn-primary" onClick={() => setTransferModalOpen(true)}>
-            ⇄ Instant Store-to-Store Transfer (Alt+T)
+            ⇄ Fast Stock Transfer (Alt+T)
           </button>
         </div>
       </div>
@@ -174,32 +173,31 @@ export function Transfers() {
       {msg && <p className="form-success" role="status">{msg}</p>}
 
       <section className="card">
-        {/* TIER 3: Horizontal In-Page Sub-Menu Bar */}
         <AccessibleTabs
           idPrefix="transfers"
-          ariaLabel="Transfers and auto break-bulk sub-menus"
+          ariaLabel="Stock transfer tabs"
           tabs={tabs}
           active={activeTab}
           onChange={setActiveTab}
         />
 
-        {/* SUB-MENU 1: Move Between Depts / Branches */}
-        {activeTab === 'move' && (
-          <div id="transfers-panel-move" role="tabpanel" aria-labelledby="transfers-tab-move">
+        {/* SUB-MENU 1: Move Stock Between Departments */}
+        {activeTab === 'transfer' && (
+          <div id="transfers-panel-transfer" role="tabpanel" aria-labelledby="transfers-tab-transfer" style={{ marginTop: '1.25rem' }}>
             <form className="form-grid subcard" style={{ marginBottom: '1.25rem' }} onSubmit={handleCreateTransferOrReq}>
               <label>
-                Transfer Type
+                Transfer Type *
                 <select
                   value={reqKind}
                   onChange={(e) => setReqKind(e.target.value as 'warehouse_transfer' | 'department_issue')}
                 >
                   <option value="warehouse_transfer">Warehouse / Store-to-Store Transfer</option>
-                  <option value="department_issue">Department Storefloor Requisition</option>
+                  <option value="department_issue">Department Storefloor Requisition / Issue</option>
                 </select>
               </label>
 
               <label>
-                Source Warehouse / Storeroom
+                Source Department / Storeroom *
                 <select value={fromWhId} onChange={(e) => setFromWhId(e.target.value)} required>
                   {warehouses.map((w) => (
                     <option key={w.id} value={w.id}>
@@ -211,7 +209,7 @@ export function Transfers() {
 
               {reqKind === 'warehouse_transfer' ? (
                 <label>
-                  Destination Warehouse / Yard
+                  Destination Department / Yard *
                   <select value={toWhId} onChange={(e) => setToWhId(e.target.value)} required>
                     {warehouses.map((w) => (
                       <option key={w.id} value={w.id} disabled={String(w.id) === fromWhId}>
@@ -222,7 +220,7 @@ export function Transfers() {
                 </label>
               ) : (
                 <label>
-                  Destination Department
+                  Destination Storefloor Department *
                   <select value={deptId} onChange={(e) => setDeptId(e.target.value)} required>
                     {departments.map((d) => (
                       <option key={d.id} value={d.id}>
@@ -234,7 +232,7 @@ export function Transfers() {
               )}
 
               <label>
-                Product to Transfer
+                Product to Move *
                 <select
                   value={prodId}
                   onChange={(e) => {
@@ -247,55 +245,85 @@ export function Transfers() {
                 >
                   {products.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.name} ({p.sku}) — Stock: {p.totalStock} {p.baseUnit}
+                      {p.name} ({p.sku}) — Total Store Stock: {p.totalStock} {p.baseUnit}
                     </option>
                   ))}
                 </select>
               </label>
 
               <label>
-                Packaging Unit
-                <select value={unitId} onChange={(e) => setUnitId(e.target.value)} required>
-                  {availableUnits.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.label}
-                    </option>
-                  ))}
-                </select>
+                Quantity to Move ({selectedProduct?.baseUnit ?? 'units'}) *
+                <input
+                  type="number"
+                  min="0.001"
+                  step="any"
+                  value={qty}
+                  onChange={(e) => setQty(e.target.value)}
+                  required
+                />
               </label>
 
               <label>
-                Quantity to Move
-                <input type="number" min="1" step="any" value={qty} onChange={(e) => setQty(e.target.value)} required />
+                Transfer Notes / Reason (Optional)
+                <input
+                  type="text"
+                  placeholder="e.g. Restocking front display shelves from yard"
+                  value={transferNotes}
+                  onChange={(e) => setTransferNotes(e.target.value)}
+                />
               </label>
 
-              <div className="form-actions">
-                <button type="submit" className="btn btn-primary">
-                  ⇄ Submit Stock Movement
+              {/* Movement Preview Banner */}
+              <div
+                style={{
+                  gridColumn: '1 / -1',
+                  padding: '0.85rem 1.25rem',
+                  background: 'var(--surface-alt)',
+                  border: '1.5px solid var(--line)',
+                  borderRadius: '8px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '1rem',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <div>
+                  <span className="muted" style={{ fontSize: '0.78rem', textTransform: 'uppercase' }}>
+                    Movement Summary
+                  </span>
+                  <div style={{ fontWeight: 700, fontSize: '0.95rem', marginTop: '0.15rem' }}>
+                    Moving <span style={{ color: 'var(--accent, #0284c7)' }}>{qty} {selectedProduct?.baseUnit ?? 'units'}</span> of <strong>{selectedProduct?.name}</strong>
+                  </div>
+                  <div style={{ fontSize: '0.84rem', opacity: 0.85, marginTop: '0.1rem' }}>
+                    From: <strong>{fromWh?.name}</strong> → To: <strong>{reqKind === 'warehouse_transfer' ? toWh?.name : targetDept?.name}</strong>
+                  </div>
+                </div>
+
+                <button type="submit" className="btn btn-primary" disabled={busy}>
+                  {busy ? 'Moving Stock…' : '⇄ Confirm & Move Stock Now'}
                 </button>
               </div>
             </form>
+          </div>
+        )}
 
+        {/* SUB-MENU 2: Inter-Department Transfer History */}
+        {activeTab === 'history' && (
+          <div id="transfers-panel-history" role="tabpanel" aria-labelledby="transfers-tab-history" style={{ marginTop: '1.25rem' }}>
             <div className="section-head" style={{ marginBottom: '0.75rem' }}>
               <div>
-                <h3 style={{ margin: 0 }}>Pending Internal Requisitions &amp; Transfers Queue</h3>
+                <h3 style={{ margin: 0 }}>Stock Movement &amp; Requisition Ledger</h3>
                 <span className="vernacular-sub" style={{ fontSize: '0.82rem' }}>
-                  Authorize or dispatch stock movements between storerooms and sales departments.
+                  Authoritative record of inter-department transfers and storefloor stock requisitions.
                 </span>
               </div>
             </div>
 
-            {loading ? (
-              <div style={{ padding: '2.5rem', textAlign: 'center' }}>
-                <Spinner label="Loading requisitions and transfers" />
-                <p className="muted" style={{ marginTop: '0.5rem' }}>
-                  Loading transfer queue…
-                </p>
-              </div>
-            ) : requisitions.length === 0 ? (
-              <div className="empty-state-box" style={{ padding: '2.5rem', textAlign: 'center' }}>
+            {requisitions.length === 0 ? (
+              <div className="empty-state-box" style={{ padding: '3rem 1.5rem', textAlign: 'center' }}>
                 <p className="muted" style={{ margin: 0 }}>
-                  No pending internal requisitions. Use the form above or the Instant Transfer button to move stock.
+                  No stock transfers recorded yet. Use the transfer form above or press Alt+T for fast transfers.
                 </p>
               </div>
             ) : (
@@ -305,237 +333,45 @@ export function Transfers() {
                     <tr>
                       <th>Ref #</th>
                       <th>Type</th>
-                      <th>Source</th>
-                      <th>Destination</th>
-                      <th className="num">Lines</th>
+                      <th>From Location</th>
+                      <th>To Department / Store</th>
+                      <th className="num">Items Count</th>
                       <th>Status</th>
                       <th>Date</th>
-                      <th className="num">Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {requisitions.map((r) => (
                       <tr key={r.id}>
+                        <td><code>{r.reference}</code></td>
                         <td>
-                          <code>{r.reference}</code>
+                          {r.kind === 'warehouse_transfer'
+                            ? '⇄ Warehouse Transfer'
+                            : '📋 Storefloor Issue'}
                         </td>
-                        <td style={{ textTransform: 'capitalize' }}>{r.kind.replace('_', ' ')}</td>
                         <td>{r.warehouseName}</td>
-                        <td>{r.toWarehouseName || r.departmentName || '—'}</td>
+                        <td>{r.departmentName ?? r.toWarehouseName ?? '—'}</td>
                         <td className="num">{r.lineCount}</td>
                         <td>
                           <span
                             className={`status-pill ${
-                              r.status === 'fulfilled' ? 'optimal' : r.status === 'pending' ? 'low' : 'warn'
+                              r.status === 'fulfilled'
+                                ? 'optimal'
+                                : r.status === 'pending'
+                                ? 'warn'
+                                : 'danger'
                             }`}
                           >
-                            {r.status}
+                            {r.status.toUpperCase()}
                           </span>
                         </td>
                         <td>{r.createdAt.slice(0, 10)}</td>
-                        <td className="num">
-                          {r.status === 'pending' && (
-                            <button
-                              type="button"
-                              className="btn btn-primary btn-sm"
-                              onClick={() => handleFulfillReq(r.id)}
-                            >
-                              ✓ Dispatch &amp; Post
-                            </button>
-                          )}
-                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             )}
-          </div>
-        )}
-
-        {/* SUB-MENU 2: Automatic Break-Bulk & Pack Rules */}
-        {activeTab === 'auto_breakbulk' && (
-          <div id="transfers-panel-auto-breakbulk" role="tabpanel" aria-labelledby="transfers-tab-auto-breakbulk">
-            <div
-              className="subcard"
-              style={{
-                marginBottom: '1.25rem',
-                borderLeft: '4px solid var(--emerald)',
-                background: 'var(--surface-alt)',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.85rem' }}>
-                <span style={{ fontSize: '1.75rem', lineHeight: 1 }}>📦</span>
-                <div>
-                  <h3 style={{ margin: '0 0 0.35rem', color: 'var(--charcoal)' }}>
-                    Automatic Break-Bulk Enabled
-                  </h3>
-                  <p style={{ margin: 0, fontSize: '0.86rem', color: 'var(--muted)', lineHeight: 1.5 }}>
-                    The system automatically breaks bulk itself: whenever you receive wholesale deliveries or issue stock in
-                    crates, master cartons, or bales, the inventory engine multiplies by each product’s declared packaging ratio
-                    and immediately credits single shelf units to stock. No manual unpacking forms or yield batches are needed.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Quick Auto Break-Bulk Calculator */}
-            <div className="subcard" style={{ marginBottom: '1.25rem' }}>
-              <div className="section-head" style={{ marginBottom: '0.75rem' }}>
-                <div>
-                  <h4 style={{ margin: 0 }}>Pack Breakdown Simulator</h4>
-                  <span className="muted" style={{ fontSize: '0.8rem' }}>
-                    Quickly check how many single retail units the system automatically unpacks when receiving full cases.
-                  </span>
-                </div>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 2fr', gap: '1rem', alignItems: 'end' }}>
-                <label>
-                  Select Product
-                  <select value={calcProdId} onChange={(e) => setCalcProdId(e.target.value)}>
-                    {products.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} ({p.sku})
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Full Cases / Packs
-                  <input
-                    type="number"
-                    min="1"
-                    value={calcPacksCount}
-                    onChange={(e) => setCalcPacksCount(e.target.value)}
-                  />
-                </label>
-                <div
-                  style={{
-                    padding: '0.65rem 1rem',
-                    background: 'var(--surface)',
-                    border: '1.5px solid var(--line)',
-                    borderRadius: '8px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                  }}
-                >
-                  <span className="muted" style={{ fontSize: '0.8rem' }}>Auto-Breaks Into:</span>
-                  <strong style={{ fontSize: '1.15rem', color: 'var(--emerald)' }}>
-                    {calcResultSingles.toLocaleString()} {calcProduct?.baseUnit ?? 'Singles'}
-                  </strong>
-                </div>
-              </div>
-              {primaryPack ? (
-                <div className="muted" style={{ fontSize: '0.76rem', marginTop: '0.5rem' }}>
-                  Ratio: 1 {primaryPack.unit} = {primaryPack.factor} {calcProduct?.baseUnit}
-                </div>
-              ) : (
-                <div className="muted" style={{ fontSize: '0.76rem', marginTop: '0.5rem' }}>
-                  No bulk pack configured yet. Ratio defaults to 1:1.
-                </div>
-              )}
-            </div>
-
-            {/* Registered Packaging Rules & Auto-Break Status */}
-            <div className="section-head" style={{ marginBottom: '0.75rem' }}>
-              <div>
-                <h3 style={{ margin: 0 }}>Active Store Catalog Packaging Rules</h3>
-                <span className="vernacular-sub" style={{ fontSize: '0.82rem' }}>
-                  Products configured with wholesale carton, bale, or box factors that auto-convert upon receiving.
-                </span>
-              </div>
-            </div>
-
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Product &amp; SKU</th>
-                    <th>Base Single Unit</th>
-                    <th>Bulk Packaging Ratio</th>
-                    <th className="num">Single Units On Hand</th>
-                    <th className="num">Equivalent Full Cases</th>
-                    <th>Break-Bulk Engine</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {products.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
-                        No products registered in the system yet.
-                      </td>
-                    </tr>
-                  ) : (
-                    products.map((p) => {
-                      const pack = p.packagings[0];
-                      const factor = pack?.factor ?? 1;
-                      const fullPacks = Math.floor(p.totalStock / factor);
-                      const loose = p.totalStock % factor;
-
-                      return (
-                        <tr key={p.id}>
-                          <td>
-                            <strong>{p.name}</strong> <code>({p.sku})</code>
-                          </td>
-                          <td>
-                            <span className="status-pill optimal" style={{ textTransform: 'lowercase' }}>
-                              {p.baseUnit}
-                            </span>
-                          </td>
-                          <td>
-                            {p.packagings.length > 0 ? (
-                              p.packagings.map((g) => (
-                                <span
-                                  key={g.id}
-                                  style={{
-                                    display: 'inline-block',
-                                    padding: '0.2rem 0.5rem',
-                                    background: 'var(--surface-alt)',
-                                    borderRadius: '6px',
-                                    border: '1px solid var(--line)',
-                                    fontSize: '0.8rem',
-                                    fontWeight: 700,
-                                    marginRight: '0.35rem',
-                                  }}
-                                >
-                                  1 {g.unit} = {g.factor} {p.baseUnit}
-                                </span>
-                              ))
-                            ) : (
-                              <span className="muted" style={{ fontSize: '0.8rem' }}>
-                                Sold only as singles ({p.baseUnit})
-                              </span>
-                            )}
-                          </td>
-                          <td className="num">
-                            <strong>{p.totalStock.toLocaleString()} {p.baseUnit}</strong>
-                          </td>
-                          <td className="num">
-                            {pack ? (
-                              <span style={{ fontWeight: 700, color: 'var(--charcoal)' }}>
-                                {fullPacks} {pack.unit}(s) {loose > 0 ? `+ ${loose} ${p.baseUnit}` : ''}
-                              </span>
-                            ) : (
-                              <span className="muted">—</span>
-                            )}
-                          </td>
-                          <td>
-                            <span
-                              className="status-pill optimal"
-                              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
-                            >
-                              <span className="live-dot" style={{ background: 'var(--emerald)' }} />
-                              Auto-Active
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
           </div>
         )}
       </section>
