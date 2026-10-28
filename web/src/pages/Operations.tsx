@@ -32,7 +32,7 @@ interface TillShiftRecord {
 }
 
 const SHRINKAGE_REASONS = [
-  'ZESA Power Cut Spoilage (Cold Chain / Butchery / Dairy)',
+  'ZESA Power Cut Spoilage (Cold Chain / Perishables / Dairy)',
   'Transit Breakage (Runner / Bus / Forklift Damage)',
   'Expired on Shelf (MCAZ / FEFO Removal)',
   'Packaging Torn / Spilled in Store',

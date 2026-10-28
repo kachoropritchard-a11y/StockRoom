@@ -5,29 +5,7 @@ import { QuickTransferModal } from '../components/QuickTransferModal';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
 
-type TransferSubTab = 'move' | 'breakbulk' | 'yield';
-
-interface BreakBulkLogItem {
-  id: string;
-  productName: string;
-  bulkType: string;
-  bulkQtyOpened: number;
-  shelfUnitsCreated: number;
-  warehouseName: string;
-  createdAt: string;
-}
-
-interface YieldBatchItem {
-  id: string;
-  department: 'Butchery' | 'Bakery' | 'Kitchen';
-  rawInputDesc: string;
-  rawInputWeightKg: number;
-  finishedOutputDesc: string;
-  finishedUnits: number;
-  wasteOrBoneKg: number;
-  yieldPct: number;
-  createdAt: string;
-}
+type TransferSubTab = 'move' | 'auto_breakbulk';
 
 export function Transfers() {
   const { subLabel } = useZim();
@@ -50,65 +28,24 @@ export function Transfers() {
   const [unitId, setUnitId] = useState('');
   const [qty, setQty] = useState('10');
 
-  // Sub-Menu 2: Break Bulk state
-  const [breakLogs, setBreakLogs] = useState<BreakBulkLogItem[]>([]);
-  const [bbProdId, setBbProdId] = useState('');
-  const [bbWhId, setBbWhId] = useState('');
-  const [bbBulkLabel, setBbBulkLabel] = useState('1 Master Bale / Case');
-  const [bbCasesOpened, setBbCasesOpened] = useState('1');
-  const [bbUnitsPerCase, setBbUnitsPerCase] = useState('12');
-
-  // Sub-Menu 3: Recipe / Butchery / Bakery Yield Transformation state
-  const [yieldBatches, setYieldBatches] = useState<YieldBatchItem[]>([]);
-  const [ydDept, setYdDept] = useState<'Butchery' | 'Bakery' | 'Kitchen'>('Butchery');
-  const [ydRawDesc, setYdRawDesc] = useState('');
-  const [ydRawKg, setYdRawKg] = useState('10');
-  const [ydOutDesc, setYdOutDesc] = useState('');
-  const [ydOutUnits, setYdOutUnits] = useState('10');
-  const [ydWasteKg, setYdWasteKg] = useState('0');
+  // Sub-Menu 2: Auto Break-Bulk Calculator state
+  const [calcProdId, setCalcProdId] = useState('');
+  const [calcPacksCount, setCalcPacksCount] = useState('5');
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [pRes, wRes, dRes, rRes, smeRes] = await Promise.all([
+      const [pRes, wRes, dRes, rRes] = await Promise.all([
         api.products('', { limit: 200 }),
         api.warehouses(),
         api.departments(),
         api.requisitions(),
-        api.smeOverview().catch(() => null),
       ]);
       setProducts(pRes.items);
       setWarehouses(wRes);
       setDepartments(dRes);
       setRequisitions(rRes.items);
-      if (smeRes) {
-        const breaks = (smeRes.yieldBatches || []).filter((y) => y.kind === 'BREAK_BULK');
-        const yields = (smeRes.yieldBatches || []).filter((y) => y.kind === 'RECIPE_YIELD');
-        setBreakLogs(
-          breaks.map((b) => ({
-            id: b.batchRef,
-            productName: b.outputName,
-            bulkType: b.sourceName,
-            bulkQtyOpened: b.inputQty,
-            shelfUnitsCreated: b.actualOutputQty,
-            warehouseName: b.departmentName,
-            createdAt: b.createdAt.slice(0, 16),
-          })),
-        );
-        setYieldBatches(
-          yields.map((y) => ({
-            id: y.batchRef,
-            department: (y.departmentName as 'Butchery' | 'Bakery' | 'Kitchen') || 'Butchery',
-            rawInputDesc: y.sourceName,
-            rawInputWeightKg: y.inputQty,
-            finishedOutputDesc: y.outputName,
-            finishedUnits: y.actualOutputQty,
-            wasteOrBoneKg: y.wasteQty,
-            yieldPct: y.yieldPct,
-            createdAt: y.createdAt.slice(0, 16),
-          })),
-        );
-      }
+
       if (pRes.items[0]) {
         const first = pRes.items[0];
         setProdId((prev) => {
@@ -116,12 +53,11 @@ export function Transfers() {
           setUnitId(String(first.baseUnitId));
           return String(first.id);
         });
-        setBbProdId((prev) => prev || String(first.id));
+        setCalcProdId((prev) => prev || String(first.id));
       }
       if (wRes[0]) {
         const w0 = String(wRes[0].id);
         setFromWhId((prev) => prev || w0);
-        setBbWhId((prev) => prev || w0);
       }
       if (wRes[1]) {
         setToWhId((prev) => prev || String(wRes[1].id));
@@ -181,24 +117,37 @@ export function Transfers() {
     }
   }
 
+  const selectedProduct = products.find((p) => String(p.id) === prodId);
+  const availableUnits = selectedProduct
+    ? [
+        { id: selectedProduct.baseUnitId, label: `${selectedProduct.baseUnit} (Base Unit × 1)` },
+        ...selectedProduct.packagings.map((g) => ({
+          id: g.unitId,
+          label: `${g.unit} (Bulk Pack × ${g.factor} ${selectedProduct.baseUnit})`,
+        })),
+      ]
+    : [];
+
+  const calcProduct = products.find((p) => String(p.id) === calcProdId) ?? products[0];
+  const primaryPack = calcProduct?.packagings[0];
+  const calcFactor = primaryPack?.factor ?? 1;
+  const calcPacks = Math.max(0, Number(calcPacksCount) || 0);
+  const calcResultSingles = calcPacks * calcFactor;
+
+  const productsWithPackaging = products.filter((p) => p.packagings.length > 0);
+
   const tabs: TabDefinition<TransferSubTab>[] = [
     {
       key: 'move',
-      label: '1. Move Between Depts / Branches',
+      label: '1. Move Between Depts & Branches',
       badge: requisitions.length,
-      purpose: 'Transfer stock between warehouses/branches or fulfill internal department requisitions.',
+      purpose: 'Transfer stock between warehouses or issue stock to active storefloor departments.',
     },
     {
-      key: 'breakbulk',
-      label: '2. Break Bulk (Crate/Bale/Sling -> Single Shelf Units)',
-      badge: breakLogs.length,
-      purpose: 'Open wholesale crates, master sugar bales, or slings into individual retail shelf units.',
-    },
-    {
-      key: 'yield',
-      label: '3. Recipe / Butchery / Bakery Yield Transformation',
-      badge: yieldBatches.length,
-      purpose: 'Convert raw carcasses or 50kg flour sacks into finished retail cuts/loaves while tracking trimming loss.',
+      key: 'auto_breakbulk',
+      label: '2. Auto Break-Bulk & Pack Rules',
+      badge: productsWithPackaging.length,
+      purpose: 'The system breaks bulk itself: cartons and bales automatically unpack into retail singles upon receipt.',
     },
   ];
 
@@ -206,11 +155,11 @@ export function Transfers() {
     <>
       <div className="page-header">
         <div>
-          <h1>Transfers, Break-Bulk &amp; Butchery/Bakery Yield</h1>
+          <h1>Department &amp; Store Transfers</h1>
           <span className="vernacular-sub">
             {subLabel(
-              'Kufambisa Zvinhu • Kupatsanura Mabhero/MaCrate • Kubika neKucheka Nyama',
-              'Ukuthutha Impahla • Ukuhlukanisa Amabhele • Ukupheka Lokusika Inyama',
+              'Kufambisa Zvinhu Pakati peMathipatimendi neMaturu • Kupatsanura Mabhero Nekukasira',
+              'Ukuthutha Impahla Phakathi Kwamawodi Lesitolo • Ukuhlukanisa Amabhele',
             )}
           </span>
         </div>
@@ -228,7 +177,7 @@ export function Transfers() {
         {/* TIER 3: Horizontal In-Page Sub-Menu Bar */}
         <AccessibleTabs
           idPrefix="transfers"
-          ariaLabel="Transfers and yield transformation sub-menus"
+          ariaLabel="Transfers and auto break-bulk sub-menus"
           tabs={tabs}
           active={activeTab}
           onChange={setActiveTab}
@@ -239,91 +188,147 @@ export function Transfers() {
           <div id="transfers-panel-move" role="tabpanel" aria-labelledby="transfers-tab-move">
             <form className="form-grid subcard" style={{ marginBottom: '1.25rem' }} onSubmit={handleCreateTransferOrReq}>
               <label>
-                Movement Type
-                <select value={reqKind} onChange={(e) => setReqKind(e.target.value as 'warehouse_transfer' | 'department_issue')}>
-                  <option value="warehouse_transfer">Branch / Warehouse Transfer (Store → Store)</option>
-                  <option value="department_issue">Department Requisition (Store → Kitchen/Shopfloor)</option>
+                Transfer Type
+                <select
+                  value={reqKind}
+                  onChange={(e) => setReqKind(e.target.value as 'warehouse_transfer' | 'department_issue')}
+                >
+                  <option value="warehouse_transfer">Warehouse / Store-to-Store Transfer</option>
+                  <option value="department_issue">Department Storefloor Requisition</option>
                 </select>
               </label>
+
               <label>
-                From Source Warehouse
+                Source Warehouse / Storeroom
                 <select value={fromWhId} onChange={(e) => setFromWhId(e.target.value)} required>
                   {warehouses.map((w) => (
-                    <option key={w.id} value={w.id}>{w.name}</option>
+                    <option key={w.id} value={w.id}>
+                      {w.name}
+                    </option>
                   ))}
                 </select>
               </label>
+
               {reqKind === 'warehouse_transfer' ? (
                 <label>
-                  To Destination Warehouse
+                  Destination Warehouse / Yard
                   <select value={toWhId} onChange={(e) => setToWhId(e.target.value)} required>
                     {warehouses.map((w) => (
-                      <option key={w.id} value={w.id}>{w.name}</option>
+                      <option key={w.id} value={w.id} disabled={String(w.id) === fromWhId}>
+                        {w.name} {String(w.id) === fromWhId ? '(Source Store)' : ''}
+                      </option>
                     ))}
                   </select>
                 </label>
               ) : (
                 <label>
-                  To Internal Department
+                  Destination Department
                   <select value={deptId} onChange={(e) => setDeptId(e.target.value)} required>
                     {departments.map((d) => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
+                      <option key={d.id} value={d.id}>
+                        {d.name}
+                      </option>
                     ))}
                   </select>
                 </label>
               )}
+
               <label>
-                Product
+                Product to Transfer
                 <select
                   value={prodId}
                   onChange={(e) => {
-                    setProdId(e.target.value);
-                    const p = products.find((x) => String(x.id) === e.target.value);
+                    const id = e.target.value;
+                    setProdId(id);
+                    const p = products.find((x) => String(x.id) === id);
                     if (p) setUnitId(String(p.baseUnitId));
                   }}
                   required
                 >
                   {products.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.name} ({p.sku}) — {p.totalStock} {p.baseUnit}
+                      {p.name} ({p.sku}) — Stock: {p.totalStock} {p.baseUnit}
                     </option>
                   ))}
                 </select>
               </label>
+
+              <label>
+                Packaging Unit
+                <select value={unitId} onChange={(e) => setUnitId(e.target.value)} required>
+                  {availableUnits.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
               <label>
                 Quantity to Move
-                <input type="number" step="0.001" min="0.001" value={qty} onChange={(e) => setQty(e.target.value)} required />
+                <input type="number" min="1" step="any" value={qty} onChange={(e) => setQty(e.target.value)} required />
               </label>
+
               <div className="form-actions">
-                <button type="submit" className="btn btn-primary">+ Submit Transfer Request</button>
+                <button type="submit" className="btn btn-primary">
+                  ⇄ Submit Stock Movement
+                </button>
               </div>
             </form>
 
+            <div className="section-head" style={{ marginBottom: '0.75rem' }}>
+              <div>
+                <h3 style={{ margin: 0 }}>Pending Internal Requisitions &amp; Transfers Queue</h3>
+                <span className="vernacular-sub" style={{ fontSize: '0.82rem' }}>
+                  Authorize or dispatch stock movements between storerooms and sales departments.
+                </span>
+              </div>
+            </div>
+
             {loading ? (
-              <Spinner label="Loading requisitions and transfers" />
+              <div style={{ padding: '2.5rem', textAlign: 'center' }}>
+                <Spinner label="Loading requisitions and transfers" />
+                <p className="muted" style={{ marginTop: '0.5rem' }}>
+                  Loading transfer queue…
+                </p>
+              </div>
+            ) : requisitions.length === 0 ? (
+              <div className="empty-state-box" style={{ padding: '2.5rem', textAlign: 'center' }}>
+                <p className="muted" style={{ margin: 0 }}>
+                  No pending internal requisitions. Use the form above or the Instant Transfer button to move stock.
+                </p>
+              </div>
             ) : (
               <div className="table-wrap">
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Ref</th>
-                      <th>Kind</th>
-                      <th>From Store</th>
+                      <th>Ref #</th>
+                      <th>Type</th>
+                      <th>Source</th>
                       <th>Destination</th>
+                      <th className="num">Lines</th>
                       <th>Status</th>
-                      <th>Created</th>
+                      <th>Date</th>
                       <th className="num">Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {requisitions.map((r) => (
                       <tr key={r.id}>
-                        <td><strong>{r.reference}</strong></td>
-                        <td>{r.kind === 'warehouse_transfer' ? 'Branch Transfer' : 'Dept Issue'}</td>
-                        <td>{r.warehouseName}</td>
-                        <td>{r.toWarehouseName ?? r.departmentName ?? '—'}</td>
                         <td>
-                          <span className={`badge badge-${r.status === 'fulfilled' ? 'receipt' : r.status === 'rejected' ? 'write_off' : 'transfer'}`}>
+                          <code>{r.reference}</code>
+                        </td>
+                        <td style={{ textTransform: 'capitalize' }}>{r.kind.replace('_', ' ')}</td>
+                        <td>{r.warehouseName}</td>
+                        <td>{r.toWarehouseName || r.departmentName || '—'}</td>
+                        <td className="num">{r.lineCount}</td>
+                        <td>
+                          <span
+                            className={`status-pill ${
+                              r.status === 'fulfilled' ? 'optimal' : r.status === 'pending' ? 'low' : 'warn'
+                            }`}
+                          >
                             {r.status}
                           </span>
                         </td>
@@ -348,261 +353,185 @@ export function Transfers() {
           </div>
         )}
 
-        {/* SUB-MENU 2: Break Bulk (Crate/Bale/Sling -> Single Shelf Units) */}
-        {activeTab === 'breakbulk' && (
-          <div id="transfers-panel-breakbulk" role="tabpanel" aria-labelledby="transfers-tab-breakbulk">
-            <div className="section-head">
-              <div>
-                <h2>Break Bulk Converter (Wholesale Crate / Bale / Sling → Single Shelf Units)</h2>
-                <span className="vernacular-sub">
-                  {subLabel(
-                    'Kupatsanura Bhokisi kana Bhero Kuita Zvinhu Zvidiki zvepaSherufu',
-                    'Ukuhlukanisa Ibhokisi Kumbe Ibhele Kube Ngamaphakethi Amancane',
-                  )}
-                </span>
+        {/* SUB-MENU 2: Automatic Break-Bulk & Pack Rules */}
+        {activeTab === 'auto_breakbulk' && (
+          <div id="transfers-panel-auto-breakbulk" role="tabpanel" aria-labelledby="transfers-tab-auto-breakbulk">
+            <div
+              className="subcard"
+              style={{
+                marginBottom: '1.25rem',
+                borderLeft: '4px solid var(--emerald)',
+                background: 'var(--surface-alt)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.85rem' }}>
+                <span style={{ fontSize: '1.75rem', lineHeight: 1 }}>📦</span>
+                <div>
+                  <h3 style={{ margin: '0 0 0.35rem', color: 'var(--charcoal)' }}>
+                    Automatic Break-Bulk Enabled
+                  </h3>
+                  <p style={{ margin: 0, fontSize: '0.86rem', color: 'var(--muted)', lineHeight: 1.5 }}>
+                    The system automatically breaks bulk itself: whenever you receive wholesale deliveries or issue stock in
+                    crates, master cartons, or bales, the inventory engine multiplies by each product’s declared packaging ratio
+                    and immediately credits single shelf units to stock. No manual unpacking forms or yield batches are needed.
+                  </p>
+                </div>
               </div>
             </div>
 
-            <form
-              className="form-grid subcard"
-              style={{ marginBottom: '1.25rem' }}
-              onSubmit={async (e) => {
-                e.preventDefault();
-                const prod = products.find((p) => String(p.id) === bbProdId) ?? products[0];
-                const wh = warehouses.find((w) => String(w.id) === bbWhId) ?? warehouses[0];
-                const opened = Math.max(1, Number(bbCasesOpened) || 1);
-                const factor = Math.max(1, Number(bbUnitsPerCase) || 1);
-                const createdSingles = opened * factor;
-                await api
-                  .createYieldBatch({
-                    kind: 'BREAK_BULK',
-                    departmentName: wh?.name ?? 'Main Store',
-                    sourceName: `${bbBulkLabel} (× ${factor} units)`,
-                    inputQty: opened,
-                    inputUnit: 'bulk',
-                    outputName: prod?.name ?? 'Selected Product',
-                    expectedOutputQty: createdSingles,
-                    actualOutputQty: createdSingles,
-                    outputUnit: prod?.baseUnit ?? 'each',
-                    productId: prod?.id ?? null,
-                    warehouseId: wh?.id ?? null,
-                    unitId: prod?.baseUnitId ?? null,
-                    deltaBaseQty: createdSingles,
-                  })
-                  .catch(() => null);
-                setBreakLogs((prev) => [
-                  {
-                    id: `BB-${100 + prev.length + 1}`,
-                    productName: prod?.name ?? 'Selected Product',
-                    bulkType: `${bbBulkLabel} (× ${factor} units)`,
-                    bulkQtyOpened: opened,
-                    shelfUnitsCreated: createdSingles,
-                    warehouseName: wh?.name ?? 'Main Store',
-                    createdAt: 'Just Now',
-                  },
-                  ...prev,
-                ]);
-                setMsg(`Opened ${opened} × ${bbBulkLabel} of ${prod?.name ?? 'product'} → +${createdSingles} single shelf units added to ${wh?.name ?? 'Main Store'}!`);
-                await load();
-              }}
-            >
-              <label>
-                Product Being Unpacked
-                <select value={bbProdId} onChange={(e) => setBbProdId(e.target.value)}>
-                  {products.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Store Location
-                <select value={bbWhId} onChange={(e) => setBbWhId(e.target.value)}>
-                  {warehouses.map((w) => (
-                    <option key={w.id} value={w.id}>{w.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Bulk Pack Description
-                <input value={bbBulkLabel} onChange={(e) => setBbBulkLabel(e.target.value)} required />
-              </label>
-              <label>
-                Bales / Crates Opened
-                <input type="number" min="1" value={bbCasesOpened} onChange={(e) => setBbCasesOpened(e.target.value)} required />
-              </label>
-              <label>
-                Single Units Inside 1 Bale/Crate
-                <input type="number" min="1" value={bbUnitsPerCase} onChange={(e) => setBbUnitsPerCase(e.target.value)} required />
-              </label>
-              <div className="form-actions">
-                <button type="submit" className="btn btn-gold">📦 Break Bulk into Singles</button>
+            {/* Quick Auto Break-Bulk Calculator */}
+            <div className="subcard" style={{ marginBottom: '1.25rem' }}>
+              <div className="section-head" style={{ marginBottom: '0.75rem' }}>
+                <div>
+                  <h4 style={{ margin: 0 }}>Pack Breakdown Simulator</h4>
+                  <span className="muted" style={{ fontSize: '0.8rem' }}>
+                    Quickly check how many single retail units the system automatically unpacks when receiving full cases.
+                  </span>
+                </div>
               </div>
-            </form>
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 2fr', gap: '1rem', alignItems: 'end' }}>
+                <label>
+                  Select Product
+                  <select value={calcProdId} onChange={(e) => setCalcProdId(e.target.value)}>
+                    {products.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({p.sku})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Full Cases / Packs
+                  <input
+                    type="number"
+                    min="1"
+                    value={calcPacksCount}
+                    onChange={(e) => setCalcPacksCount(e.target.value)}
+                  />
+                </label>
+                <div
+                  style={{
+                    padding: '0.65rem 1rem',
+                    background: 'var(--surface)',
+                    border: '1.5px solid var(--line)',
+                    borderRadius: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <span className="muted" style={{ fontSize: '0.8rem' }}>Auto-Breaks Into:</span>
+                  <strong style={{ fontSize: '1.15rem', color: 'var(--emerald)' }}>
+                    {calcResultSingles.toLocaleString()} {calcProduct?.baseUnit ?? 'Singles'}
+                  </strong>
+                </div>
+              </div>
+              {primaryPack ? (
+                <div className="muted" style={{ fontSize: '0.76rem', marginTop: '0.5rem' }}>
+                  Ratio: 1 {primaryPack.unit} = {primaryPack.factor} {calcProduct?.baseUnit}
+                </div>
+              ) : (
+                <div className="muted" style={{ fontSize: '0.76rem', marginTop: '0.5rem' }}>
+                  No bulk pack configured yet. Ratio defaults to 1:1.
+                </div>
+              )}
+            </div>
+
+            {/* Registered Packaging Rules & Auto-Break Status */}
+            <div className="section-head" style={{ marginBottom: '0.75rem' }}>
+              <div>
+                <h3 style={{ margin: 0 }}>Active Store Catalog Packaging Rules</h3>
+                <span className="vernacular-sub" style={{ fontSize: '0.82rem' }}>
+                  Products configured with wholesale carton, bale, or box factors that auto-convert upon receiving.
+                </span>
+              </div>
+            </div>
 
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Ref #</th>
-                    <th>Product</th>
-                    <th>Bulk Pack Type</th>
-                    <th className="num">Packs Opened</th>
-                    <th className="num">Shelf Singles Created</th>
-                    <th>Store Location</th>
-                    <th>Time</th>
+                    <th>Product &amp; SKU</th>
+                    <th>Base Single Unit</th>
+                    <th>Bulk Packaging Ratio</th>
+                    <th className="num">Single Units On Hand</th>
+                    <th className="num">Equivalent Full Cases</th>
+                    <th>Break-Bulk Engine</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {breakLogs.length === 0 ? (
+                  {products.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
-                        No break-bulk conversions recorded yet. Use the form above to unpack cartons or bales into single shelf units.
+                      <td colSpan={6} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
+                        No products registered in the system yet.
                       </td>
                     </tr>
                   ) : (
-                    breakLogs.map((b) => (
-                      <tr key={b.id}>
-                        <td><code>{b.id}</code></td>
-                        <td><strong>{b.productName}</strong></td>
-                        <td>{b.bulkType}</td>
-                        <td className="num">-{b.bulkQtyOpened} bulk</td>
-                        <td className="num pos"><strong>+{b.shelfUnitsCreated} singles</strong></td>
-                        <td>{b.warehouseName}</td>
-                        <td>{b.createdAt}</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
+                    products.map((p) => {
+                      const pack = p.packagings[0];
+                      const factor = pack?.factor ?? 1;
+                      const fullPacks = Math.floor(p.totalStock / factor);
+                      const loose = p.totalStock % factor;
 
-        {/* SUB-MENU 3: Recipe / Butchery / Bakery Yield Transformation */}
-        {activeTab === 'yield' && (
-          <div id="transfers-panel-yield" role="tabpanel" aria-labelledby="transfers-tab-yield">
-            <div className="section-head">
-              <div>
-                <h2>Butchery Carcass, Bakery Flour &amp; Kitchen Yield Transformation</h2>
-                <span className="vernacular-sub">
-                  {subLabel(
-                    'Kucheka Nyama muButchery kana Kubika Chingwa muBakery',
-                    'Ukusika Inyama Ebhitsheri Kumbe Ukubhaka Isinkwa',
-                  )}
-                </span>
-              </div>
-            </div>
-
-            <form
-              className="form-grid subcard"
-              style={{ marginBottom: '1.25rem' }}
-              onSubmit={async (e) => {
-                e.preventDefault();
-                const inKg = Math.max(0.1, Number(ydRawKg) || 1);
-                const waste = Math.max(0, Number(ydWasteKg) || 0);
-                const pct = Math.max(0, Math.min(100, Number((((inKg - waste) / inKg) * 100).toFixed(1))));
-                await api
-                  .createYieldBatch({
-                    kind: 'RECIPE_YIELD',
-                    departmentName: ydDept,
-                    sourceName: ydRawDesc,
-                    inputQty: inKg,
-                    inputUnit: 'kg',
-                    outputName: ydOutDesc,
-                    expectedOutputQty: inKg,
-                    actualOutputQty: Number(ydOutUnits) || 1,
-                    outputUnit: 'units',
-                  })
-                  .catch(() => null);
-                setYieldBatches((prev) => [
-                  {
-                    id: `YD-${300 + prev.length + 1}`,
-                    department: ydDept,
-                    rawInputDesc: ydRawDesc,
-                    rawInputWeightKg: inKg,
-                    finishedOutputDesc: ydOutDesc,
-                    finishedUnits: Number(ydOutUnits) || 1,
-                    wasteOrBoneKg: waste,
-                    yieldPct: pct,
-                    createdAt: 'Just Transformed',
-                  },
-                  ...prev,
-                ]);
-                setMsg(`Recorded ${ydDept} yield transformation (${pct}% recovery yield).`);
-                await load();
-              }}
-            >
-              <label>
-                Production Section
-                <select value={ydDept} onChange={(e) => setYdDept(e.target.value as 'Butchery' | 'Bakery' | 'Kitchen')}>
-                  <option value="Butchery">🥩 Butchery Blockman</option>
-                  <option value="Bakery">🍞 Bakery Oven</option>
-                  <option value="Kitchen">🍲 Takeaway / Kitchen</option>
-                </select>
-              </label>
-              <label>
-                Raw Input Issued
-                <input value={ydRawDesc} onChange={(e) => setYdRawDesc(e.target.value)} required />
-              </label>
-              <label>
-                Raw Weight (kg)
-                <input type="number" step="0.1" value={ydRawKg} onChange={(e) => setYdRawKg(e.target.value)} required />
-              </label>
-              <label>
-                Finished Retail Cuts / Loaves
-                <input value={ydOutDesc} onChange={(e) => setYdOutDesc(e.target.value)} required />
-              </label>
-              <label>
-                Finished Units / Packs Produced
-                <input type="number" min="1" value={ydOutUnits} onChange={(e) => setYdOutUnits(e.target.value)} required />
-              </label>
-              <label>
-                Trimming / Moisture Loss (kg)
-                <input type="number" step="0.1" min="0" value={ydWasteKg} onChange={(e) => setYdWasteKg(e.target.value)} required />
-              </label>
-              <div className="form-actions">
-                <button type="submit" className="btn btn-primary">+ Log Yield Batch</button>
-              </div>
-            </form>
-
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Batch #</th>
-                    <th>Section</th>
-                    <th>Raw Input</th>
-                    <th className="num">Input Mass</th>
-                    <th>Finished Retail Output</th>
-                    <th className="num">Finished Qty</th>
-                    <th className="num">Trim Loss</th>
-                    <th>Yield %</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {yieldBatches.length === 0 ? (
-                    <tr>
-                      <td colSpan={8} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
-                        No production yield batches logged yet. Use the form above to record butchery carcass breakdown or bakery yield.
-                      </td>
-                    </tr>
-                  ) : (
-                    yieldBatches.map((y) => (
-                      <tr key={y.id}>
-                        <td><code>{y.id}</code></td>
-                        <td><strong>{y.department}</strong></td>
-                        <td>{y.rawInputDesc}</td>
-                        <td className="num">{y.rawInputWeightKg} kg</td>
-                        <td><strong>{y.finishedOutputDesc}</strong></td>
-                        <td className="num pos">+{y.finishedUnits} units</td>
-                        <td className="num">{y.wasteOrBoneKg} kg</td>
-                        <td>
-                          <span className={`status-pill ${y.yieldPct >= 90 ? 'optimal' : 'low'}`}>
-                            {y.yieldPct}% Yield
-                          </span>
-                        </td>
-                      </tr>
-                    ))
+                      return (
+                        <tr key={p.id}>
+                          <td>
+                            <strong>{p.name}</strong> <code>({p.sku})</code>
+                          </td>
+                          <td>
+                            <span className="status-pill optimal" style={{ textTransform: 'lowercase' }}>
+                              {p.baseUnit}
+                            </span>
+                          </td>
+                          <td>
+                            {p.packagings.length > 0 ? (
+                              p.packagings.map((g) => (
+                                <span
+                                  key={g.id}
+                                  style={{
+                                    display: 'inline-block',
+                                    padding: '0.2rem 0.5rem',
+                                    background: 'var(--surface-alt)',
+                                    borderRadius: '6px',
+                                    border: '1px solid var(--line)',
+                                    fontSize: '0.8rem',
+                                    fontWeight: 700,
+                                    marginRight: '0.35rem',
+                                  }}
+                                >
+                                  1 {g.unit} = {g.factor} {p.baseUnit}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="muted" style={{ fontSize: '0.8rem' }}>
+                                Sold only as singles ({p.baseUnit})
+                              </span>
+                            )}
+                          </td>
+                          <td className="num">
+                            <strong>{p.totalStock.toLocaleString()} {p.baseUnit}</strong>
+                          </td>
+                          <td className="num">
+                            {pack ? (
+                              <span style={{ fontWeight: 700, color: 'var(--charcoal)' }}>
+                                {fullPacks} {pack.unit}(s) {loose > 0 ? `+ ${loose} ${p.baseUnit}` : ''}
+                              </span>
+                            ) : (
+                              <span className="muted">—</span>
+                            )}
+                          </td>
+                          <td>
+                            <span
+                              className="status-pill optimal"
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
+                            >
+                              <span className="live-dot" style={{ background: 'var(--emerald)' }} />
+                              Auto-Active
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -611,11 +540,12 @@ export function Transfers() {
         )}
       </section>
 
+      {/* Instant Quick-Transfer Modal */}
       <QuickTransferModal
         open={transferModalOpen}
         onClose={() => setTransferModalOpen(false)}
-        onSuccess={(message) => {
-          setMsg(message);
+        onSuccess={(m) => {
+          setMsg(m);
           load();
         }}
       />

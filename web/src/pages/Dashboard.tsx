@@ -210,8 +210,8 @@ export function Dashboard() {
 
   const filteredZones = allZones.filter((z) => {
     if (mapFilter === 'pos') return z.isPos;
-    if (mapFilter === 'retail') return z.category === 'groceries' || z.category === 'agrovet' || z.category === 'general';
-    if (mapFilter === 'storage') return z.category === 'storeroom' || z.category === 'hardware_yard';
+    if (mapFilter === 'retail') return z.isPos || z.entityType === 'department';
+    if (mapFilter === 'storage') return z.entityType === 'warehouse';
     return true;
   });
 
@@ -565,7 +565,7 @@ export function Dashboard() {
                 <div className="empty-state-box" style={{ padding: '3rem 1.5rem', textAlign: 'center' }}>
                   <h3 style={{ margin: '0 0 0.5rem' }}>No Store or Yard Zones Configured Yet</h3>
                   <p className="muted" style={{ maxWidth: '420px', margin: '0 auto 1.25rem', fontSize: '0.88rem' }}>
-                    Set up your departments (e.g. Front Store POS, Groceries, Hardware Yard, Storeroom) to visualize live inventory.
+                    Set up your departments (e.g. Front Store POS, Sales Department, Storeroom) to visualize live inventory.
                   </p>
                   <Link to={`${basePath}/warehouses`} className="btn btn-primary btn-sm">
                     + Configure Departments &amp; Warehouses
@@ -623,21 +623,27 @@ export function Dashboard() {
                                   <span className="live-dot" style={{ background: '#10b981' }} />
                                   POS Active
                                 </span>
-                              ) : z.category === 'hardware_yard' ? (
-                                <span className="zone-type-badge" style={{ background: 'rgba(217, 119, 6, 0.15)', color: 'var(--zim-gold-500)' }}>
-                                  Hardware Yard
-                                </span>
-                              ) : z.category === 'groceries' ? (
-                                <span className="zone-type-badge" style={{ background: 'rgba(5, 150, 105, 0.15)', color: 'var(--emerald)' }}>
-                                  Grocery Floor
-                                </span>
-                              ) : z.category === 'agrovet' ? (
-                                <span className="zone-type-badge" style={{ background: 'rgba(5, 150, 105, 0.2)', color: 'var(--emerald)' }}>
-                                  Agrovet Bay
+                              ) : z.entityType === 'department' ? (
+                                <span
+                                  className="zone-type-badge"
+                                  style={{
+                                    background: 'rgba(5, 150, 105, 0.15)',
+                                    color: 'var(--emerald)',
+                                    border: '1px solid var(--line)',
+                                  }}
+                                >
+                                  Department
                                 </span>
                               ) : (
-                                <span className="zone-type-badge" style={{ background: 'var(--surface-alt)', color: 'var(--charcoal)', border: '1px solid var(--line)' }}>
-                                  Storeroom
+                                <span
+                                  className="zone-type-badge"
+                                  style={{
+                                    background: 'var(--surface-alt)',
+                                    color: 'var(--charcoal)',
+                                    border: '1px solid var(--line)',
+                                  }}
+                                >
+                                  Storage Zone
                                 </span>
                               )}
                             </div>

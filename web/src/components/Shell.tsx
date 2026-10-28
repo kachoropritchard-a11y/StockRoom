@@ -25,7 +25,7 @@ function buildNavItems(base: string): NavItem[] {
     { to: `${base}/products`, label: '3. Products', short: 'Products', keyHint: 'Alt+3', end: false, shona: 'Zvinhu Zviri Muchitoro', ndebele: 'Impahla Yesitolo' },
     { to: `${base}/operations`, label: '4. Stock Movements', short: 'Movements', keyHint: 'Alt+4', end: false, shona: 'Kubuda Nekupinda', ndebele: 'Ukuphuma Lokungena' },
     { to: `${base}/procurement`, label: '5. Receiving (GRN)', short: 'Receiving', keyHint: 'Alt+5', end: false, shona: 'Kugamuchira Zvinhu', ndebele: 'Ukuthola Impahla' },
-    { to: `${base}/transfers`, label: '6. Transfers & Yield', short: 'Transfers', keyHint: 'Alt+6', end: false, shona: 'Kufambisa & Kupatsanura', ndebele: 'Ukuthutha Impahla' },
+    { to: `${base}/transfers`, label: '6. Department Transfers', short: 'Transfers', keyHint: 'Alt+6', end: false, shona: 'Kufambisa Zvinhu', ndebele: 'Ukuthutha Impahla' },
     { to: `${base}/warehouses`, label: '7. Departments & Credit', short: 'Departments', keyHint: 'Alt+7', end: false, shona: 'Matura & Chikwereti', ndebele: 'Izigaba & Izikwelede' },
     { to: `${base}/reports`, label: '8. Reports & ZIMRA VAT', short: 'Reports', keyHint: 'Alt+8', end: false, shona: 'Magwaro eZIMRA', ndebele: 'Imibiko yeZIMRA' },
     { to: `${base}/users`, label: '9. Users & Fast PINs', short: 'Users', keyHint: 'Alt+9', end: false, shona: 'Vashandi & maPIN', ndebele: 'Izisebenzi & ama-PIN' },

@@ -241,7 +241,7 @@ export function Warehouses() {
             ⇄ Quick Transfer Stock
           </button>
           <Link to={`${base}/transfers`} className="btn btn-outline">
-            Open Break-Bulk &amp; Transfers
+            Open Department Transfers
           </Link>
         </div>
       </div>
@@ -286,7 +286,7 @@ export function Warehouses() {
                 </label>
                 <label>
                   Department Name
-                  <input value={deptName} onChange={(e) => setDeptName(e.target.value)} placeholder="e.g. Butchery / Bakery" required />
+                  <input value={deptName} onChange={(e) => setDeptName(e.target.value)} placeholder="e.g. Sales Department / Front Store" required />
                 </label>
                 <div className="form-actions">
                   <button className="btn btn-primary" type="submit">+ Add Department</button>
@@ -743,7 +743,7 @@ export function Warehouses() {
                     value={editingDept.name}
                     onChange={(e) => setEditingDept({ ...editingDept, name: e.target.value })}
                     required
-                    placeholder="e.g. Butchery / Bakery"
+                    placeholder="e.g. Sales Department / Front Store"
                   />
                 </label>
                 <label>
