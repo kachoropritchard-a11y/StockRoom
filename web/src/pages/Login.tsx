@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import { ApiError } from '../api';
 import { portalPath, useAuth } from '../auth';
 import { Logo } from '../components/Logo';
@@ -13,7 +13,7 @@ const messages: Record<string, string> = {
 };
 
 export function Login() {
-  const { user, loading, login, pinLogin } = useAuth();
+  const { user, loading, needsSetup, login, pinLogin } = useAuth();
   const [mode, setMode] = useState<'email' | 'pin'>('email');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -54,6 +54,30 @@ export function Login() {
         <p className="muted" style={{ marginTop: '-0.25rem', fontSize: '0.84rem' }}>
           Groceries &amp; Hardware Dual-Department SME Inventory • Pinda muHurongwa
         </p>
+
+        {needsSetup && (
+          <div
+            className="animate-fade-in"
+            style={{
+              marginBottom: '1rem',
+              textAlign: 'left',
+              background: 'var(--zim-gold-50)',
+              borderLeft: '4px solid var(--zim-gold-500)',
+              padding: '0.75rem 1rem',
+              borderRadius: '8px',
+            }}
+          >
+            <div style={{ fontWeight: 700, color: 'var(--zim-charcoal-900)', fontSize: '0.88rem' }}>
+              ✨ Initial Setup Required
+            </div>
+            <p style={{ margin: '0.25rem 0 0.65rem', fontSize: '0.82rem', color: 'var(--zim-charcoal-800)' }}>
+              No owner account exists. Initialize StockRoom to create your Executive Manager profile and set up departments.
+            </p>
+            <Link to="/setup" className="btn btn-sm btn-primary" style={{ display: 'inline-block' }}>
+              Launch Setup Wizard →
+            </Link>
+          </div>
+        )}
 
         <div className="zim-subnav-bar" style={{ margin: '0.25rem 0 0.5rem' }} role="tablist" aria-label="Sign in method">
           <button

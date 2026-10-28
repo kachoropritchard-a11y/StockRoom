@@ -695,6 +695,22 @@ export function Products() {
 
             {loading ? (
               <Spinner label="Loading products" />
+            ) : totalProducts === 0 ? (
+              <div className="empty-state-box" style={{ padding: '3.5rem 1.5rem', textAlign: 'center' }}>
+                <div style={{ fontSize: '3rem', marginBottom: '0.75rem' }}>📦</div>
+                <h3 style={{ margin: '0 0 0.5rem', fontSize: '1.2rem', fontWeight: 800 }}>Your Stockroom is Empty</h3>
+                <p className="muted" style={{ maxWidth: '420px', margin: '0 auto 1.5rem', fontSize: '0.9rem' }}>
+                  Get started by adding your first grocery or hardware item, setting retail pricing and reorder levels.
+                </p>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => setShowAddDrawer(true)}
+                  style={{ minWidth: '180px' }}
+                >
+                  + Add Your First Product
+                </button>
+              </div>
             ) : products.length === 0 ? (
               <div className="empty-state-box">
                 <strong>No products match your search or category filter.</strong>
@@ -704,6 +720,7 @@ export function Products() {
                   onClick={() => {
                     setSearch('');
                     setCatFilter(undefined);
+                    setDeptFilter(undefined);
                     setPage(0);
                   }}
                 >

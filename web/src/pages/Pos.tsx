@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { useAuth } from '../auth';
 import { Spinner } from '../components/Spinner';
@@ -330,9 +331,20 @@ export function Pos() {
 
             {loading ? (
               <Spinner label="Loading POS catalog" />
+            ) : catalog.length === 0 ? (
+              <div className="empty-state" style={{ padding: '3rem 1.5rem', textAlign: 'center' }}>
+                <div style={{ fontSize: '2.5rem', marginBottom: '0.5rem' }}>🛒</div>
+                <h3 style={{ margin: '0 0 0.5rem' }}>No Products in POS Department</h3>
+                <p className="muted" style={{ fontSize: '0.86rem', maxWidth: '400px', margin: '0 auto 1.25rem' }}>
+                  There are no products currently assigned to <strong>&ldquo;{posDeptName}&rdquo;</strong>. Add grocery or hardware products in the Stock Catalog to start selling.
+                </p>
+                <Link to={user?.role === 'executive_manager' ? '/executive/products' : '/inventory/products'} className="btn btn-primary btn-sm">
+                  + Add Products to Catalog
+                </Link>
+              </div>
             ) : filteredCatalog.length === 0 ? (
               <div className="empty-state" style={{ padding: '2rem 1rem', textAlign: 'center' }}>
-                <p className="muted">No products found in this department matching &quot;{search}&quot;</p>
+                <p className="muted">No products found matching &quot;{search}&quot;</p>
               </div>
             ) : (
               <div className="pos-product-tiles" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: '0.65rem', maxHeight: '560px', overflowY: 'auto', paddingRight: '0.25rem' }}>

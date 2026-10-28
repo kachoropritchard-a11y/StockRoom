@@ -16,20 +16,23 @@ import { Transfers } from './pages/Transfers';
 import { Users } from './pages/Users';
 import { Warehouses } from './pages/Warehouses';
 import { Pos } from './pages/Pos';
+import { SetupManager } from './pages/SetupManager';
 import { ZimProvider } from './zimContext';
 
 /** Client-side route guard. The server enforces the same rules; this only provides sensible navigation. */
 export function RequireRole({ roles, children }: { roles: User['role'][]; children?: ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, loading, needsSetup } = useAuth();
   if (loading) return <Spinner label="Loading" fullPage />;
+  if (needsSetup) return <Navigate to="/setup" replace />;
   if (!user) return <Navigate to="/login" replace />;
   if (!roles.includes(user.role)) return <Navigate to={portalPath(user.role)} replace />;
   return <>{children ?? <Outlet />}</>;
 }
 
 function Home() {
-  const { user, loading } = useAuth();
+  const { user, loading, needsSetup } = useAuth();
   if (loading) return <Spinner label="Loading" fullPage />;
+  if (needsSetup) return <Navigate to="/setup" replace />;
   return <Navigate to={user ? portalPath(user.role) : '/login'} replace />;
 }
 
@@ -39,6 +42,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/setup" element={<SetupManager />} />
         <Route element={<RequireRole roles={['executive_manager']} />}>
           <Route path="/executive" element={<Shell portal="executive" />}>
             <Route index element={<Dashboard />} />

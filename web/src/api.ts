@@ -1022,7 +1022,35 @@ export const api = {
     ),
 
   // Stage 8: System Reset, Quick Setup & POS Fast Catalog
-  resetSystemData: () => request<{ ok: true; message: string }>('/api/system/reset', { method: 'POST', body: JSON.stringify({}) }),
+  systemStatus: () =>
+    request<{
+      initialized: boolean;
+      needsSetup: boolean;
+      userCount: number;
+      organisationName: string | null;
+      currencyCode: 'USD' | 'ZiG' | 'ZAR';
+      posDepartmentId: number | null;
+    }>('/api/system/status'),
+  setupInitialManager: (body: {
+    managerName: string;
+    managerEmail: string;
+    managerPassword: string;
+    managerPin: string;
+    businessName: string;
+    city: string;
+    currencyCode: 'USD' | 'ZiG' | 'ZAR';
+    departments: string[];
+    posDepartmentName: string;
+  }) =>
+    request<{ ok: true; user: User; token: string }>('/api/system/setup-initial-manager', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  resetSystemData: (wipeToScratch = false) =>
+    request<{ ok: true; wipedToScratch: boolean; message: string }>('/api/system/reset', {
+      method: 'POST',
+      body: JSON.stringify({ wipeToScratch }),
+    }),
   initializeSystem: (body: {
     organisationName: string;
     currencyCode: 'USD' | 'ZiG' | 'ZAR';

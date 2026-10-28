@@ -144,6 +144,155 @@ export function buildApp(db: Db, config: Config) {
     return { status: 'ok' };
   });
 
+  // System Setup Status: Checks if the application has been initialized with an organisation and executive manager
+  app.get('/api/system/status', async () => {
+    const userCount = (db.prepare('SELECT COUNT(*) n FROM users').get() as { n: number }).n;
+    const orgCount = (db.prepare('SELECT COUNT(*) n FROM organisations').get() as { n: number }).n;
+    const org = db.prepare('SELECT name, currency_code, pos_department_id FROM organisations ORDER BY id LIMIT 1').get() as
+      | { name: string; currency_code: string; pos_department_id: number | null }
+      | undefined;
+    return {
+      initialized: userCount > 0 && orgCount > 0,
+      needsSetup: userCount === 0 || orgCount === 0,
+      userCount,
+      organisationName: org?.name ?? null,
+      currencyCode: org?.currency_code ?? 'USD',
+      posDepartmentId: org?.pos_department_id ?? null,
+    };
+  });
+
+  // First-Time System Initialization: Create Executive Manager / Owner & Setup Store from scratch
+  app.post('/api/system/setup-initial-manager', async (req, reply) => {
+    const userCount = (db.prepare('SELECT COUNT(*) n FROM users').get() as { n: number }).n;
+    if (userCount > 0) {
+      return reply.code(409).send({ error: 'system_already_initialized' });
+    }
+
+    const b = z
+      .object({
+        managerName: z.string().trim().min(2).max(100),
+        managerEmail: z.string().trim().email().max(254),
+        managerPassword: z.string().min(8).max(200),
+        managerPin: z.string().trim().regex(/^\d{4}$/, 'PIN must be exactly 4 digits'),
+        businessName: z.string().trim().min(2).max(120),
+        city: z.string().trim().max(80).default('Harare'),
+        currencyCode: z.enum(['USD', 'ZiG', 'ZAR']).default('USD'),
+        departments: z.array(z.string().trim().min(1).max(60)).min(1),
+        posDepartmentName: z.string().trim().min(1).max(60),
+      })
+      .strict()
+      .parse(req.body);
+
+    // 1. Create or update organisation
+    let orgRow = db.prepare('SELECT id FROM organisations ORDER BY id LIMIT 1').get() as { id: number } | undefined;
+    let orgId: number;
+    if (!orgRow) {
+      const orgRes = db
+        .prepare("INSERT INTO organisations (name, currency_code, initialized_at) VALUES (?, ?, datetime('now'))")
+        .run(b.businessName, b.currencyCode);
+      orgId = Number(orgRes.lastInsertRowid);
+    } else {
+      orgId = orgRow.id;
+      db.prepare("UPDATE organisations SET name = ?, currency_code = ?, initialized_at = datetime('now') WHERE id = ?").run(
+        b.businessName,
+        b.currencyCode,
+        orgId
+      );
+    }
+
+    // 2. Ensure standard units of measure exist
+    const insUom = db.prepare('INSERT OR IGNORE INTO units_of_measure (organisation_id, code, name) VALUES (?, ?, ?)');
+    for (const [code, label] of [
+      ['each', 'Each'],
+      ['kg', 'Kilogram'],
+      ['l', 'Litre'],
+      ['box', 'Box'],
+      ['carton', 'Carton'],
+      ['m', 'Metre'],
+      ['bag', 'Bag (50kg)'],
+    ]) {
+      insUom.run(orgId, code, label);
+    }
+
+    // 3. Ensure branch exists
+    let branchRow = db.prepare('SELECT id FROM branches WHERE organisation_id = ? LIMIT 1').get(orgId) as { id: number } | undefined;
+    let branchId: number;
+    if (!branchRow) {
+      const brRes = db.prepare('INSERT INTO branches (organisation_id, name, city) VALUES (?, ?, ?)').run(
+        orgId,
+        'Main Branch',
+        b.city
+      );
+      branchId = Number(brRes.lastInsertRowid);
+    } else {
+      branchId = branchRow.id;
+    }
+
+    // 4. Ensure warehouse exists
+    let whRow = db.prepare('SELECT id FROM warehouses WHERE branch_id = ? LIMIT 1').get(branchId) as { id: number } | undefined;
+    if (!whRow) {
+      db.prepare('INSERT INTO warehouses (branch_id, name) VALUES (?, ?)').run(branchId, 'Main Store & Yard');
+    }
+
+    // 5. Insert departments
+    let posDeptId: number | null = null;
+    for (const deptName of b.departments) {
+      let dRow = db.prepare('SELECT id FROM departments WHERE branch_id = ? AND name = ?').get(branchId, deptName) as { id: number } | undefined;
+      if (!dRow) {
+        const dRes = db.prepare('INSERT INTO departments (branch_id, name) VALUES (?, ?)').run(branchId, deptName);
+        dRow = { id: Number(dRes.lastInsertRowid) };
+      }
+      if (deptName.toLowerCase() === b.posDepartmentName.toLowerCase() || !posDeptId) {
+        posDeptId = dRow.id;
+      }
+    }
+
+    if (posDeptId) {
+      db.prepare('UPDATE organisations SET pos_department_id = ? WHERE id = ?').run(posDeptId, orgId);
+    }
+
+    // 6. Create initial Executive Manager user
+    const hash = await bcrypt.hash(b.managerPassword, config.BCRYPT_COST);
+    const uRes = db
+      .prepare('INSERT INTO users (organisation_id, branch_id, email, name, role, password_hash, active) VALUES (?, ?, ?, ?, ?, ?, 1)')
+      .run(orgId, branchId, b.managerEmail.toLowerCase(), b.managerName, 'executive_manager', hash);
+    const userId = Number(uRes.lastInsertRowid);
+
+    // 7. Create staff PIN for this executive manager
+    db.prepare(
+      `INSERT INTO staff_pins (organisation_id, user_id, staff_name, role_title, pin_code, department_scope, can_view_cost, can_write_off, active)
+       VALUES (?, ?, ?, ?, ?, ?, 1, 1, 1)`
+    ).run(orgId, userId, b.managerName, 'Owner / Executive Manager', b.managerPin, b.departments.join(' & '));
+
+    // 8. Automatically log in: create session and set cookie
+    const token = randomBytes(32).toString('base64url');
+    const expires = new Date(Date.now() + config.SESSION_TTL_HOURS * 3600_000);
+    db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').run(
+      sha256(token),
+      userId,
+      expires.toISOString()
+    );
+
+    reply.setCookie(COOKIE, token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: config.NODE_ENV === 'production',
+      path: '/',
+      expires,
+    });
+
+    const user: AuthUser = {
+      id: userId,
+      organisationId: orgId,
+      branchId,
+      email: b.managerEmail.toLowerCase(),
+      name: b.managerName,
+      role: 'executive_manager',
+    };
+
+    return reply.code(201).send({ ok: true, user, token });
+  });
+
   app.post('/api/auth/login', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
     const body = loginSchema.parse(req.body);
     const u = db
@@ -200,21 +349,6 @@ export function buildApp(db: Db, config: Config) {
 
     const orgRow = db.prepare('SELECT id FROM organisations ORDER BY id LIMIT 1').get() as { id: number } | undefined;
     if (!orgRow) return reply.code(401).send({ error: 'invalid_credentials' });
-
-    // Ensure default PINs exist if none have been seeded yet
-    const pinCount = (db.prepare('SELECT COUNT(*) n FROM staff_pins WHERE organisation_id = ?').get(orgRow.id) as { n: number }).n;
-    if (pinCount === 0) {
-      const execU = db.prepare("SELECT id FROM users WHERE organisation_id = ? AND role = 'executive_manager' LIMIT 1").get(orgRow.id) as { id: number } | undefined;
-      const invU = db.prepare("SELECT id FROM users WHERE organisation_id = ? AND role = 'inventory_manager' LIMIT 1").get(orgRow.id) as { id: number } | undefined;
-      const insPin = db.prepare(
-        `INSERT OR IGNORE INTO staff_pins (organisation_id, user_id, staff_name, role_title, pin_code, department_scope, can_view_cost, can_write_off, active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-      );
-      insPin.run(orgRow.id, execU?.id ?? null, 'Tendai Moyo (Owner)', 'Owner / Executive Manager', '1980', 'Groceries & Hardware', 1, 1);
-      insPin.run(orgRow.id, invU?.id ?? null, 'Rudo Chikwanda', 'Senior Storekeeper', '2468', 'Groceries & Hardware', 1, 1);
-      insPin.run(orgRow.id, invU?.id ?? null, 'Blessing Ndlovu', 'Hardware Yard Dispatch', '1357', 'Hardware & Building', 0, 0);
-      insPin.run(orgRow.id, invU?.id ?? null, 'Nyasha Mutasa', 'Grocery Till Cashier #1', '4321', 'Groceries & Staples', 0, 0);
-    }
 
     const pinRow = db
       .prepare('SELECT id, user_id, staff_name, role_title, active FROM staff_pins WHERE organisation_id = ? AND pin_code = ? LIMIT 1')

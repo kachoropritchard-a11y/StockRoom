@@ -2797,12 +2797,93 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
 
   // ---------- Stage 8: System Reset, Quick Setup & POS Fast Catalog ----------
 
-  // Reset entire database to empty scratch state (leaves only structure & executive user)
-  app.post('/api/system/reset', { preHandler: exec }, async (req) => {
+  function dropAppendTriggers() {
+    db.exec(`
+      DROP TRIGGER IF EXISTS stock_movements_no_delete;
+      DROP TRIGGER IF EXISTS stock_movements_no_update;
+      DROP TRIGGER IF EXISTS stock_documents_no_delete;
+      DROP TRIGGER IF EXISTS stock_documents_no_update;
+      DROP TRIGGER IF EXISTS audit_logs_no_delete;
+      DROP TRIGGER IF EXISTS audit_logs_no_update;
+    `);
+  }
+
+  function restoreAppendTriggers() {
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS stock_movements_no_update BEFORE UPDATE ON stock_movements
+      BEGIN SELECT RAISE(ABORT, 'stock_movements is append-only'); END;
+
+      CREATE TRIGGER IF NOT EXISTS stock_movements_no_delete BEFORE DELETE ON stock_movements
+      BEGIN SELECT RAISE(ABORT, 'stock_movements is append-only'); END;
+
+      CREATE TRIGGER IF NOT EXISTS stock_documents_no_update BEFORE UPDATE ON stock_documents
+      BEGIN SELECT RAISE(ABORT, 'stock_documents is append-only'); END;
+
+      CREATE TRIGGER IF NOT EXISTS stock_documents_no_delete BEFORE DELETE ON stock_documents
+      BEGIN SELECT RAISE(ABORT, 'stock_documents is append-only'); END;
+
+      CREATE TRIGGER IF NOT EXISTS audit_logs_no_update BEFORE UPDATE ON audit_logs
+      BEGIN SELECT RAISE(ABORT, 'audit_logs_are_immutable'); END;
+
+      CREATE TRIGGER IF NOT EXISTS audit_logs_no_delete BEFORE DELETE ON audit_logs
+      BEGIN SELECT RAISE(ABORT, 'audit_logs_are_immutable'); END;
+    `);
+  }
+
+  // Reset entire database or scratch state (cleanly dropping triggers first)
+  app.post('/api/system/reset', { preHandler: exec }, async (req, reply) => {
     const orgId = req.user!.organisationId;
+    const body = z.object({ wipeToScratch: z.boolean().optional() }).safeParse(req.body || {}).data || {};
+    const wipeToScratch = !!body.wipeToScratch;
+
     db.exec('PRAGMA foreign_keys = OFF;');
+    dropAppendTriggers();
     try {
-      // Clear transactional tables
+      if (wipeToScratch) {
+        // Complete scratch wipe: remove all operational, inventory, master, and identity records
+        db.exec(`
+          DELETE FROM document_attachments;
+          DELETE FROM fiscal_receipts;
+          DELETE FROM change_vouchers;
+          DELETE FROM till_shifts;
+          DELETE FROM paid_uncollected_items;
+          DELETE FROM customer_credit_accounts;
+          DELETE FROM supplier_credit_ledgers;
+          DELETE FROM yield_batches;
+          DELETE FROM stock_movements;
+          DELETE FROM stock_documents;
+          DELETE FROM purchase_order_receipts;
+          DELETE FROM purchase_order_lines;
+          DELETE FROM purchase_orders;
+          DELETE FROM requisitions;
+          DELETE FROM count_sheet_lines;
+          DELETE FROM count_sheets;
+          DELETE FROM product_packagings;
+          DELETE FROM products;
+          DELETE FROM suppliers;
+          DELETE FROM categories;
+          DELETE FROM units_of_measure;
+          DELETE FROM departments;
+          DELETE FROM warehouses;
+          DELETE FROM branches;
+          DELETE FROM staff_pins;
+          DELETE FROM system_backups;
+          DELETE FROM role_permissions;
+          DELETE FROM audit_logs;
+          DELETE FROM sessions;
+          DELETE FROM password_reset_tokens;
+          DELETE FROM users;
+          DELETE FROM organisations;
+        `);
+        reply.clearCookie('sid', { path: '/' });
+        return {
+          ok: true,
+          wipedToScratch: true,
+          message: 'System has been completely wiped to scratch. You can now set up the manager from scratch.',
+        };
+      }
+
+      // Clear operational and catalog tables for this organisation
       db.prepare('DELETE FROM document_attachments WHERE organisation_id = ?').run(orgId);
       db.prepare('DELETE FROM fiscal_receipts WHERE organisation_id = ?').run(orgId);
       db.prepare('DELETE FROM change_vouchers WHERE organisation_id = ?').run(orgId);
@@ -2823,28 +2904,45 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       db.prepare('DELETE FROM products WHERE organisation_id = ?').run(orgId);
       db.prepare('DELETE FROM suppliers WHERE organisation_id = ?').run(orgId);
       db.prepare('DELETE FROM categories WHERE organisation_id = ?').run(orgId);
-      db.prepare('DELETE FROM departments WHERE branch_id IN (SELECT id FROM branches WHERE organisation_id = ?)').run(orgId);
-      db.prepare('DELETE FROM warehouses WHERE branch_id IN (SELECT id FROM branches WHERE organisation_id = ?)').run(orgId);
-      db.prepare('DELETE FROM branches WHERE organisation_id = ?').run(orgId);
-      db.prepare('DELETE FROM staff_pins WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM staff_pins WHERE organisation_id = ? AND user_id != ?').run(orgId, req.user!.id);
       db.prepare('DELETE FROM system_backups WHERE organisation_id = ?').run(orgId);
-      db.prepare('DELETE FROM role_permissions WHERE organisation_id = ?').run(orgId);
       db.prepare('DELETE FROM audit_logs WHERE organisation_id = ?').run(orgId);
 
       // Re-create default clean branch, main warehouse, and starter units if needed
-      const branchRes = db.prepare('INSERT INTO branches (organisation_id, name, city) VALUES (?, ?, ?)').run(orgId, 'Main Branch', 'Harare');
-      const branchId = Number(branchRes.lastInsertRowid);
-      db.prepare('INSERT INTO warehouses (branch_id, name) VALUES (?, ?)').run(branchId, 'Main Store & Yard');
-      const deptRes = db.prepare('INSERT INTO departments (branch_id, name) VALUES (?, ?)').run(branchId, 'General Storefloor');
-      const defaultDeptId = Number(deptRes.lastInsertRowid);
+      let branchRow = db.prepare('SELECT id FROM branches WHERE organisation_id = ? LIMIT 1').get(orgId) as { id: number } | undefined;
+      let branchId: number;
+      if (!branchRow) {
+        const branchRes = db.prepare('INSERT INTO branches (organisation_id, name, city) VALUES (?, ?, ?)').run(orgId, 'Main Branch', 'Harare');
+        branchId = Number(branchRes.lastInsertRowid);
+      } else {
+        branchId = branchRow.id;
+      }
+
+      let whRow = db.prepare('SELECT id FROM warehouses WHERE branch_id = ? LIMIT 1').get(branchId) as { id: number } | undefined;
+      if (!whRow) {
+        db.prepare('INSERT INTO warehouses (branch_id, name) VALUES (?, ?)').run(branchId, 'Main Store & Yard');
+      }
+
+      let deptRow = db.prepare('SELECT id FROM departments WHERE branch_id = ? LIMIT 1').get(branchId) as { id: number } | undefined;
+      let defaultDeptId: number;
+      if (!deptRow) {
+        const deptRes = db.prepare('INSERT INTO departments (branch_id, name) VALUES (?, ?)').run(branchId, 'General Storefloor');
+        defaultDeptId = Number(deptRes.lastInsertRowid);
+      } else {
+        defaultDeptId = deptRow.id;
+      }
 
       db.prepare("UPDATE organisations SET pos_department_id = ?, initialized_at = NULL WHERE id = ?").run(defaultDeptId, orgId);
 
-      recordAudit(db, req.user!, 'system.reset', 'organisation', orgId, { resetToScratch: true });
+      return {
+        ok: true,
+        wipedToScratch: false,
+        message: 'All demo products, orders, sales, and movements have been cleared. Ready to initialize from scratch.',
+      };
     } finally {
+      restoreAppendTriggers();
       db.exec('PRAGMA foreign_keys = ON;');
     }
-    return { ok: true, message: 'All demo products, orders, sales, and movements have been cleared. Ready to initialize from scratch.' };
   });
 
   // Fast Setup Wizard: Initialize organisation name, initial departments, warehouses, and seed starter stock or template products

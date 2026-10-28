@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   api,
   type AuditLogItem,
@@ -18,7 +19,8 @@ import { SetupWizardModal } from '../components/SetupWizardModal';
 type SettingsSubTab = 'rates' | 'fdms' | 'offline' | 'reset';
 
 export function Organisation() {
-  const { user: currentUser } = useAuth();
+  const navigate = useNavigate();
+  const { user: currentUser, logout } = useAuth();
   const isExec = currentUser?.role === 'executive_manager';
   const {
     rates,
@@ -598,9 +600,9 @@ export function Organisation() {
                   <div className="subcard" style={{ borderLeft: '4px solid var(--danger)', gridColumn: '1 / -1' }}>
                     <h3 style={{ color: 'var(--danger)' }}>⚠️ Factory Reset: Clear All Information to Scratch</h3>
                     <p className="muted" style={{ fontSize: '0.84rem' }}>
-                      Wipe all demo inventory items, orders, sales transactions, movements, debtors, and backups so you can test the system completely from a clean scratch slate.
+                      Wipe all demo inventory items, orders, sales transactions, movements, debtors, and users so you can test the system completely from a clean scratch slate starting with manager creation.
                     </p>
-                    <div style={{ maxWidth: '480px', marginTop: '0.75rem' }}>
+                    <div style={{ maxWidth: '520px', marginTop: '0.75rem' }}>
                       <label style={{ fontSize: '0.82rem', display: 'block', marginBottom: '0.5rem' }}>
                         Type <code>RESET-SCRATCH</code> below to confirm wiping all data:
                         <input
@@ -611,36 +613,66 @@ export function Organisation() {
                           style={{ marginTop: '0.25rem' }}
                         />
                       </label>
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        disabled={resetConfirm !== 'RESET-SCRATCH' || busyReset}
-                        style={{
-                          background: 'var(--danger)',
-                          color: '#fff',
-                          fontWeight: 700,
-                          cursor: resetConfirm === 'RESET-SCRATCH' ? 'pointer' : 'not-allowed',
-                          opacity: resetConfirm === 'RESET-SCRATCH' ? 1 : 0.5,
-                        }}
-                        onClick={async () => {
-                          if (!window.confirm('Are you ABSOLUTELY SURE you want to clear all data and test from scratch?')) return;
-                          setBusyReset(true);
-                          setError('');
-                          setMsg('');
-                          try {
-                            const res = await api.resetSystemData();
-                            setResetConfirm('');
-                            setMsg(`✓ ${res.message}`);
-                            await load();
-                          } catch (err) {
-                            setError((err as Error).message);
-                          } finally {
-                            setBusyReset(false);
-                          }
-                        }}
-                      >
-                        {busyReset ? 'Wiping Database…' : '💥 Confirm Factory Reset & Test from Scratch'}
-                      </button>
+                      <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.75rem' }}>
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          disabled={resetConfirm !== 'RESET-SCRATCH' || busyReset}
+                          style={{
+                            background: 'var(--danger)',
+                            color: '#fff',
+                            fontWeight: 700,
+                            cursor: resetConfirm === 'RESET-SCRATCH' ? 'pointer' : 'not-allowed',
+                            opacity: resetConfirm === 'RESET-SCRATCH' ? 1 : 0.5,
+                          }}
+                          onClick={async () => {
+                            if (!window.confirm('Are you ABSOLUTELY SURE you want to wipe ALL data (including users) and start setup from scratch?')) return;
+                            setBusyReset(true);
+                            setError('');
+                            setMsg('');
+                            try {
+                              const res = await api.resetSystemData(true);
+                              setResetConfirm('');
+                              await logout();
+                              navigate('/setup', { replace: true });
+                            } catch (err) {
+                              setError((err as Error).message);
+                            } finally {
+                              setBusyReset(false);
+                            }
+                          }}
+                        >
+                          {busyReset ? 'Wiping Database…' : '💥 Factory Reset to Scratch (Full Wipe)'}
+                        </button>
+
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline"
+                          disabled={resetConfirm !== 'RESET-SCRATCH' || busyReset}
+                          style={{
+                            cursor: resetConfirm === 'RESET-SCRATCH' ? 'pointer' : 'not-allowed',
+                            opacity: resetConfirm === 'RESET-SCRATCH' ? 1 : 0.5,
+                          }}
+                          onClick={async () => {
+                            if (!window.confirm('Clear all demo products, stock movements, and orders while keeping your manager account?')) return;
+                            setBusyReset(true);
+                            setError('');
+                            setMsg('');
+                            try {
+                              const res = await api.resetSystemData(false);
+                              setResetConfirm('');
+                              setMsg(`✓ ${res.message}`);
+                              await load();
+                            } catch (err) {
+                              setError((err as Error).message);
+                            } finally {
+                              setBusyReset(false);
+                            }
+                          }}
+                        >
+                          Clear Demo Stock Only (Keep Account)
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}

@@ -536,16 +536,18 @@ a:hover { text-decoration: underline; }
   align-items: center;
   gap: .55rem;
   margin-top: .65rem;
-  padding: .55rem .9rem;
+  padding: .5rem .95rem;
   border-radius: 8px;
-  background: var(--zim-green-50);
+  background: #fdfbed;
+  border: 1px solid #f9eb9f;
   border-left: 4px solid var(--zim-gold-500);
-  font-size: .85rem;
-  color: var(--zim-charcoal-900);
+  font-size: .83rem;
+  color: #78350f;
   flex-wrap: wrap;
 }
 :root[data-theme='dark'] .tab-purpose-banner {
   background: var(--surface-alt);
+  border-color: var(--line);
   color: var(--charcoal);
 }
 .tab-purpose-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--zim-gold-500); flex: none; }
@@ -842,24 +844,33 @@ a:hover { text-decoration: underline; }
 .dashboard-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 1.25rem; }
 
 /* Tables with Granite Charcoal Header */
-.table-wrap { overflow-x: auto; }
-.data-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+.table-wrap {
+  overflow-x: auto;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.data-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
 .data-table th, .data-table td {
   text-align: left;
-  padding: .68rem .75rem;
+  padding: .75rem .9rem;
   border-bottom: 1px solid var(--line);
   vertical-align: middle;
 }
 .data-table th {
-  font-size: .75rem;
+  font-size: .74rem;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: .04em;
+  letter-spacing: .05em;
   color: #f5f5f4;
-  background: var(--zim-charcoal-800);
+  background: var(--zim-charcoal-900);
+  border-bottom: 2px solid var(--zim-gold-500);
+  white-space: nowrap;
 }
-.data-table tbody tr:hover { background: var(--surface-alt); }
-.data-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.data-table tbody tr:hover { background: var(--zim-green-50); }
+.data-table tbody tr:last-child td { border-bottom: none; }
+.data-table .num { text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, monospace; }
 .pos { color: var(--emerald); font-weight: 700; }
 .neg, .badge-danger-text { color: var(--danger); font-weight: 700; }
 

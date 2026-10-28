@@ -115,3 +115,90 @@ test('change password validates, rotates credentials and revokes other sessions'
   assert.equal((await app.inject({ url: '/api/auth/me', headers: h(t2) })).statusCode, 401);
   assert.equal((await login(app, 'executive@example.com', 'long-enough-pass')).statusCode, 200);
 });
+
+test('first-time setup: /api/system/status, /api/system/setup-initial-manager, and reset-to-scratch', async () => {
+  const db = openDb(':memory:');
+  migrate(db);
+  const app = buildApp(db, loadConfig({ NODE_ENV: 'test', BCRYPT_COST: '4' }));
+
+  // Initially uninitialized
+  const st1 = await app.inject('/api/system/status');
+  assert.equal(st1.statusCode, 200);
+  assert.equal(st1.json().needsSetup, true);
+  assert.equal(st1.json().userCount, 0);
+
+  // Setup initial executive manager
+  const setupRes = await app.inject({
+    method: 'POST',
+    url: '/api/system/setup-initial-manager',
+    headers: CSRF,
+    payload: {
+      managerName: 'Farai Chitepo (Founder)',
+      managerEmail: 'owner@stockroom.co.zw',
+      managerPassword: 'SecureOwnerPass123!',
+      managerPin: '8899',
+      businessName: 'StockRoom Harare Hardware & Groceries',
+      city: 'Harare',
+      currencyCode: 'USD',
+      departments: ['Groceries & Staples', 'Hardware & Yard'],
+      posDepartmentName: 'Groceries & Staples',
+    },
+  });
+  assert.equal(setupRes.statusCode, 201);
+  const { user, token } = setupRes.json();
+  assert.equal(user.role, 'executive_manager');
+  assert.equal(user.email, 'owner@stockroom.co.zw');
+  assert.ok(token);
+
+  // Status now shows initialized
+  const st2 = await app.inject('/api/system/status');
+  assert.equal(st2.statusCode, 200);
+  assert.equal(st2.json().needsSetup, false);
+  assert.equal(st2.json().userCount, 1);
+  assert.equal(st2.json().organisationName, 'StockRoom Harare Hardware & Groceries');
+
+  // Fast PIN login works with chosen PIN
+  const pinRes = await app.inject({
+    method: 'POST',
+    url: '/api/auth/pin-login',
+    headers: CSRF,
+    payload: { pin: '8899' },
+  });
+  assert.equal(pinRes.statusCode, 200);
+  assert.equal(pinRes.json().user.role, 'executive_manager');
+
+  // Calling setup-initial-manager again conflicts
+  const conflictRes = await app.inject({
+    method: 'POST',
+    url: '/api/system/setup-initial-manager',
+    headers: CSRF,
+    payload: {
+      managerName: 'Another Owner',
+      managerEmail: 'another@stockroom.co.zw',
+      managerPassword: 'AnotherPassword123!',
+      managerPin: '1122',
+      businessName: 'Another Store',
+      city: 'Bulawayo',
+      currencyCode: 'USD',
+      departments: ['Groceries'],
+      posDepartmentName: 'Groceries',
+    },
+  });
+  assert.equal(conflictRes.statusCode, 409);
+
+  // Factory reset to scratch wipes database and drops triggers cleanly
+  const resetRes = await app.inject({
+    method: 'POST',
+    url: '/api/system/reset',
+    headers: { ...CSRF, authorization: `Bearer ${token}` },
+    payload: { wipeToScratch: true },
+  });
+  assert.equal(resetRes.statusCode, 200);
+  assert.equal(resetRes.json().wipedToScratch, true);
+
+  // Status is back to uninitialized scratch state
+  const st3 = await app.inject('/api/system/status');
+  assert.equal(st3.statusCode, 200);
+  assert.equal(st3.json().needsSetup, true);
+  assert.equal(st3.json().userCount, 0);
+});
