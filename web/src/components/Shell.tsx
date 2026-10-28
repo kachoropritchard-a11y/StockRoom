@@ -22,11 +22,12 @@ function buildNavItems(portal: 'executive' | 'inventory', base: string): NavItem
   if (portal === 'inventory') {
     return [
       { to: `${base}`, label: '1. Dashboard', short: 'Dashboard', keyHint: 'Alt+1', end: true, shona: 'Mufananidzo Webhizinesi', ndebele: 'Isimo Sebhizimusi' },
-      { to: `${base}/products`, label: '2. Products & Catalog', short: 'Products', keyHint: 'Alt+2', end: false, shona: 'Zvinhu Zviri Muchitoro', ndebele: 'Impahla Yesitolo' },
+      { to: `${base}/products`, label: '2. Product Manager', short: 'Product Manager', keyHint: 'Alt+2', end: false, shona: 'Mufananidzo weZvinhu', ndebele: 'Umphathi Wempahla' },
       { to: `${base}/intake`, label: '3. Stock Intake', short: 'Intake', keyHint: 'Alt+3', end: false, shona: 'Kugamuchira Zvinhu', ndebele: 'Ukungena Kwempahla' },
       { to: `${base}/transfers`, label: '4. Transfers', short: 'Transfers', keyHint: 'Alt+4', end: false, shona: 'Kufambisa Zvinhu', ndebele: 'Ukuthutha Impahla' },
       { to: `${base}/departments`, label: '5. Departments', short: 'Departments', keyHint: 'Alt+5', end: false, shona: 'Mathipatimendi', ndebele: 'Izigaba Zesitolo' },
       { to: `${base}/count`, label: '6. Stock Count', short: 'Stock Count', keyHint: 'Alt+6', end: false, shona: 'Kuverenga Zvinhu', ndebele: 'Ukubala Impahla' },
+      { to: `${base}/layby-and-change`, label: '7. Lay-by & Customer Change', short: 'Lay-by & Change', keyHint: 'Alt+7', end: false, shona: 'Paid Stock & Mari yeChange', ndebele: 'I-Layby & Inthshintshi' },
     ];
   }
 
@@ -36,6 +37,7 @@ function buildNavItems(portal: 'executive' | 'inventory', base: string): NavItem
     { to: `${base}/users`, label: '3. User Management', short: 'Users', keyHint: 'Alt+3', end: false, shona: 'Vashandi & maPIN', ndebele: 'Izisebenzi & ama-PIN' },
     { to: `${base}/audit`, label: '4. Audit Logs & Ledger', short: 'Audit Logs', keyHint: 'Alt+4', end: false, shona: 'Gwaro reKufamba Kwezvinhu', ndebele: 'Ukulandelela Izinto' },
     { to: `${base}/settings`, label: '5. Settings & Backups', short: 'Settings', keyHint: 'Alt+5', end: false, shona: 'Mitemo & Backups', ndebele: 'Izilungiselelo' },
+    { to: `${base}/layby-and-change`, label: '6. Lay-by & Customer Change', short: 'Lay-by & Change', keyHint: 'Alt+6', end: false, shona: 'Paid Stock & Mari yeChange', ndebele: 'I-Layby & Inthshintshi' },
   ];
 }
 

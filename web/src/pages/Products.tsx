@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api, type BalanceItem, type ProductItem } from '../api';
 import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { Spinner } from '../components/Spinner';
@@ -7,41 +7,7 @@ import { useZim } from '../zimContext';
 import { ProductRetailIcon } from '../components/Icons';
 
 const PAGE_SIZE = 10;
-type ProductTab = 'catalog' | 'batches' | 'serials' | 'layby';
-
-interface BatchRecord {
-  id: string;
-  sku: string;
-  productName: string;
-  batchNo: string;
-  mcazReg: string;
-  expiryDate: string;
-  qty: number;
-  unit: string;
-  fefoRank: 'ISSUE_FIRST' | 'HEALTHY' | 'EXPIRING_SOON';
-}
-
-interface SerialWarrantyRecord {
-  id: string;
-  sku: string;
-  productName: string;
-  serialOrImei: string;
-  warrantyMonths: number;
-  customerOrStatus: string;
-  soldDate: string;
-}
-
-interface PaidUncollectedRecord {
-  id: string;
-  receiptNo: string;
-  customerName: string;
-  phone: string;
-  productName: string;
-  paidQty: number;
-  collectedQty: number;
-  unit: string;
-  status: 'AWAITING_COLLECTION' | 'PARTIAL_PICKUP' | 'COLLECTED';
-}
+type ProductTab = 'catalog' | 'categories' | 'packaging';
 
 export function Products() {
   const [searchParams] = useSearchParams();
@@ -51,7 +17,6 @@ export function Products() {
   const [activeTab, setActiveTab] = useState<ProductTab>('catalog');
   const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
   const [showAddDrawer, setShowAddDrawer] = useState(false);
-  const [showPkgDrawer, setShowPkgDrawer] = useState(false);
 
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [totalProducts, setTotalProducts] = useState(0);
@@ -69,21 +34,6 @@ export function Products() {
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
   const [stepBusyId, setStepBusyId] = useState<number | null>(null);
-
-  // Sub-Menu 2, 3, 4 state
-  const [batches, setBatches] = useState<BatchRecord[]>([]);
-  const [newBatchProd, setNewBatchProd] = useState('');
-  const [newBatchNo, setNewBatchNo] = useState('');
-  const [newBatchMcaz, setNewBatchMcaz] = useState('');
-  const [newBatchExpiry, setNewBatchExpiry] = useState('');
-  const [newBatchQty, setNewBatchQty] = useState('10');
-  const [newBatchUnit, setNewBatchUnit] = useState('units');
-
-  const [serials, setSerials] = useState<SerialWarrantyRecord[]>([]);
-  const [newSerialNo, setNewSerialNo] = useState('');
-  const [newSerialProd, setNewSerialProd] = useState('');
-  const [newSerialWarranty, setNewSerialWarranty] = useState('12');
-  const [laybyItems, setLaybyItems] = useState<PaidUncollectedRecord[]>([]);
 
   // New Product form
   const [sku, setSku] = useState('');
@@ -122,14 +72,13 @@ export function Products() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [pRes, bRes, cRes, uRes, wRes, dRes, smeRes] = await Promise.all([
+      const [pRes, bRes, cRes, uRes, wRes, dRes] = await Promise.all([
         api.products(search, { categoryId: catFilter, departmentId: deptFilter, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
         api.balances(whFilter),
         api.categories(),
         api.units(),
         api.warehouses(),
         api.departments().catch(() => []),
-        api.smeOverview().catch(() => null),
       ]);
       setProducts(pRes.items);
       setTotalProducts(pRes.total);
@@ -138,26 +87,6 @@ export function Products() {
       setUnits(uRes);
       setWarehouses(wRes);
       setDepartments(dRes);
-      if (smeRes) {
-        setLaybyItems(
-          (smeRes.laybys || []).map((l) => ({
-            id: String(l.id),
-            receiptNo: l.receiptRef,
-            customerName: l.customerName,
-            phone: l.customerPhone,
-            productName: l.productName,
-            paidQty: l.orderedQty,
-            collectedQty: l.collectedQty,
-            unit: l.unit,
-            status:
-              l.status === 'COMPLETED'
-                ? 'COLLECTED'
-                : l.status === 'PARTIAL_COLLECTED'
-                  ? 'PARTIAL_PICKUP'
-                  : 'AWAITING_COLLECTION',
-          })),
-        );
-      }
       if (uRes[0]) setBaseUnitId((prev) => prev || String(uRes[0].id));
       if (pRes.items[0]) setPkgProductId((prev) => prev || String(pRes.items[0].id));
       if (uRes[1]) setPkgUnitId((prev) => prev || String(uRes[1].id));
@@ -352,25 +281,19 @@ export function Products() {
       key: 'catalog',
       label: '1. Stock Catalog',
       badge: totalProducts,
-      purpose: 'Toggle between Visual Picture Cards with +1 Add / -1 Issue / +Bulk steppers and Compact Table view.',
+      purpose: 'Visual Picture Cards with +1 Add / -1 Issue / +Bulk steppers, Auto-Generated SKUs, and Compact Table view.',
     },
     {
-      key: 'batches',
-      label: '2. Batch & Expiry (MCAZ Pharmacy / Agro FEFO)',
-      badge: batches.length,
-      purpose: 'Track batch numbers, MCAZ/Veterinary registration numbers, and First-Expired-First-Out (FEFO) shelf priority.',
+      key: 'categories',
+      label: '2. Product Categories',
+      badge: categories.length,
+      purpose: 'Manage store categories with auto-generated category codes (CAT-xxx).',
     },
     {
-      key: 'serials',
-      label: '3. Serial / IMEI & Warranty (Solar / Electronics)',
-      badge: serials.length,
-      purpose: 'Scan or record unique serial numbers and IMEIs for solar inverters, lithium batteries, and phones to prevent swap fraud.',
-    },
-    {
-      key: 'layby',
-      label: '4. Paid & Uncollected Stock (Hardware "Collect Later" / Lay-By)',
-      badge: laybyItems.filter((x) => x.status !== 'COLLECTED').length,
-      purpose: 'Separate customer-paid cement, roofing sheets, or lay-by goods still sitting in your yard from available store stock.',
+      key: 'packaging',
+      label: '3. Packaging & Bulk Units',
+      badge: units.length,
+      purpose: 'Define packaging conversion rules (e.g. 1 Box = 24 Units) and units of measure.',
     },
   ];
 
@@ -378,12 +301,12 @@ export function Products() {
     <>
       <div className="page-header">
         <div>
-          <h1>Products &amp; Zimbabwean SME Stock Catalog</h1>
+          <h1>Product Manager</h1>
           <span className="vernacular-sub">
             {subLabel(
-              'Zvinhu Zviri Muchitoro • Wedzera (+1) kana Kubvisa (-1) pasina kunyora',
-              'Impahla Yesitolo • Engeza (+1) kumbe Susa (-1) ngaphandle kokubhala',
-              'Visual Picture Cards, MCAZ Batch FEFO, Solar Serials & Hardware Lay-By',
+              'Zvinhu Zviri Muchitoro • Product Catalog, Categories & Packaging Units',
+              'Impahla Yesitolo • Uhlu Lwempahla, Izigaba & Amabhokisi',
+              'Stock Catalog, Auto-Generated Codes & SKUs, Categories, and Bulk Packaging Rules',
             )}
           </span>
         </div>
@@ -401,9 +324,27 @@ export function Products() {
           >
             {showAddDrawer ? '✕ Close Form' : '+ Add New Product'}
           </button>
-          <button type="button" className="btn btn-outline" onClick={() => setShowPkgDrawer((s) => !s)}>
-            {showPkgDrawer ? '✕ Close Packagings' : 'Packagings & Categories'}
-          </button>
+        </div>
+      </div>
+
+      {/* Helpful context banner explaining where Batch/Expiry & Layby are managed */}
+      <div className="card" style={{ marginBottom: '1.25rem', backgroundColor: 'var(--card-subtle-bg, rgba(0,0,0,0.02))' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+            <span style={{ fontSize: '1.4rem' }}>💡</span>
+            <div style={{ fontSize: '0.875rem', lineHeight: 1.4 }}>
+              <strong>Looking for Batch &amp; Expiry dates or Serial / IMEI numbers?</strong>
+              <div>These are embedded directly in <strong>Stock Intake</strong> when receiving new goods. Customer lay-by orders &amp; till small-change slips are in the dedicated <strong>Lay-by &amp; Customer Change</strong> tab.</div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <Link to="/inventory/intake" className="btn btn-sm btn-outline">
+              📦 Go to Stock Intake
+            </Link>
+            <Link to="/inventory/layby-and-change" className="btn btn-sm btn-outline">
+              🪙 Lay-by &amp; Change
+            </Link>
+          </div>
         </div>
       </div>
 
@@ -503,84 +444,14 @@ export function Products() {
         </section>
       )}
 
-      {showPkgDrawer && (
-        <section className="card" style={{ marginBottom: '1.2rem' }}>
-          <div className="dashboard-panels">
-            <div className="subcard">
-              <h3>Add Packaging Conversion (e.g. 1 Crate/Carton = 12 Each)</h3>
-              <form className="form-grid" onSubmit={handleAddPackaging}>
-                <label>
-                  Product
-                  <select value={pkgProductId} onChange={(e) => setPkgProductId(e.target.value)} required>
-                    {products.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name} (base: {p.baseUnit})</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Pack Unit
-                  <select value={pkgUnitId} onChange={(e) => setPkgUnitId(e.target.value)} required>
-                    {units.map((u) => (
-                      <option key={u.id} value={u.id}>{u.name} ({u.code})</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Base Units per Pack
-                  <input type="number" step="0.001" min="0.001" value={pkgFactor} onChange={(e) => setPkgFactor(e.target.value)} required />
-                </label>
-                <div className="form-actions">
-                  <button className="btn btn-primary" type="submit">+ Add Conversion</button>
-                </div>
-              </form>
-            </div>
-
-            <div className="subcard">
-              <h3>Categories &amp; Units of Measure</h3>
-              <div className="inline-forms">
-                <form onSubmit={handleAddCategory} className="inline-form">
-                  <div style={{ flex: 1 }}>
-                    <input
-                      value={newCategory}
-                      onChange={(e) => setNewCategory(e.target.value)}
-                      placeholder="New category name (e.g. Beverages)"
-                      style={{ width: '100%' }}
-                    />
-                    <span className="muted" style={{ fontSize: '0.72rem', display: 'block', marginTop: '0.15rem' }}>
-                      ⚡ Code is auto-generated by the system (e.g. CAT-001)
-                    </span>
-                  </div>
-                  <button className="btn btn-outline" type="submit">+ Category</button>
-                </form>
-                <form onSubmit={handleAddUnit} className="inline-form" style={{ marginTop: '0.5rem' }}>
-                  <input
-                    value={newUnitName}
-                    onChange={(e) => setNewUnitName(e.target.value)}
-                    placeholder="Label (e.g. 50kg Bag)"
-                    style={{ flex: 1 }}
-                  />
-                  <input
-                    value={newUnitCode}
-                    onChange={(e) => setNewUnitCode(e.target.value)}
-                    placeholder="Code (Auto if blank)"
-                    style={{ maxWidth: '160px' }}
-                  />
-                  <button className="btn btn-outline" type="submit">+ Unit</button>
-                </form>
-              </div>
-            </div>
-          </div>
-        </section>
-      )}
-
       <section className="card">
         {/* TIER 3: Horizontal In-Page Sub-Menu Bar */}
         <AccessibleTabs
           idPrefix="products"
-          ariaLabel="Product management sections"
+          ariaLabel="Product catalog views and packaging conversions"
           tabs={tabs}
           active={activeTab}
-          onChange={setActiveTab}
+          onChange={(k) => setActiveTab(k)}
         />
 
         {/* SUB-MENU 1: Stock Catalog (Visual Picture Cards vs Compact Table) */}
@@ -947,361 +818,182 @@ export function Products() {
           </div>
         )}
 
-        {/* SUB-MENU 2: Batch & Expiry (MCAZ Pharmacy / Agro FEFO) */}
-        {activeTab === 'batches' && (
-          <div id="products-panel-batches" role="tabpanel" aria-labelledby="products-tab-batches">
-            <div className="section-head">
+        {/* SUB-MENU 2: Product Categories */}
+        {activeTab === 'categories' && (
+          <div id="products-panel-categories" role="tabpanel">
+            <div className="section-head" style={{ marginBottom: '1rem' }}>
               <div>
-                <h2>MCAZ Pharmacy &amp; Agrovet FEFO Batch Register</h2>
+                <h2>Store Categories &amp; Auto-Codes</h2>
                 <span className="vernacular-sub">
                   {subLabel(
-                    'Zvinhu Zvine Zuva Rekupera (FEFO — Tangai Kubudisa Zviri Kuda Kupera)',
-                    'Impahla Elesikhathi Sokuphela (FEFO — Khipha Kuqala Okuzaphela Masinyane)',
+                    'Mhando dzeZvinhu • Categories dzine maCode eSystem (CAT-xxx)',
+                    'Izigaba Zempahla • Uhlu Lwezigaba Zesitolo',
+                    'Organize products into store categories with auto-generated category codes.',
                   )}
                 </span>
               </div>
             </div>
 
-            <form
-              className="form-grid subcard"
-              style={{ marginBottom: '1rem' }}
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (!newBatchNo.trim() || !newBatchExpiry.trim()) return;
-                const prod = products.find((p) => p.name === newBatchProd) || products[0];
-                const now = new Date();
-                const exp = new Date(newBatchExpiry);
-                const diffMonths = (exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24 * 30);
-                const fefoRank: BatchRecord['fefoRank'] =
-                  diffMonths < 2 ? 'EXPIRING_SOON' : diffMonths < 6 ? 'ISSUE_FIRST' : 'HEALTHY';
-                setBatches((prev) => [
-                  {
-                    id: `B-${prev.length + 1}`,
-                    sku: prod?.sku ?? 'MED-GEN',
-                    productName: newBatchProd.trim() || prod?.name || 'Store Item',
-                    batchNo: newBatchNo.trim().toUpperCase(),
-                    mcazReg: newBatchMcaz.trim() || 'N/A',
-                    expiryDate: newBatchExpiry,
-                    qty: Number(newBatchQty) || 1,
-                    unit: newBatchUnit.trim() || prod?.baseUnit || 'each',
-                    fefoRank,
-                  },
-                  ...prev,
-                ]);
-                setNewBatchNo('');
-                setNewBatchExpiry('');
-                setMsg(`Logged batch ${newBatchNo.trim().toUpperCase()} for FEFO shelf rotation.`);
-              }}
-            >
-              <label>
-                Product Name
-                {products.length > 0 ? (
-                  <select
-                    value={newBatchProd}
-                    onChange={(e) => {
-                      setNewBatchProd(e.target.value);
-                      const matched = products.find((p) => p.name === e.target.value);
-                      if (matched) setNewBatchUnit(matched.baseUnit);
-                    }}
-                  >
-                    <option value="">Select product…</option>
-                    {products.map((p) => (
-                      <option key={p.id} value={p.name}>
-                        {p.name} ({p.sku})
-                      </option>
-                    ))}
-                  </select>
-                ) : (
+            <div className="card" style={{ maxWidth: '540px', marginBottom: '1.25rem' }}>
+              <h3 style={{ margin: '0 0 0.5rem' }}>+ Add New Product Category</h3>
+              <form onSubmit={handleAddCategory} style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+                <div style={{ flex: 1 }}>
                   <input
-                    value={newBatchProd}
-                    onChange={(e) => setNewBatchProd(e.target.value)}
-                    placeholder="e.g. Paracetamol 500mg or Cattle Dip"
+                    className="input"
+                    value={newCategory}
+                    onChange={(e) => setNewCategory(e.target.value)}
+                    placeholder="Category name (e.g. Beverages, Cereal and Grain)"
                     required
                   />
-                )}
-              </label>
-              <label>
-                Batch / Lot Number
-                <input
-                  value={newBatchNo}
-                  onChange={(e) => setNewBatchNo(e.target.value)}
-                  placeholder="e.g. BN-2026-441"
-                  required
-                />
-              </label>
-              <label>
-                MCAZ / Vet Reg No.
-                <input
-                  value={newBatchMcaz}
-                  onChange={(e) => setNewBatchMcaz(e.target.value)}
-                  placeholder="e.g. MCAZ-88210 (or N/A)"
-                />
-              </label>
-              <label>
-                Expiry Date
-                <input
-                  type="date"
-                  value={newBatchExpiry}
-                  onChange={(e) => setNewBatchExpiry(e.target.value)}
-                  required
-                />
-              </label>
-              <label>
-                Batch Quantity
-                <input
-                  type="number"
-                  min="1"
-                  value={newBatchQty}
-                  onChange={(e) => setNewBatchQty(e.target.value)}
-                  required
-                />
-              </label>
-              <div className="form-actions">
-                <button type="submit" className="btn btn-primary">+ Log Batch Expiry</button>
-              </div>
-            </form>
+                  <span className="muted" style={{ fontSize: '0.75rem', display: 'block', marginTop: '0.25rem' }}>
+                    ⚡ Category code is auto-generated by the system (e.g. CAT-004)
+                  </span>
+                </div>
+                <button className="btn btn-primary" type="submit">+ Add Category</button>
+              </form>
+            </div>
 
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Batch No.</th>
-                    <th>MCAZ / Vet Reg</th>
-                    <th>SKU &amp; Product</th>
-                    <th>Expiry Date</th>
-                    <th className="num">Batch Qty</th>
-                    <th>FEFO Dispatch Priority</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {batches.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
-                        No batches registered yet. Use the form above to record batch numbers and expiry dates for FEFO stock rotation.
-                      </td>
-                    </tr>
-                  ) : (
-                    batches.map((b) => (
-                      <tr key={b.id}>
-                        <td><code>{b.batchNo}</code></td>
-                        <td><strong>{b.mcazReg}</strong></td>
-                        <td>
-                          <strong>{b.productName}</strong> <span className="muted">({b.sku})</span>
-                        </td>
-                        <td>{b.expiryDate}</td>
-                        <td className="num">{b.qty} {b.unit}</td>
-                        <td>
-                          <span
-                            className={`status-pill ${
-                              b.fefoRank === 'EXPIRING_SOON' ? 'out' : b.fefoRank === 'ISSUE_FIRST' ? 'low' : 'optimal'
-                            }`}
-                          >
-                            {b.fefoRank === 'EXPIRING_SOON'
-                              ? '⚠️ Expiring Soon — Issue Immediately'
-                              : b.fefoRank === 'ISSUE_FIRST'
-                                ? 'FEFO #1 — Issue Before Newer Stock'
-                                : 'Healthy Shelf Life'}
-                          </span>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* SUB-MENU 3: Serial / IMEI & Warranty (Solar / Electronics) */}
-        {activeTab === 'serials' && (
-          <div id="products-panel-serials" role="tabpanel" aria-labelledby="products-tab-serials">
-            <div className="section-head">
-              <div>
-                <h2>Solar Inverter, Lithium Battery &amp; IMEI Warranty Tracker</h2>
-                <span className="vernacular-sub">
-                  {subLabel(
-                    'Nhamba dzeSolar neMaPhone (Kudzivirira Kuchinjwa kweZvinhu Zvakafa)',
-                    'Izinombolo zeSolar lamaFoni (Ukuvikela Ukuntshintshwa Kwempahla)',
-                  )}
-                </span>
-              </div>
-            </div>
-
-            <form
-              className="form-grid subcard"
-              style={{ marginBottom: '1rem' }}
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (!newSerialNo.trim()) return;
-                setSerials((prev) => [
-                  {
-                    id: `S-${prev.length + 1}`,
-                    sku: 'SOL-UNIT',
-                    productName: newSerialProd,
-                    serialOrImei: newSerialNo.trim().toUpperCase(),
-                    warrantyMonths: Number(newSerialWarranty) || 12,
-                    customerOrStatus: 'In Stock — Verified Serial',
-                    soldDate: '-',
-                  },
-                  ...prev,
-                ]);
-                setNewSerialNo('');
-                setMsg('Serial / IMEI number registered into anti-swap warranty log.');
-              }}
-            >
-              <label>
-                Solar / Electronic Item
-                <input value={newSerialProd} onChange={(e) => setNewSerialProd(e.target.value)} required />
-              </label>
-              <label>
-                Serial Number or 15-Digit IMEI
-                <input
-                  value={newSerialNo}
-                  onChange={(e) => setNewSerialNo(e.target.value)}
-                  placeholder="e.g. SN-MUST-99201184"
-                  required
-                />
-              </label>
-              <label>
-                Warranty Period (Months)
-                <input type="number" min="1" max="120" value={newSerialWarranty} onChange={(e) => setNewSerialWarranty(e.target.value)} required />
-              </label>
-              <div className="form-actions">
-                <button type="submit" className="btn btn-primary">+ Register Serial / IMEI</button>
-              </div>
-            </form>
-
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Serial / IMEI</th>
-                    <th>Product</th>
-                    <th className="num">Warranty</th>
-                    <th>Current Status / Buyer</th>
-                    <th>Date Dispatched</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {serials.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
-                        No serialized items logged yet. Register high-value electronics and solar inverters using the form above.
-                      </td>
-                    </tr>
-                  ) : (
-                    serials.map((s) => (
-                      <tr key={s.id}>
-                        <td><code>{s.serialOrImei}</code></td>
-                        <td><strong>{s.productName}</strong></td>
-                        <td className="num">{s.warrantyMonths} Months</td>
-                        <td>
-                          <span className={`status-pill ${s.soldDate === '-' ? 'optimal' : 'low'}`}>
-                            {s.customerOrStatus}
-                          </span>
-                        </td>
-                        <td>{s.soldDate}</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* SUB-MENU 4: Paid & Uncollected Stock (Hardware "Collect Later" / Lay-By) */}
-        {activeTab === 'layby' && (
-          <div id="products-panel-layby" role="tabpanel" aria-labelledby="products-tab-layby">
-            <div className="section-head">
-              <div>
-                <h2>Paid &amp; Uncollected Customer Stock (&quot;Collect Later&quot; / Lay-By)</h2>
-                <span className="vernacular-sub">
-                  {subLabel(
-                    'Zvinhu Zvakabhadharwa Asi Zvisati Zvatorwa neVatengi (Simende, Marata)',
-                    'Impahla Ebhadaliweyo Kodwa Engakathathwa Ngabathengi',
-                  )}
-                </span>
-              </div>
-            </div>
-            <p className="muted" style={{ fontSize: '0.86rem' }}>
-              Prevents hardware yard staff from accidentally selling cement or roofing sheets that have already been paid for by another customer.
-            </p>
-
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Receipt #</th>
-                    <th>Customer &amp; Phone</th>
-                    <th>Item Reserved in Yard</th>
-                    <th className="num">Paid Qty</th>
-                    <th className="num">Collected</th>
-                    <th className="num">Still Owed to Customer</th>
+                    <th>Code</th>
+                    <th>Category Name</th>
+                    <th>Products Count</th>
                     <th>Status</th>
-                    <th className="num">Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {laybyItems.length === 0 ? (
+                  {categories.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
-                        No paid &amp; uncollected items on lay-by. When customers purchase bulk items to collect later with their trucks, they will appear here.
+                      <td colSpan={4} className="muted text-center" style={{ padding: '2rem' }}>
+                        No categories created yet.
                       </td>
                     </tr>
                   ) : (
-                    laybyItems.map((item) => {
-                      const remaining = Math.max(0, item.paidQty - item.collectedQty);
+                    categories.map((c) => {
+                      const count = products.filter((p) => p.categoryId === c.id).length;
                       return (
-                        <tr key={item.id}>
-                          <td><code>{item.receiptNo}</code></td>
+                        <tr key={c.id}>
+                          <td><code>{c.code ?? `CAT-${String(c.id).padStart(3, '0')}`}</code></td>
+                          <td><strong>{c.name}</strong></td>
+                          <td>{count} products linked</td>
                           <td>
-                            <strong>{item.customerName}</strong>
-                            <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>{item.phone}</div>
-                          </td>
-                          <td><strong>{item.productName}</strong></td>
-                          <td className="num">{item.paidQty} {item.unit}</td>
-                          <td className="num">{item.collectedQty} {item.unit}</td>
-                          <td className="num"><strong>{remaining} {item.unit}</strong></td>
-                          <td>
-                            <span
-                              className={`status-pill ${
-                                remaining === 0 ? 'optimal' : item.collectedQty > 0 ? 'low' : 'out'
-                              }`}
-                            >
-                              {remaining === 0 ? 'Fully Collected' : `${remaining} ${item.unit} Reserved in Yard`}
+                            <span className={`status-pill ${c.active ? 'optimal' : 'out'}`}>
+                              {c.active ? 'ACTIVE' : 'INACTIVE'}
                             </span>
-                          </td>
-                          <td className="num">
-                            {remaining > 0 && (
-                              <button
-                                type="button"
-                                className="btn btn-primary btn-sm"
-                                onClick={async () => {
-                                  const numId = Number(item.id);
-                                  if (Number.isFinite(numId) && numId > 0) {
-                                    await api.collectLayby(numId, remaining).catch(() => null);
-                                    await load();
-                                  } else {
-                                    setLaybyItems((prev) =>
-                                      prev.map((x) =>
-                                        x.id === item.id
-                                          ? { ...x, collectedQty: x.paidQty, status: 'COLLECTED' }
-                                          : x,
-                                      ),
-                                    );
-                                  }
-                                  setMsg(`Marked remaining ${remaining} ${item.unit} for ${item.customerName} as collected.`);
-                                }}
-                              >
-                                ✓ Release to Customer Truck
-                              </button>
-                            )}
                           </td>
                         </tr>
                       );
                     })
                   )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* SUB-MENU 3: Packaging & Bulk Units */}
+        {activeTab === 'packaging' && (
+          <div id="products-panel-packaging" role="tabpanel">
+            <div className="section-head" style={{ marginBottom: '1rem' }}>
+              <div>
+                <h2>Packaging Conversions &amp; Units of Measure</h2>
+                <span className="vernacular-sub">
+                  {subLabel(
+                    'Kupatsanura Mabhero, Makatoni neCrates muZvibedu',
+                    'Ukwehlukanisa Amabhokisi Lokungaphakathi',
+                    'Configure how cartons, cases, crates, and bulk bags break down into base single shelf units.',
+                  )}
+                </span>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.25rem', marginBottom: '1.25rem' }}>
+              <div className="subcard">
+                <h3>+ Add Bulk Packaging Conversion</h3>
+                <p className="muted" style={{ fontSize: '0.84rem', margin: '0 0 0.75rem' }}>
+                  Define how many base single units make up a carton, case, bale, or crate.
+                </p>
+                <form className="form-grid" onSubmit={handleAddPackaging}>
+                  <label>
+                    Product
+                    <select value={pkgProductId} onChange={(e) => setPkgProductId(e.target.value)} required>
+                      <option value="">Select product...</option>
+                      {products.map((p) => (
+                        <option key={p.id} value={p.id}>[{p.sku}] {p.name} (base: {p.baseUnit})</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Bulk Packaging Unit
+                    <select value={pkgUnitId} onChange={(e) => setPkgUnitId(e.target.value)} required>
+                      <option value="">Select unit...</option>
+                      {units.map((u) => (
+                        <option key={u.id} value={u.id}>{u.name} ({u.code})</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Base Units per Bulk Pack (Factor)
+                    <input type="number" step="0.001" min="0.001" value={pkgFactor} onChange={(e) => setPkgFactor(e.target.value)} required />
+                  </label>
+                  <div className="form-actions">
+                    <button className="btn btn-primary" type="submit">+ Save Packaging Rule</button>
+                  </div>
+                </form>
+              </div>
+
+              <div className="subcard">
+                <h3>+ Add New Unit of Measure</h3>
+                <p className="muted" style={{ fontSize: '0.84rem', margin: '0 0 0.75rem' }}>
+                  Register single or bulk units (e.g. 50kg Bag, Carton of 24, Litre).
+                </p>
+                <form onSubmit={handleAddUnit} className="form-grid">
+                  <label>
+                    Unit Label / Name *
+                    <input
+                      value={newUnitName}
+                      onChange={(e) => setNewUnitName(e.target.value)}
+                      placeholder="e.g. 50kg Bag or Carton of 24"
+                      required
+                    />
+                  </label>
+                  <label>
+                    Unit Code (Auto-generated if blank)
+                    <input
+                      value={newUnitCode}
+                      onChange={(e) => setNewUnitCode(e.target.value)}
+                      placeholder="e.g. BAG-50 or leave blank"
+                    />
+                  </label>
+                  <div className="form-actions">
+                    <button className="btn btn-primary" type="submit">+ Add Unit of Measure</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Unit Code</th>
+                    <th>Unit Name</th>
+                    <th>Registered Products with Bulk Packs</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {units.map((u) => {
+                    const productsWithThisUnit = products.filter((p) => p.baseUnitId === u.id || p.packagings.some((g) => g.unitId === u.id));
+                    return (
+                      <tr key={u.id}>
+                        <td><code>{u.code}</code></td>
+                        <td><strong>{u.name}</strong></td>
+                        <td>{productsWithThisUnit.length} products using this unit</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

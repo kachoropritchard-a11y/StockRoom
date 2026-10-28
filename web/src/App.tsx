@@ -20,6 +20,7 @@ import { SetupManager } from './pages/SetupManager';
 import { StockIntake } from './pages/StockIntake';
 import { StockCount } from './pages/StockCount';
 import { AuditLogs } from './pages/AuditLogs';
+import { LaybyAndChange } from './pages/LaybyAndChange';
 import { ZimProvider } from './zimContext';
 
 /** Client-side route guard. The server enforces the same rules; this only provides sensible navigation. */
@@ -73,6 +74,8 @@ export function App() {
             <Route path="users" element={<Users />} />
             <Route path="audit" element={<AuditLogs />} />
             <Route path="settings" element={<Organisation />} />
+            <Route path="layby-and-change" element={<LaybyAndChange />} />
+            <Route path="layby" element={<Navigate to="/executive/layby-and-change" replace />} />
             {/* Backward-compatibility aliases */}
             <Route path="organisation" element={<Navigate to="/executive/settings" replace />} />
             <Route path="pos" element={<Pos />} />
@@ -95,6 +98,8 @@ export function App() {
             <Route path="transfers" element={<Transfers />} />
             <Route path="departments" element={<Warehouses />} />
             <Route path="count" element={<StockCount />} />
+            <Route path="layby-and-change" element={<LaybyAndChange />} />
+            <Route path="layby" element={<Navigate to="/inventory/layby-and-change" replace />} />
             {/* Backward-compatibility aliases */}
             <Route path="procurement" element={<Navigate to="/inventory/intake" replace />} />
             <Route path="warehouses" element={<Navigate to="/inventory/departments" replace />} />

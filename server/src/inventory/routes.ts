@@ -719,10 +719,17 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     if (typeof k !== 'string' || k.length < 8 || k.length > 100) throw new AppError(400, 'idempotency_key_required');
     return k;
   };
-  const common = { reference: text(80), supplierId: id.nullish(), departmentId: id.nullish() };
+  const common = { reference: text(80), supplierId: id.nullish(), departmentId: id.nullish(), warehouseId: id.nullish() };
   const batchFields = {
     batchNumber: text(60),
     expiryDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD').nullish().transform((v) => v || null),
+    serials: z.array(z.string().trim().min(1).max(100)).max(500).nullish(),
+    imeis: z.array(z.string().trim().min(1).max(100)).max(500).nullish(),
+    serialItems: z.array(z.object({
+      serialNumber: z.string().trim().max(100).nullish(),
+      imei: z.string().trim().max(100).nullish(),
+      notes: z.string().trim().max(200).nullish(),
+    })).max(500).nullish(),
   };
   const line = { productId: id, warehouseId: id, unitId: id, ...batchFields };
   const lines = <T extends z.ZodRawShape>(extra: T) => z.array(z.object({ ...line, ...extra }).strict()).min(1).max(200);
@@ -740,14 +747,18 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         tenderType?: string | null;
         batchNumber?: string | null;
         expiryDate?: string | null;
+        serials?: string[] | null;
+        imeis?: string[] | null;
+        serialItems?: { serialNumber?: string | null; imei?: string | null; notes?: string | null }[] | null;
       }[];
       reason?: string | null;
       reference?: string | null;
       supplierId?: number | null;
       departmentId?: number | null;
+      warehouseId?: number | null;
     }>
   > = {
-    receipt: z.object({ reference: common.reference, supplierId: common.supplierId, lines: lines({ quantity: qty.positive(), unitCost: money.nullish() }) }).strict(),
+    receipt: z.object({ reference: common.reference, supplierId: common.supplierId, warehouseId: common.warehouseId, lines: lines({ quantity: qty.positive(), unitCost: money.nullish() }) }).strict(),
     issue: z.object({ reference: common.reference, departmentId: common.departmentId, lines: lines({ quantity: qty.positive(), unitSellingPrice: money.nullish(), tenderType: text(40) }) }).strict(),
     transfer: z.object({ reference: common.reference, lines: lines({ toWarehouseId: id, quantity: qty.positive() }) }).strict(),
     adjustment: z.object({ reference: common.reference, reason: z.string().trim().min(3).max(300), lines: lines({ quantity: qty, unitCost: money.nullish() }) }).strict(),
@@ -780,9 +791,209 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
           expiryDate: l.expiryDate,
         })),
       });
+
+      if (result.documentId && path === 'receipts') {
+        const insertSerial = db.prepare(`
+          INSERT INTO stock_serial_items (organisation_id, product_id, warehouse_id, document_id, serial_number, imei, batch_number, status, notes)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'IN_STOCK', ?)
+        `);
+        for (const l of body.lines) {
+          if (l.serialItems && l.serialItems.length > 0) {
+            for (const item of l.serialItems) {
+              if (item.serialNumber || item.imei) {
+                insertSerial.run(req.user!.organisationId, l.productId, l.warehouseId, result.documentId, item.serialNumber || null, item.imei || null, l.batchNumber || null, item.notes || null);
+              }
+            }
+          } else {
+            const serialList = l.serials || [];
+            const imeiList = l.imeis || [];
+            const count = Math.max(serialList.length, imeiList.length);
+            for (let i = 0; i < count; i++) {
+              const sn = serialList[i] || null;
+              const imei = imeiList[i] || null;
+              if (sn || imei) {
+                insertSerial.run(req.user!.organisationId, l.productId, l.warehouseId, result.documentId, sn, imei, l.batchNumber || null, null);
+              }
+            }
+          }
+        }
+      }
+
       return reply.code(result.replayed ? 200 : 201).send({ replayed: result.replayed, document: getDocument(db, req.user!.organisationId, result.documentId) });
     });
   }
+
+  // ---------- batch and expiry tracking ----------
+  app.get('/api/inventory/batch-expiry', { preHandler: staff }, async (req) => {
+    const orgId = req.user!.organisationId;
+    const rows = db
+      .prepare(
+        `SELECT
+           m.product_id AS productId,
+           p.sku,
+           p.name AS productName,
+           w.id AS warehouseId,
+           w.name AS warehouseName,
+           m.batch_number AS batchNumber,
+           m.expiry_date AS expiryDate,
+           CAST(ROUND(julianday(m.expiry_date) - julianday('now')) AS INTEGER) AS daysRemaining,
+           ROUND(SUM(m.base_delta_milli) / 1000.0, 3) AS inStockQty,
+           u.code AS unit
+         FROM stock_movements m
+         JOIN products p ON p.id = m.product_id
+         JOIN warehouses w ON w.id = m.warehouse_id
+         JOIN units_of_measure u ON u.id = p.base_unit_id
+         WHERE m.organisation_id = ? AND m.expiry_date IS NOT NULL
+         GROUP BY m.product_id, p.sku, p.name, w.id, w.name, m.batch_number, m.expiry_date, u.code
+         HAVING inStockQty > 0
+         ORDER BY m.expiry_date ASC`,
+      )
+      .all(orgId) as {
+      productId: number;
+      sku: string;
+      productName: string;
+      warehouseId: number;
+      warehouseName: string;
+      batchNumber: string | null;
+      expiryDate: string;
+      daysRemaining: number;
+      inStockQty: number;
+      unit: string;
+    }[];
+
+    const items = rows.map((r) => {
+      let status: 'EXPIRED' | 'EXPIRING_SOON' | 'EXPIRING_NEAR' | 'GOOD' = 'GOOD';
+      if (r.daysRemaining < 0) status = 'EXPIRED';
+      else if (r.daysRemaining <= 30) status = 'EXPIRING_SOON';
+      else if (r.daysRemaining <= 90) status = 'EXPIRING_NEAR';
+      return { ...r, status };
+    });
+
+    return { items };
+  });
+
+  // ---------- serial numbers & IMEI registry ----------
+  app.get('/api/inventory/serials', { preHandler: staff }, async (req) => {
+    const orgId = req.user!.organisationId;
+    const q = req.query as Record<string, string | undefined>;
+    const search = q.search ? `%${q.search.trim()}%` : null;
+    const status = q.status && q.status !== 'all' ? q.status : null;
+    const productId = q.productId ? Number(q.productId) : null;
+
+    let sql = `
+      SELECT
+        s.id,
+        s.product_id AS productId,
+        p.sku,
+        p.name AS productName,
+        s.warehouse_id AS warehouseId,
+        w.name AS warehouseName,
+        s.document_id AS documentId,
+        d.reference AS documentRef,
+        s.serial_number AS serialNumber,
+        s.imei,
+        s.batch_number AS batchNumber,
+        s.status,
+        s.notes,
+        s.created_at AS createdAt,
+        s.updated_at AS updatedAt
+      FROM stock_serial_items s
+      JOIN products p ON p.id = s.product_id
+      JOIN warehouses w ON w.id = s.warehouse_id
+      LEFT JOIN stock_documents d ON d.id = s.document_id
+      WHERE s.organisation_id = ?
+    `;
+    const params: (string | number)[] = [orgId];
+
+    if (status) {
+      sql += ' AND s.status = ?';
+      params.push(status);
+    }
+    if (productId) {
+      sql += ' AND s.product_id = ?';
+      params.push(productId);
+    }
+    if (search) {
+      sql += ' AND (s.serial_number LIKE ? OR s.imei LIKE ? OR p.name LIKE ? OR p.sku LIKE ?)';
+      params.push(search, search, search, search);
+    }
+
+    sql += ' ORDER BY s.id DESC LIMIT 200';
+    const items = db.prepare(sql).all(...params);
+    return { items };
+  });
+
+  app.post('/api/inventory/serials', { preHandler: staff }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const schema = z
+      .object({
+        productId: id,
+        warehouseId: id,
+        documentId: id.nullish(),
+        batchNumber: text(60),
+        items: z
+          .array(
+            z.object({
+              serialNumber: z.string().trim().max(100).nullish(),
+              imei: z.string().trim().max(100).nullish(),
+              notes: z.string().trim().max(200).nullish(),
+            }),
+          )
+          .min(1)
+          .max(500),
+      })
+      .strict();
+    const b = schema.parse(req.body);
+
+    const insert = db.prepare(`
+      INSERT INTO stock_serial_items (organisation_id, product_id, warehouse_id, document_id, serial_number, imei, batch_number, status, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'IN_STOCK', ?)
+    `);
+
+    const insertedIds: number[] = [];
+    db.transaction(() => {
+      for (const item of b.items) {
+        if (item.serialNumber || item.imei) {
+          const res = insert.run(
+            orgId,
+            b.productId,
+            b.warehouseId,
+            b.documentId ?? null,
+            item.serialNumber || null,
+            item.imei || null,
+            b.batchNumber ?? null,
+            item.notes ?? null,
+          );
+          insertedIds.push(Number(res.lastInsertRowid));
+        }
+      }
+    })();
+
+    return reply.code(201).send({ ok: true, count: insertedIds.length, ids: insertedIds });
+  });
+
+  app.patch('/api/inventory/serials/:id/status', { preHandler: staff }, async (req) => {
+    const { id: rowId } = idParam.parse(req.params);
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        status: z.enum(['IN_STOCK', 'SOLD', 'DEFECTIVE', 'TRANSFERRED', 'WRITTEN_OFF']),
+        notes: z.string().trim().max(200).nullish(),
+      })
+      .strict()
+      .parse(req.body);
+
+    const existing = db.prepare('SELECT id FROM stock_serial_items WHERE id = ? AND organisation_id = ?').get(rowId, orgId);
+    if (!existing) throw new AppError(404, 'not_found');
+
+    db.prepare(`
+      UPDATE stock_serial_items
+      SET status = ?, notes = COALESCE(?, notes), updated_at = datetime('now')
+      WHERE id = ?
+    `).run(b.status, b.notes ?? null, rowId);
+
+    return { ok: true };
+  });
 
   // Branch-scoped inventory managers only see their own branch's warehouses.
   const scope = (req: FastifyRequest, column: string, params: (string | number)[]) => {
@@ -3428,6 +3639,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         // Complete scratch wipe: remove all operational, inventory, master, and identity records
         db.exec(`
           DELETE FROM document_attachments;
+          DELETE FROM stock_serial_items;
           DELETE FROM fiscal_receipts;
           DELETE FROM change_vouchers;
           DELETE FROM till_shifts;
@@ -3470,6 +3682,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
 
       // Clear operational and catalog tables for this organisation
       db.prepare('DELETE FROM document_attachments WHERE organisation_id = ?').run(orgId);
+      db.prepare('DELETE FROM stock_serial_items WHERE organisation_id = ?').run(orgId);
       db.prepare('DELETE FROM fiscal_receipts WHERE organisation_id = ?').run(orgId);
       db.prepare('DELETE FROM change_vouchers WHERE organisation_id = ?').run(orgId);
       db.prepare('DELETE FROM till_shifts WHERE organisation_id = ?').run(orgId);

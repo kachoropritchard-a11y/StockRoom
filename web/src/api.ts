@@ -511,6 +511,38 @@ export interface InventoryReports {
   };
 }
 
+export interface BatchExpiryItem {
+  productId: number;
+  sku: string;
+  productName: string;
+  warehouseId: number;
+  warehouseName: string;
+  batchNumber: string | null;
+  expiryDate: string;
+  daysRemaining: number;
+  inStockQty: number;
+  unit: string;
+  status: 'EXPIRED' | 'EXPIRING_SOON' | 'EXPIRING_NEAR' | 'GOOD';
+}
+
+export interface StockSerialItem {
+  id: number;
+  productId: number;
+  sku: string;
+  productName: string;
+  warehouseId: number;
+  warehouseName: string;
+  documentId: number | null;
+  documentRef: string | null;
+  serialNumber: string | null;
+  imei: string | null;
+  batchNumber: string | null;
+  status: 'IN_STOCK' | 'SOLD' | 'DEFECTIVE' | 'TRANSFERRED' | 'WRITTEN_OFF';
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SmeOverview {
   debtors: {
     id: number;
@@ -1127,6 +1159,25 @@ export const api = {
   }) => request<{ id: number }>('/api/sme/staff-pins', { method: 'POST', body: JSON.stringify(body) }),
   updateStaffPin: (id: number, body: { active?: boolean; canViewCost?: boolean; canWriteOff?: boolean; pinCode?: string }) =>
     request<{ ok: true }>(`/api/sme/staff-pins/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+  batchExpiryTracker: () => request<{ items: BatchExpiryItem[] }>('/api/inventory/batch-expiry'),
+  stockSerials: (query?: { search?: string; status?: string; productId?: number }) => {
+    const sp = new URLSearchParams();
+    if (query?.search) sp.set('search', query.search);
+    if (query?.status) sp.set('status', query.status);
+    if (query?.productId) sp.set('productId', String(query.productId));
+    const qs = sp.toString();
+    return request<{ items: StockSerialItem[] }>(`/api/inventory/serials${qs ? `?${qs}` : ''}`);
+  },
+  registerSerials: (body: {
+    productId: number;
+    warehouseId: number;
+    documentId?: number;
+    batchNumber?: string;
+    items: { serialNumber?: string; imei?: string; notes?: string }[];
+  }) => request<{ ok: true; count: number; ids: number[] }>('/api/inventory/serials', { method: 'POST', body: JSON.stringify(body) }),
+  updateSerialStatus: (id: number, status: 'IN_STOCK' | 'SOLD' | 'DEFECTIVE' | 'TRANSFERRED' | 'WRITTEN_OFF', notes?: string) =>
+    request<{ ok: true }>(`/api/inventory/serials/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status, notes }) }),
 
   permissions: () => request<{ role: string; permissions: GranularPermissionItem[] }>('/api/executive/permissions'),
   updatePermissions: (permissions: Partial<Record<GranularPermissionItem['key'], boolean>>) =>

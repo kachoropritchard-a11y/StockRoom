@@ -1105,3 +1105,95 @@ test('Stage 8 auto-generated codes: products (SKU), categories, departments, and
   assert.ok(foundProd.sku.startsWith('PRD-'));
 });
 
+test('Stage 9: Stock Intake batch/expiry days tracking, serial/IMEI registry, lay-by collection, and till change vouchers', async () => {
+  const t = await setup();
+
+  // 1. Stock intake with batch number, expiry date, and serials/IMEIs
+  const futureDate = new Date(Date.now() + 45 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const receiptRes = await t.call('POST', '/api/stock/receipts', t.inv, {
+    reference: 'GRN-INVERTER-BATCH-01',
+    warehouseId: t.wh1,
+    supplierId: t.supplier,
+    lines: [
+      {
+        productId: t.product,
+        warehouseId: t.wh1,
+        unitId: t.units.each,
+        quantity: 2,
+        unitCost: 150.0,
+        batchNumber: 'BATCH-INV-2026',
+        expiryDate: futureDate,
+        serials: ['SN-INV-88001', 'SN-INV-88002'],
+        imeis: ['359988001122334', '359988001122335'],
+      },
+    ],
+  });
+  assert.equal(receiptRes.status, 201);
+  assert.equal(receiptRes.body.document.lines[0].batchNumber, 'BATCH-INV-2026');
+  assert.equal(receiptRes.body.document.lines[0].expiryDate, futureDate);
+
+  // 2. Query Batch & Expiry Tracker (daysRemaining calculated)
+  const expRes = await t.call('GET', '/api/inventory/batch-expiry', t.inv);
+  assert.equal(expRes.status, 200);
+  const trackedBatch = expRes.body.items.find((b: { batchNumber: string }) => b.batchNumber === 'BATCH-INV-2026');
+  assert.ok(trackedBatch);
+  assert.ok(trackedBatch.daysRemaining >= 40 && trackedBatch.daysRemaining <= 46);
+  assert.equal(trackedBatch.status, 'EXPIRING_NEAR');
+
+  // 3. Query Serial / IMEI registry
+  const serRes = await t.call('GET', '/api/inventory/serials', t.inv);
+  assert.equal(serRes.status, 200);
+  const foundSerial = serRes.body.items.find((s: { serialNumber: string }) => s.serialNumber === 'SN-INV-88001');
+  assert.ok(foundSerial);
+  assert.equal(foundSerial.imei, '359988001122334');
+  assert.equal(foundSerial.status, 'IN_STOCK');
+
+  // Update serial status (e.g. mark defective)
+  const patchRes = await t.call('PATCH', `/api/inventory/serials/${foundSerial.id}/status`, t.inv, {
+    status: 'DEFECTIVE',
+    notes: 'Power button damaged during unboxing',
+  });
+  assert.equal(patchRes.status, 200);
+
+  // 4. Paid & Uncollected Lay-By Management
+  const laybyCreate = await t.call('POST', '/api/sme/layby', t.inv, {
+    receiptRef: 'RCP-YARD-5501',
+    customerName: 'Gogo Ndlovu (Plot 14)',
+    customerPhone: '+263 773 000 111',
+    productName: 'PPC Surebuild 50kg Cement',
+    departmentName: 'Hardware & Yard',
+    warehouseName: 'Main Warehouse',
+    orderedQty: 50,
+    collectedQty: 0,
+    unit: 'bags',
+    totalPaid: 625.0,
+  });
+  assert.equal(laybyCreate.status, 201);
+  const laybyId = laybyCreate.body.id;
+
+  // Collect 20 bags
+  const collectRes = await t.call('POST', `/api/sme/layby/${laybyId}/collect`, t.inv, {
+    collectQty: 20,
+  });
+  assert.equal(collectRes.status, 200);
+  assert.equal(collectRes.body.collectedQty, 20);
+  assert.equal(collectRes.body.remainingQty, 30);
+  assert.equal(collectRes.body.status, 'PARTIAL_COLLECTED');
+
+  // 5. Till Small-Change Management (when till has insufficient change)
+  const changeRes = await t.call('POST', '/api/sme/change-vouchers', t.inv, {
+    customerName: 'Farai Katsande',
+    customerPhone: '+263 719 555 444',
+    amountUsd: 0.75,
+    departmentName: 'Grocery Till #1',
+  });
+  assert.equal(changeRes.status, 201);
+  assert.ok(changeRes.body.voucherCode.startsWith('CHG-'));
+
+  // Redeem the change voucher when customer returns
+  const redeemRes = await t.call('POST', `/api/sme/change-vouchers/${changeRes.body.id}/redeem`, t.inv, {});
+  assert.equal(redeemRes.status, 200);
+  assert.equal(redeemRes.body.ok, true);
+});
+
+
