@@ -496,7 +496,7 @@ export function Pos() {
                 <span className="muted">ZIMRA 15% VAT Portion:</span>
                 <span style={{ color: 'var(--zim-gold-700)', fontWeight: 700 }}>{formatMoney(vat15Usd)}</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1.3rem', fontWeight: 900, borderTop: '2px solid var(--line)', paddingTop: '0.5rem', marginTop: '0.4rem', color: '#0F172A' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1.3rem', fontWeight: 900, borderTop: '2px solid var(--line)', paddingTop: '0.5rem', marginTop: '0.4rem', color: 'var(--charcoal)' }}>
                 <span>Total Due:</span>
                 <span style={{ color: 'var(--zim-green-800)' }}>{formatMoney(totalUsd)}</span>
               </div>
@@ -627,9 +627,9 @@ export function Pos() {
       {receiptModal && (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <div className="modal-card fiscal-receipt-modal animate-scale-up" style={{ maxWidth: '440px' }}>
-            <div className="receipt-paper" style={{ background: '#fff', padding: '1.25rem', border: '1px solid #ddd', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.82rem', lineHeight: 1.4 }}>
+            <div className="receipt-paper" style={{ background: '#fff', color: '#111827', padding: '1.25rem', border: '1px solid #ddd', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.82rem', lineHeight: 1.4 }}>
               <div style={{ textAlign: 'center', marginBottom: '0.75rem' }}>
-                <h3 style={{ margin: '0 0 0.2rem', fontSize: '1.1rem', fontFamily: 'sans-serif' }}>StockRoom ZW</h3>
+                <h3 style={{ margin: '0 0 0.2rem', fontSize: '1.1rem', fontFamily: 'sans-serif', color: '#111827' }}>StockRoom ZW</h3>
                 <div>FISCAL TAX INVOICE</div>
                 <div>ZIMRA FDMS Virtual Fiscal Device</div>
                 <div style={{ fontSize: '0.74rem', color: '#666' }}>TIN: 1002948201 • VAT: 10029482</div>

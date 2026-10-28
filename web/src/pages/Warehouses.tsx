@@ -45,6 +45,16 @@ export function Warehouses() {
   const [deptBranchId, setDeptBranchId] = useState('');
   const [deptName, setDeptName] = useState('');
 
+  // Department Editing state
+  const [editingDept, setEditingDept] = useState<{
+    id: number;
+    name: string;
+    branchId: number;
+    active: boolean;
+    isPosDepartment: boolean;
+  } | null>(null);
+  const [editDeptSaving, setEditDeptSaving] = useState(false);
+
   // Sub-Menu 2: Chikwereti Debtors Book state
   const [debtors, setDebtors] = useState<ChikweretiRecord[]>([]);
   const [posDeptId, setPosDeptId] = useState<number | null>(null);
@@ -155,6 +165,29 @@ export function Warehouses() {
       await load();
     } catch (err) {
       setError((err as Error).message);
+    }
+  }
+
+  async function handleSaveEditDepartment(e: FormEvent) {
+    e.preventDefault();
+    if (!editingDept) return;
+    setError('');
+    setMsg('');
+    setEditDeptSaving(true);
+    try {
+      await api.updateDepartment(editingDept.id, {
+        name: editingDept.name.trim(),
+        branchId: editingDept.branchId,
+        active: editingDept.active,
+        isPosDepartment: editingDept.isPosDepartment,
+      });
+      setMsg(`Department "${editingDept.name}" updated successfully.`);
+      setEditingDept(null);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setEditDeptSaving(false);
     }
   }
 
@@ -336,7 +369,23 @@ export function Warehouses() {
                               </span>
                             </td>
                             {isExec && (
-                              <td className="num">
+                              <td className="num" style={{ whiteSpace: 'nowrap' }}>
+                                <button
+                                  type="button"
+                                  className="btn btn-outline btn-sm"
+                                  style={{ marginRight: '0.4rem' }}
+                                  onClick={() =>
+                                    setEditingDept({
+                                      id: dept.id,
+                                      name: dept.name,
+                                      branchId: dept.branchId,
+                                      active: dept.active === 1,
+                                      isPosDepartment: isPos,
+                                    })
+                                  }
+                                >
+                                  ✏️ Edit
+                                </button>
                                 <button
                                   type="button"
                                   className="btn btn-outline btn-sm"
@@ -672,6 +721,72 @@ export function Warehouses() {
           load();
         }}
       />
+
+      {editingDept && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="edit-dept-title" onClick={() => setEditingDept(null)}>
+          <div className="modal-card" style={{ maxWidth: '480px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="section-head" style={{ marginBottom: '1rem' }}>
+              <div>
+                <h3 id="edit-dept-title" style={{ margin: 0 }}>Edit Storefloor Department</h3>
+                <span className="muted" style={{ fontSize: '0.82rem' }}>
+                  Update department name, assigned branch, active status or POS checkout binding.
+                </span>
+              </div>
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => setEditingDept(null)}>✕</button>
+            </div>
+            <form onSubmit={handleSaveEditDepartment}>
+              <div className="form-grid" style={{ gap: '0.9rem' }}>
+                <label>
+                  Department Name
+                  <input
+                    type="text"
+                    value={editingDept.name}
+                    onChange={(e) => setEditingDept({ ...editingDept, name: e.target.value })}
+                    required
+                    placeholder="e.g. Butchery / Bakery"
+                  />
+                </label>
+                <label>
+                  Assigned Branch
+                  <select
+                    value={editingDept.branchId}
+                    onChange={(e) => setEditingDept({ ...editingDept, branchId: Number(e.target.value) })}
+                    required
+                  >
+                    {branches.map((b) => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', marginTop: '0.3rem' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={editingDept.active}
+                      onChange={(e) => setEditingDept({ ...editingDept, active: e.target.checked })}
+                    />
+                    <span>Active Department (available for sales and inventory)</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={editingDept.isPosDepartment}
+                      onChange={(e) => setEditingDept({ ...editingDept, isPosDepartment: e.target.checked })}
+                    />
+                    <span><strong>Set as Active POS Counter Department</strong> (used for checkout till)</span>
+                  </label>
+                </div>
+                <div className="form-actions" style={{ marginTop: '0.75rem', display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
+                  <button type="button" className="btn btn-outline" onClick={() => setEditingDept(null)}>Cancel</button>
+                  <button type="submit" className="btn btn-primary" disabled={editDeptSaving}>
+                    {editDeptSaving ? 'Saving...' : 'Save Changes'}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -624,19 +624,19 @@ export function Dashboard() {
                                   POS Active
                                 </span>
                               ) : z.category === 'hardware_yard' ? (
-                                <span className="zone-type-badge" style={{ background: '#fef3c7', color: '#92400e' }}>
+                                <span className="zone-type-badge" style={{ background: 'var(--zim-gold-50)', color: 'var(--zim-gold-700)' }}>
                                   Hardware Yard
                                 </span>
                               ) : z.category === 'groceries' ? (
-                                <span className="zone-type-badge" style={{ background: 'var(--zim-green-50)', color: 'var(--zim-green-800)' }}>
+                                <span className="zone-type-badge" style={{ background: 'var(--zim-green-50)', color: 'var(--zim-green-700)' }}>
                                   Grocery Floor
                                 </span>
                               ) : z.category === 'agrovet' ? (
-                                <span className="zone-type-badge" style={{ background: '#ecfdf5', color: '#065f46' }}>
+                                <span className="zone-type-badge" style={{ background: 'var(--zim-green-100)', color: 'var(--zim-green-800)' }}>
                                   Agrovet Bay
                                 </span>
                               ) : (
-                                <span className="zone-type-badge" style={{ background: '#f1f5f9', color: '#334155' }}>
+                                <span className="zone-type-badge" style={{ background: 'var(--surface-alt)', color: 'var(--charcoal)' }}>
                                   Storeroom
                                 </span>
                               )}
@@ -806,7 +806,7 @@ export function Dashboard() {
                   </div>
                   <div className="subcard" style={{ padding: '0.75rem' }}>
                     <span className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase' }}>Registered SKUs</span>
-                    <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--zim-charcoal-900)' }}>
+                    <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--charcoal)' }}>
                       {activeZone.skuCount}
                     </div>
                   </div>

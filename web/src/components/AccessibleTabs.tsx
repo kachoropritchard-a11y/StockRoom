@@ -74,7 +74,7 @@ export function AccessibleTabs<K extends string>({
               className={`tab-btn${isSelected ? ' active' : ''}`}
               onClick={() => onChange(t.key)}
             >
-              <span>{t.label}</span>
+              <span className="tab-label-text">{t.label}</span>
               {t.badge !== undefined && <span className="tab-badge">{t.badge}</span>}
             </button>
           );

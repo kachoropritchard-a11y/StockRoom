@@ -420,6 +420,174 @@ export function buildApp(db: Db, config: Config) {
 
   app.get('/api/auth/me', { preHandler: requireAuth() }, async (req) => ({ user: req.user }));
 
+  // Profile Manager: Returns full user profile including fast PIN, branch, and organization details
+  app.get('/api/auth/profile', { preHandler: requireAuth() }, async (req) => {
+    const u = req.user!;
+    const userRow = db
+      .prepare('SELECT id, organisation_id, branch_id, email, name, role, active, created_at FROM users WHERE id = ?')
+      .get(u.id) as Record<string, unknown> | undefined;
+    if (!userRow) throw new AppError(404, 'user_not_found');
+    const pinRow = db
+      .prepare('SELECT pin_code, role_title, department_scope FROM staff_pins WHERE user_id = ? AND organisation_id = ? LIMIT 1')
+      .get(u.id, u.organisationId) as { pin_code: string; role_title: string; department_scope: string } | undefined;
+    const orgRow = db.prepare('SELECT name, currency_code FROM organisations WHERE id = ?').get(u.organisationId) as
+      | { name: string; currency_code: string }
+      | undefined;
+    const branchRow = userRow.branch_id
+      ? (db.prepare('SELECT name FROM branches WHERE id = ?').get(userRow.branch_id) as { name: string } | undefined)
+      : undefined;
+
+    return {
+      id: userRow.id,
+      name: userRow.name,
+      email: userRow.email,
+      role: userRow.role,
+      organisationName: orgRow?.name ?? 'My Business',
+      currencyCode: orgRow?.currency_code ?? 'USD',
+      branchName: branchRow?.name ?? 'Main Branch',
+      pinCode: pinRow?.pin_code ?? null,
+      departmentScope: pinRow?.department_scope ?? 'All Departments',
+      createdAt: userRow.created_at,
+    };
+  });
+
+  // Self-Service Profile Manager: User manages their own name, email, PIN, and password
+  app.patch(
+    '/api/auth/profile',
+    { preHandler: requireAuth(), config: { rateLimit: { max: 15, timeWindow: '1 minute' } } },
+    async (req, reply) => {
+      const u = req.user!;
+      const body = z
+        .object({
+          name: z.string().trim().min(2).max(100).optional(),
+          email: z.string().trim().email().max(254).optional(),
+          pinCode: z.string().trim().regex(/^\d{4}$/, 'PIN must be exactly 4 digits').optional(),
+          currentPassword: z.string().min(1).max(200).optional(),
+          newPassword: z.string().min(8, 'New password must be at least 8 characters').max(200).optional(),
+        })
+        .strict()
+        .parse(req.body);
+
+      const userRow = db.prepare('SELECT id, password_hash FROM users WHERE id = ?').get(u.id) as { id: number; password_hash: string };
+
+      if (body.newPassword) {
+        if (!body.currentPassword) {
+          return reply.code(400).send({ error: 'current_password_required' });
+        }
+        if (!(await bcrypt.compare(body.currentPassword, userRow.password_hash))) {
+          return reply.code(400).send({ error: 'incorrect_current_password' });
+        }
+      }
+
+      if (body.email) {
+        const emailLower = body.email.toLowerCase();
+        const existing = db.prepare('SELECT id FROM users WHERE email = ? AND id != ?').get(emailLower, u.id);
+        if (existing) {
+          return reply.code(400).send({ error: 'email_already_registered' });
+        }
+      }
+
+      if (body.pinCode) {
+        const existingPin = db
+          .prepare('SELECT id FROM staff_pins WHERE organisation_id = ? AND pin_code = ? AND user_id != ?')
+          .get(u.organisationId, body.pinCode, u.id);
+        if (existingPin) {
+          return reply.code(400).send({ error: 'pin_already_in_use' });
+        }
+      }
+
+      if (body.name || body.email || body.newPassword) {
+        const sets: string[] = [];
+        const vals: (string | number)[] = [];
+        if (body.name) {
+          sets.push('name = ?');
+          vals.push(body.name);
+        }
+        if (body.email) {
+          sets.push('email = ?');
+          vals.push(body.email.toLowerCase());
+        }
+        if (body.newPassword) {
+          sets.push('password_hash = ?');
+          vals.push(await bcrypt.hash(body.newPassword, config.BCRYPT_COST));
+        }
+        vals.push(u.id);
+        db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+      }
+
+      if (body.pinCode || body.name) {
+        const existingPinRow = db
+          .prepare('SELECT id FROM staff_pins WHERE user_id = ? AND organisation_id = ?')
+          .get(u.id, u.organisationId) as { id: number } | undefined;
+        if (existingPinRow) {
+          const pinSets: string[] = [];
+          const pinVals: (string | number)[] = [];
+          if (body.pinCode) {
+            pinSets.push('pin_code = ?');
+            pinVals.push(body.pinCode);
+          }
+          if (body.name) {
+            pinSets.push('staff_name = ?');
+            pinVals.push(body.name);
+          }
+          pinVals.push(existingPinRow.id);
+          db.prepare(`UPDATE staff_pins SET ${pinSets.join(', ')} WHERE id = ?`).run(...pinVals);
+        } else if (body.pinCode) {
+          db.prepare(
+            `INSERT INTO staff_pins (organisation_id, user_id, staff_name, role_title, pin_code, department_scope, can_view_cost, can_write_off, active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`
+          ).run(
+            u.organisationId,
+            u.id,
+            body.name || u.name,
+            u.role === 'executive_manager' ? 'Owner / Executive Manager' : 'Storefloor Manager',
+            body.pinCode,
+            'All Departments',
+            u.role === 'executive_manager' ? 1 : 0,
+            u.role === 'executive_manager' ? 1 : 0
+          );
+        }
+      }
+
+      if (body.newPassword) {
+        const header = req.headers.authorization;
+        const token = header?.startsWith('Bearer ') ? header.slice(7) : req.cookies[COOKIE];
+        if (token) {
+          db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(u.id, sha256(token));
+        }
+      }
+
+      const updated = db
+        .prepare('SELECT id, organisation_id, branch_id, email, name, role FROM users WHERE id = ?')
+        .get(u.id) as {
+        id: number;
+        organisation_id: number;
+        branch_id: number | null;
+        email: string;
+        name: string;
+        role: Role;
+      };
+      const updatedPin =
+        (db.prepare('SELECT pin_code FROM staff_pins WHERE user_id = ?').get(u.id) as { pin_code: string } | undefined)
+          ?.pin_code ?? null;
+
+      const refreshedUser: AuthUser = {
+        id: updated.id,
+        organisationId: updated.organisation_id,
+        branchId: updated.branch_id,
+        email: updated.email,
+        name: updated.name,
+        role: updated.role,
+      };
+
+      return {
+        ok: true,
+        user: refreshedUser,
+        pinCode: updatedPin,
+      };
+    },
+  );
+
   // Self-service password reset: stores hashed token + writes to email_outbox so it works with or without an external SMTP relay.
   app.post('/api/auth/forgot-password', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req) => {
     const { email } = z.object({ email: z.string().trim().email().max(254) }).parse(req.body);

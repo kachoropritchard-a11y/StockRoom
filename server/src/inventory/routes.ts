@@ -130,12 +130,20 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   app.get('/api/users', { preHandler: exec }, async (req) => {
     const rows = db
       .prepare(
-        `SELECT u.id, u.email, u.name, u.role, u.branch_id AS branchId, b.name AS branchName, u.active, u.locked_until AS lockedUntil, u.created_at AS createdAt
-           FROM users u LEFT JOIN branches b ON b.id = u.branch_id
+        `SELECT u.id, u.email, u.name, u.role, u.branch_id AS branchId, b.name AS branchName, u.active, u.locked_until AS lockedUntil, u.created_at AS createdAt,
+                sp.id AS pinId, sp.pin_code AS pinCode, sp.department_scope AS departmentScope, sp.can_view_cost AS canViewCost, sp.can_write_off AS canWriteOff
+           FROM users u
+           LEFT JOIN branches b ON b.id = u.branch_id
+           LEFT JOIN staff_pins sp ON sp.user_id = u.id AND sp.organisation_id = u.organisation_id
           WHERE u.organisation_id = ? ORDER BY u.name`,
       )
       .all(req.user!.organisationId) as Record<string, unknown>[];
-    return rows.map((r) => ({ ...r, active: !!r.active }));
+    return rows.map((r) => ({
+      ...r,
+      active: !!r.active,
+      canViewCost: r.canViewCost === 1,
+      canWriteOff: r.canWriteOff === 1,
+    }));
   });
   app.post('/api/users', { preHandler: exec }, async (req, reply) => {
     const orgId = req.user!.organisationId;
@@ -143,19 +151,54 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       .object({
         email: z.string().trim().email().max(254),
         name,
-        password: z.string().min(10, 'Password must be at least 10 characters').max(200),
+        password: z.string().min(8, 'Password must be at least 8 characters').max(200),
         role: z.enum(['executive_manager', 'inventory_manager']),
         branchId: id.nullish(),
+        pinCode: z.string().trim().regex(/^\d{4}$/, 'PIN must be exactly 4 digits').optional(),
+        departmentScope: z.string().trim().max(80).optional(),
+        canViewCost: z.boolean().optional(),
+        canWriteOff: z.boolean().optional(),
       })
       .strict()
       .parse(req.body);
     if (b.branchId) ownedBranch(b.branchId, orgId);
+
+    if (b.pinCode) {
+      const existingPin = db.prepare('SELECT id FROM staff_pins WHERE organisation_id = ? AND pin_code = ?').get(orgId, b.pinCode);
+      if (existingPin) {
+        throw new AppError(400, `The 4-digit PIN "${b.pinCode}" is already in use by another staff member. Please assign a different PIN.`);
+      }
+    }
+
     const hash = await bcrypt.hash(b.password, bcryptCost);
     const r = db
       .prepare('INSERT INTO users (organisation_id, branch_id, email, name, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(orgId, b.branchId ?? null, b.email, b.name, hash, b.role);
+      .run(orgId, b.branchId ?? null, b.email.toLowerCase(), b.name, hash, b.role);
     const userId = Number(r.lastInsertRowid);
-    recordAudit(db, req.user!, 'user.create', 'user', userId, { email: b.email, name: b.name, role: b.role, branchId: b.branchId ?? null });
+
+    if (b.pinCode) {
+      db.prepare(
+        `INSERT INTO staff_pins (organisation_id, user_id, staff_name, role_title, pin_code, department_scope, can_view_cost, can_write_off, active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`
+      ).run(
+        orgId,
+        userId,
+        b.name,
+        b.role === 'executive_manager' ? 'Executive Manager' : 'Inventory Manager',
+        b.pinCode,
+        b.departmentScope || 'All Departments',
+        (b.canViewCost ?? (b.role === 'executive_manager')) ? 1 : 0,
+        (b.canWriteOff ?? (b.role === 'executive_manager')) ? 1 : 0
+      );
+    }
+
+    recordAudit(db, req.user!, 'user.create', 'user', userId, {
+      email: b.email,
+      name: b.name,
+      role: b.role,
+      branchId: b.branchId ?? null,
+      hasPin: !!b.pinCode,
+    });
     return reply.code(201).send({ id: userId });
   });
   app.patch('/api/users/:id', { preHandler: exec }, async (req) => {
@@ -168,7 +211,11 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         role: z.enum(['executive_manager', 'inventory_manager']).optional(),
         branchId: id.nullable().optional(),
         active: z.boolean().optional(),
-        password: z.string().min(10).max(200).optional(),
+        password: z.string().min(8).max(200).optional(),
+        pinCode: z.string().trim().regex(/^\d{4}$/, 'PIN must be 4 digits').optional(),
+        departmentScope: z.string().trim().max(80).optional(),
+        canViewCost: z.boolean().optional(),
+        canWriteOff: z.boolean().optional(),
         unlock: z.boolean().optional(),
       })
       .strict()
@@ -177,6 +224,16 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       throw new AppError(400, 'cannot_demote_or_deactivate_self');
     }
     if (b.branchId) ownedBranch(b.branchId, orgId);
+
+    if (b.pinCode) {
+      const existingPin = db
+        .prepare('SELECT id FROM staff_pins WHERE organisation_id = ? AND pin_code = ? AND user_id != ?')
+        .get(orgId, b.pinCode, rowId);
+      if (existingPin) {
+        throw new AppError(400, `The 4-digit PIN "${b.pinCode}" is already in use by another staff member. Please assign a different PIN.`);
+      }
+    }
+
     const cols: Record<string, unknown> = {
       name: b.name,
       role: b.role,
@@ -189,6 +246,39 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       cols.locked_until = null;
     }
     update(db, 'users', rowId, cols);
+
+    // Synchronize staff_pins
+    const existingPinRow = db.prepare('SELECT id FROM staff_pins WHERE user_id = ? AND organisation_id = ?').get(rowId, orgId) as { id: number } | undefined;
+    if (existingPinRow) {
+      const pCols: Record<string, unknown> = {};
+      if (b.pinCode) pCols.pin_code = b.pinCode;
+      if (b.name) pCols.staff_name = b.name;
+      if (b.role) pCols.role_title = b.role === 'executive_manager' ? 'Executive Manager' : 'Inventory Manager';
+      if (b.departmentScope) pCols.department_scope = b.departmentScope;
+      if (b.canViewCost !== undefined) pCols.can_view_cost = b.canViewCost ? 1 : 0;
+      if (b.canWriteOff !== undefined) pCols.can_write_off = b.canWriteOff ? 1 : 0;
+      if (b.active !== undefined) pCols.active = b.active ? 1 : 0;
+      if (Object.keys(pCols).length > 0) {
+        update(db, 'staff_pins', existingPinRow.id, pCols);
+      }
+    } else if (b.pinCode) {
+      const curUser = db.prepare('SELECT name, role FROM users WHERE id = ?').get(rowId) as { name: string; role: string };
+      db.prepare(
+        `INSERT INTO staff_pins (organisation_id, user_id, staff_name, role_title, pin_code, department_scope, can_view_cost, can_write_off, active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        orgId,
+        rowId,
+        b.name || curUser.name,
+        (b.role || curUser.role) === 'executive_manager' ? 'Executive Manager' : 'Inventory Manager',
+        b.pinCode,
+        b.departmentScope || 'All Departments',
+        b.canViewCost ? 1 : 0,
+        b.canWriteOff ? 1 : 0,
+        b.active === false ? 0 : 1
+      );
+    }
+
     if (b.active === false || b.password) {
       db.prepare('DELETE FROM sessions WHERE user_id = ?').run(rowId);
     }
@@ -198,8 +288,31 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       branchId: b.branchId,
       active: b.active,
       passwordReset: !!b.password,
+      pinUpdated: !!b.pinCode,
       unlocked: !!b.unlock,
     });
+    return { ok: true };
+  });
+  app.delete('/api/users/:id', { preHandler: exec }, async (req) => {
+    const { id: rowId } = idParam.parse(req.params);
+    const orgId = req.user!.organisationId;
+    if (rowId === req.user!.id) {
+      throw new AppError(400, 'cannot_delete_self');
+    }
+    const targetUser = db.prepare('SELECT role, name FROM users WHERE id = ? AND organisation_id = ?').get(rowId, orgId) as { role: string; name: string } | undefined;
+    if (!targetUser) throw new AppError(404, 'not_found');
+
+    if (targetUser.role === 'executive_manager') {
+      const execCount = (db.prepare("SELECT COUNT(*) n FROM users WHERE organisation_id = ? AND role = 'executive_manager' AND active = 1").get(orgId) as { n: number }).n;
+      if (execCount <= 1) {
+        throw new AppError(400, 'cannot_delete_last_executive');
+      }
+    }
+
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(rowId);
+    db.prepare('DELETE FROM staff_pins WHERE user_id = ? AND organisation_id = ?').run(rowId, orgId);
+    db.prepare('DELETE FROM users WHERE id = ? AND organisation_id = ?').run(rowId, orgId);
+    recordAudit(db, req.user!, 'user.delete', 'user', rowId, { name: targetUser.name });
     return { ok: true };
   });
 
@@ -254,8 +367,34 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     app.patch(`/api/${table}/:id`, { preHandler: exec }, async (req) => {
       const { id: rowId } = idParam.parse(req.params);
       if (!db.prepare(`SELECT 1 FROM ${table} t JOIN branches b ON b.id = t.branch_id WHERE t.id = ? AND b.organisation_id = ?`).get(rowId, req.user!.organisationId)) throw new AppError(404, 'not_found');
-      const b = z.object({ name: name.optional(), active: z.boolean().optional() }).strict().parse(req.body);
-      update(db, table, rowId, { name: b.name, active: flag(b.active) });
+      const b = z
+        .object({
+          branchId: id.optional(),
+          name: name.optional(),
+          active: z.boolean().optional(),
+          isPosDepartment: z.boolean().optional(),
+        })
+        .strict()
+        .parse(req.body);
+      if (b.branchId) ownedBranch(b.branchId, req.user!.organisationId);
+      const cols: Record<string, unknown> = {
+        name: b.name,
+        branch_id: b.branchId,
+        active: flag(b.active),
+      };
+      const hasDirectCol = Object.values(cols).some((v) => v !== undefined);
+      if (hasDirectCol) {
+        update(db, table, rowId, cols);
+      }
+      if (table === 'departments' && b.isPosDepartment !== undefined) {
+        if (b.isPosDepartment) {
+          db.prepare('UPDATE organisations SET pos_department_id = ? WHERE id = ?').run(rowId, req.user!.organisationId);
+        } else {
+          db.prepare('UPDATE organisations SET pos_department_id = NULL WHERE id = ? AND pos_department_id = ?').run(req.user!.organisationId, rowId);
+        }
+      } else if (table === 'departments' && b.active === false) {
+        db.prepare('UPDATE organisations SET pos_department_id = NULL WHERE id = ? AND pos_department_id = ?').run(req.user!.organisationId, rowId);
+      }
       recordAudit(db, req.user!, `${table.slice(0, -1)}.update`, table.slice(0, -1), rowId, b);
       return { ok: true };
     });
@@ -1000,25 +1139,30 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       cutoffIso = d.toISOString().replace('T', ' ').slice(0, 19);
     }
 
+    const depFilter = rq.departmentId ? ' AND p.department_id = ?' : '';
+    const depParams: (number | string)[] = rq.departmentId ? [orgId, rq.departmentId] : [orgId];
+
     // 1. Low-stock alerts across products (product-level reorder threshold vs total and warehouse stock)
     const lowStockAlerts = (db
       .prepare(
         `SELECT p.id AS productId, p.sku, p.name AS productName, c.name AS categoryName,
+                p.department_id AS departmentId,
                 dep.name AS departmentName, u.code AS unit, p.unit_cost_cents, p.selling_price_cents, p.reorder_level_milli,
                 COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS total_milli
            FROM products p
            JOIN units_of_measure u ON u.id = p.base_unit_id
            LEFT JOIN categories c ON c.id = p.category_id
            LEFT JOIN departments dep ON dep.id = p.department_id
-          WHERE p.organisation_id = ? AND p.active = 1 AND p.reorder_level_milli > 0
+          WHERE p.organisation_id = ? AND p.active = 1 AND p.reorder_level_milli > 0${depFilter}
             AND COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) <= p.reorder_level_milli
           ORDER BY (total_milli - p.reorder_level_milli) ASC, p.name ASC`,
       )
-      .all(orgId) as {
+      .all(...depParams) as {
       productId: number;
       sku: string;
       productName: string;
       categoryName: string | null;
+      departmentId: number | null;
       departmentName: string | null;
       unit: string;
       unit_cost_cents: number;
@@ -1035,7 +1179,8 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         sku: r.sku,
         productName: r.productName,
         categoryName: r.categoryName ?? 'Uncategorised',
-        departmentName: r.departmentName ?? 'General',
+        departmentId: r.departmentId,
+        departmentName: r.departmentName ?? 'General Store',
         unit: r.unit,
         currentStock,
         reorderLevel,
@@ -1044,6 +1189,63 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         estimatedRestockCost: Math.round(Math.max(shortfall, reorderLevel) * unitCost * 100) / 100,
       };
     });
+
+    // 1b. Complete Restock Levels Evaluation across all active catalog products
+    const allRestockLevels = (db
+      .prepare(
+        `SELECT p.id AS productId, p.sku, p.name AS productName, c.name AS categoryName,
+                p.department_id AS departmentId,
+                COALESCE(dep.name, 'General Store') AS departmentName, u.code AS unit, p.unit_cost_cents, p.selling_price_cents, p.reorder_level_milli,
+                COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS total_milli
+           FROM products p
+           JOIN units_of_measure u ON u.id = p.base_unit_id
+           LEFT JOIN categories c ON c.id = p.category_id
+           LEFT JOIN departments dep ON dep.id = p.department_id
+          WHERE p.organisation_id = ? AND p.active = 1${depFilter}
+          ORDER BY (total_milli - p.reorder_level_milli) ASC, p.name ASC`,
+      )
+      .all(...depParams) as {
+        productId: number;
+        sku: string;
+        productName: string;
+        categoryName: string | null;
+        departmentId: number | null;
+        departmentName: string;
+        unit: string;
+        unit_cost_cents: number;
+        selling_price_cents: number;
+        reorder_level_milli: number;
+        total_milli: number;
+      }[]).map((r) => {
+        const currentStock = fromMilli(r.total_milli);
+        const reorderLevel = fromMilli(r.reorder_level_milli);
+        const shortfall = Math.max(0, fromMilli(r.reorder_level_milli - r.total_milli));
+        const unitCost = fromCents(r.unit_cost_cents);
+        const sellingPrice = fromCents(r.selling_price_cents);
+        const estimatedRestockCost = Math.round(shortfall * unitCost * 100) / 100;
+        let restockStatus: 'out_of_stock' | 'reorder_needed' | 'healthy' = 'healthy';
+        if (currentStock <= 0) {
+          restockStatus = 'out_of_stock';
+        } else if (reorderLevel > 0 && currentStock <= reorderLevel) {
+          restockStatus = 'reorder_needed';
+        }
+        return {
+          productId: r.productId,
+          sku: r.sku,
+          productName: r.productName,
+          categoryName: r.categoryName ?? 'Uncategorised',
+          departmentId: r.departmentId,
+          departmentName: r.departmentName,
+          unit: r.unit,
+          currentStock,
+          reorderLevel,
+          shortfall,
+          unitCost,
+          sellingPrice,
+          estimatedRestockCost,
+          restockStatus,
+        };
+      });
 
     // 2. Stock valuation by category (from authoritative stock_balances view)
     const valuationByCategory = (db
@@ -1432,8 +1634,154 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       productStockFlow,
     };
 
+    const soldStockSummary = {
+      period: rq.period,
+      departmentId: rq.departmentId ?? null,
+      totalSoldUnits: Math.round(totalSoldUnits * 1000) / 1000,
+      totalRevenue: fromCents(totalRevenueCents),
+      totalCogs: fromCents(totalCogsCents),
+      totalGrossProfit: fromCents(totalRevenueCents - totalCogsCents),
+      overallMarginPct: totalRevenueCents > 0 ? Math.round(((totalRevenueCents - totalCogsCents) / totalRevenueCents) * 1000) / 10 : 0,
+      items: productStockFlow
+        .filter((p) => p.soldUnits > 0)
+        .map((p) => ({
+          productId: p.productId,
+          sku: p.sku,
+          productName: p.productName,
+          departmentId: p.departmentId,
+          departmentName: p.departmentName,
+          categoryName: p.categoryName,
+          unit: p.unit,
+          soldUnits: p.soldUnits,
+          avgSellingPrice: p.soldUnits > 0 ? Math.round((p.revenue / p.soldUnits) * 100) / 100 : p.sellingPrice,
+          unitCost: p.unitCost,
+          revenue: p.revenue,
+          cogs: p.cogs,
+          grossProfit: p.grossProfit,
+          grossMarginPct: p.revenue > 0 ? Math.round(((p.revenue - p.cogs) / p.revenue) * 1000) / 10 : 0,
+        }))
+        .sort((a, b) => b.revenue - a.revenue),
+    };
+
+    // 7. Non-Selling Stock Write-Offs & Shrinkage Breakdown (Damage, Spoilage, Expiry, Pilferage)
+    const writeOffPeriodClause = cutoffIso ? ' AND d.created_at >= ?' : '';
+    const writeOffParams: (number | string)[] = [orgId];
+    if (cutoffIso) writeOffParams.push(cutoffIso);
+    if (rq.departmentId) writeOffParams.push(rq.departmentId);
+
+    const writeOffRows = db
+      .prepare(
+        `SELECT d.id AS documentId,
+                d.reference,
+                d.reason,
+                d.created_at AS createdAt,
+                u.name AS createdByName,
+                m.product_id AS productId,
+                p.sku,
+                p.name AS productName,
+                p.department_id AS departmentId,
+                COALESCE(dep.name, 'General Store') AS departmentName,
+                w.name AS warehouseName,
+                uom.code AS unit,
+                ABS(m.base_delta_milli) AS deltaMilli,
+                m.unit_cost_cents AS unitCostCents
+           FROM stock_documents d
+           JOIN stock_movements m ON m.document_id = d.id
+           JOIN products p ON p.id = m.product_id
+           JOIN units_of_measure uom ON uom.id = p.base_unit_id
+           LEFT JOIN departments dep ON dep.id = p.department_id
+           JOIN warehouses w ON w.id = m.warehouse_id
+           JOIN users u ON u.id = d.created_by
+          WHERE d.organisation_id = ?
+            AND d.type = 'write_off'
+            AND NOT EXISTS (SELECT 1 FROM stock_documents rev WHERE rev.reverses_document_id = d.id)
+            ${writeOffPeriodClause}
+            ${rq.departmentId ? ' AND p.department_id = ?' : ''}
+          ORDER BY d.created_at DESC`,
+      )
+      .all(...writeOffParams) as {
+      documentId: number;
+      reference: string | null;
+      reason: string | null;
+      createdAt: string;
+      createdByName: string;
+      productId: number;
+      sku: string;
+      productName: string;
+      departmentId: number | null;
+      departmentName: string;
+      warehouseName: string;
+      unit: string;
+      deltaMilli: number;
+      unitCostCents: number;
+    }[];
+
+    const writeOffLog = writeOffRows.map((r) => {
+      const quantity = fromMilli(r.deltaMilli);
+      const unitCost = fromCents(r.unitCostCents);
+      const totalLossValue = Math.round(quantity * unitCost * 100) / 100;
+      return {
+        documentId: r.documentId,
+        reference: r.reference || `WO-#${r.documentId}`,
+        reason: r.reason || 'Recorded shrinkage / damage',
+        createdAt: r.createdAt,
+        createdByName: r.createdByName,
+        productId: r.productId,
+        sku: r.sku,
+        productName: r.productName,
+        departmentId: r.departmentId,
+        departmentName: r.departmentName,
+        warehouseName: r.warehouseName,
+        unit: r.unit,
+        quantity,
+        unitCost,
+        totalLossValue,
+      };
+    });
+
+    const writeOffReasonMap = new Map<string, { reason: string; count: number; units: number; lossValue: number }>();
+    const writeOffDeptMap = new Map<string, { departmentName: string; count: number; units: number; lossValue: number }>();
+    let writeOffTotalUnits = 0;
+    let writeOffTotalLoss = 0;
+
+    for (const w of writeOffLog) {
+      writeOffTotalUnits += w.quantity;
+      writeOffTotalLoss += w.totalLossValue;
+
+      let rObj = writeOffReasonMap.get(w.reason);
+      if (!rObj) {
+        rObj = { reason: w.reason, count: 0, units: 0, lossValue: 0 };
+        writeOffReasonMap.set(w.reason, rObj);
+      }
+      rObj.count += 1;
+      rObj.units = Math.round((rObj.units + w.quantity) * 1000) / 1000;
+      rObj.lossValue = Math.round((rObj.lossValue + w.totalLossValue) * 100) / 100;
+
+      let dObj = writeOffDeptMap.get(w.departmentName);
+      if (!dObj) {
+        dObj = { departmentName: w.departmentName, count: 0, units: 0, lossValue: 0 };
+        writeOffDeptMap.set(w.departmentName, dObj);
+      }
+      dObj.count += 1;
+      dObj.units = Math.round((dObj.units + w.quantity) * 1000) / 1000;
+      dObj.lossValue = Math.round((dObj.lossValue + w.totalLossValue) * 100) / 100;
+    }
+
+    const writeOffSummary = {
+      period: rq.period,
+      departmentId: rq.departmentId ?? null,
+      totalUnits: Math.round(writeOffTotalUnits * 1000) / 1000,
+      totalLossValue: Math.round(writeOffTotalLoss * 100) / 100,
+      log: writeOffLog,
+      byReason: Array.from(writeOffReasonMap.values()).sort((a, b) => b.lossValue - a.lossValue),
+      byDepartment: Array.from(writeOffDeptMap.values()).sort((a, b) => b.lossValue - a.lossValue),
+    };
+
     return {
       lowStockAlerts,
+      allRestockLevels,
+      soldStockSummary,
+      writeOffSummary,
       valuationByCategory,
       warehouseStockSummary,
       departmentConsumption,
@@ -1757,8 +2105,10 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
   app.get('/api/reports/export', { preHandler: anyUser }, async (req, reply) => {
     const q = z
       .object({
-        section: z.enum(['valuation', 'low_stock', 'movements', 'audit_logs']).default('valuation'),
+        section: z.enum(['valuation', 'low_stock', 'goods_restock', 'stock_sold', 'stock_write_offs', 'movements', 'audit_logs']).default('valuation'),
         format: z.enum(['csv', 'json']).default('csv'),
+        period: z.enum(['today', 'week', 'month', 'all']).default('all'),
+        departmentId: z.coerce.number().int().positive().optional(),
       })
       .parse(req.query);
 
@@ -1770,27 +2120,46 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     }
 
     const orgId = req.user!.organisationId;
+    let cutoffIso: string | null = null;
+    if (q.period === 'today') {
+      const d = new Date();
+      d.setUTCHours(0, 0, 0, 0);
+      cutoffIso = d.toISOString().replace('T', ' ').slice(0, 19);
+    } else if (q.period === 'week') {
+      const d = new Date(Date.now() - 7 * 86400_000);
+      cutoffIso = d.toISOString().replace('T', ' ').slice(0, 19);
+    } else if (q.period === 'month') {
+      const d = new Date(Date.now() - 30 * 86400_000);
+      cutoffIso = d.toISOString().replace('T', ' ').slice(0, 19);
+    }
+
+    const depFilter = q.departmentId ? ' AND p.department_id = ?' : '';
+    const depParams: (number | string)[] = q.departmentId ? [orgId, q.departmentId] : [orgId];
+
     let rows: Record<string, unknown>[] = [];
 
     if (q.section === 'valuation') {
       rows = (db
         .prepare(
           `SELECT p.sku AS SKU, p.name AS Product, COALESCE(c.name, 'Uncategorised') AS Category,
+                  COALESCE(dep.name, 'General Store') AS Department,
                   u.code AS Unit, p.unit_cost_cents, p.reorder_level_milli,
                   COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS total_milli
              FROM products p
              JOIN units_of_measure u ON u.id = p.base_unit_id
              LEFT JOIN categories c ON c.id = p.category_id
-            WHERE p.organisation_id = ?
+             LEFT JOIN departments dep ON dep.id = p.department_id
+            WHERE p.organisation_id = ?${depFilter}
             ORDER BY p.name ASC`,
         )
-        .all(orgId) as { SKU: string; Product: string; Category: string; Unit: string; unit_cost_cents: number; reorder_level_milli: number; total_milli: number }[]).map((r) => {
+        .all(...depParams) as { SKU: string; Product: string; Category: string; Department: string; Unit: string; unit_cost_cents: number; reorder_level_milli: number; total_milli: number }[]).map((r) => {
         const qtyVal = fromMilli(r.total_milli);
         const unitCost = fromCents(r.unit_cost_cents);
         return {
           SKU: r.SKU,
           Product: r.Product,
           Category: r.Category,
+          Department: r.Department,
           Unit: r.Unit,
           Quantity: qtyVal,
           UnitCost: unitCost,
@@ -1798,29 +2167,167 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
           ReorderLevel: fromMilli(r.reorder_level_milli),
         };
       });
-    } else if (q.section === 'low_stock') {
+    } else if (q.section === 'low_stock' || q.section === 'goods_restock') {
+      const condition = q.section === 'low_stock'
+        ? ` AND p.reorder_level_milli > 0 AND COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) <= p.reorder_level_milli`
+        : '';
       rows = (db
         .prepare(
           `SELECT p.sku AS SKU, p.name AS Product, COALESCE(c.name, 'Uncategorised') AS Category,
+                  COALESCE(dep.name, 'General Store') AS Department,
                   u.code AS Unit, p.unit_cost_cents, p.reorder_level_milli,
                   COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) AS total_milli
              FROM products p
              JOIN units_of_measure u ON u.id = p.base_unit_id
              LEFT JOIN categories c ON c.id = p.category_id
-            WHERE p.organisation_id = ? AND p.active = 1 AND p.reorder_level_milli > 0
-              AND COALESCE((SELECT SUM(b.quantity_milli) FROM stock_balances b WHERE b.product_id = p.id AND b.organisation_id = p.organisation_id), 0) <= p.reorder_level_milli
+             LEFT JOIN departments dep ON dep.id = p.department_id
+            WHERE p.organisation_id = ? AND p.active = 1${depFilter}${condition}
             ORDER BY total_milli ASC`,
         )
-        .all(orgId) as { SKU: string; Product: string; Category: string; Unit: string; unit_cost_cents: number; reorder_level_milli: number; total_milli: number }[]).map((r) => ({
-        SKU: r.SKU,
-        Product: r.Product,
-        Category: r.Category,
-        Unit: r.Unit,
-        CurrentStock: fromMilli(r.total_milli),
-        ReorderLevel: fromMilli(r.reorder_level_milli),
-        Shortfall: Math.max(0, fromMilli(r.reorder_level_milli - r.total_milli)),
-        UnitCost: fromCents(r.unit_cost_cents),
-      }));
+        .all(...depParams) as { SKU: string; Product: string; Category: string; Department: string; Unit: string; unit_cost_cents: number; reorder_level_milli: number; total_milli: number }[]).map((r) => {
+        const curStock = fromMilli(r.total_milli);
+        const reorderLvl = fromMilli(r.reorder_level_milli);
+        const shortfall = Math.max(0, fromMilli(r.reorder_level_milli - r.total_milli));
+        const unitCost = fromCents(r.unit_cost_cents);
+        const estCost = Math.round(shortfall * unitCost * 100) / 100;
+        let restockStatus = 'Adequate Stock';
+        if (curStock <= 0) restockStatus = 'OUT OF STOCK';
+        else if (reorderLvl > 0 && curStock <= reorderLvl) restockStatus = 'REORDER NEEDED';
+        return {
+          SKU: r.SKU,
+          Product: r.Product,
+          Category: r.Category,
+          Department: r.Department,
+          Unit: r.Unit,
+          CurrentStock: curStock,
+          ReorderLevel: reorderLvl,
+          Shortfall: shortfall,
+          UnitCost: unitCost,
+          EstimatedRestockCost: estCost,
+          RestockStatus: restockStatus,
+        };
+      });
+    } else if (q.section === 'stock_sold') {
+      const periodClause = cutoffIso ? ' AND d.created_at >= ?' : '';
+      const movParams: (number | string)[] = cutoffIso ? [orgId, cutoffIso] : [orgId];
+      if (q.departmentId) movParams.push(q.departmentId);
+
+      rows = (db
+        .prepare(
+          `SELECT p.sku AS SKU, p.name AS Product,
+                  COALESCE(dep.name, 'General Store') AS Department,
+                  u.code AS Unit,
+                  p.unit_cost_cents AS unitCostCents,
+                  SUM(ABS(m.base_delta_milli)) AS soldMilli,
+                  SUM(ROUND((ABS(m.base_delta_milli) / 1000.0) * CASE WHEN m.unit_selling_price_cents > 0 THEN m.unit_selling_price_cents ELSE p.selling_price_cents END)) AS revenueCents,
+                  SUM(ROUND((ABS(m.base_delta_milli) / 1000.0) * CASE WHEN m.unit_cost_cents > 0 THEN m.unit_cost_cents ELSE p.unit_cost_cents END)) AS cogsCents
+             FROM stock_movements m
+             JOIN stock_documents d ON d.id = m.document_id
+             JOIN products p ON p.id = m.product_id
+             JOIN units_of_measure u ON u.id = p.base_unit_id
+             LEFT JOIN departments dep ON dep.id = p.department_id
+            WHERE d.organisation_id = ?
+              AND d.type = 'issue'
+              AND NOT EXISTS (SELECT 1 FROM stock_documents rev WHERE rev.reverses_document_id = d.id)
+              ${periodClause}
+              ${q.departmentId ? ' AND p.department_id = ?' : ''}
+            GROUP BY p.id, p.sku, p.name, dep.name, u.code
+            HAVING soldMilli > 0
+            ORDER BY revenueCents DESC`,
+        )
+        .all(...movParams) as {
+        SKU: string;
+        Product: string;
+        Department: string;
+        Unit: string;
+        unitCostCents: number;
+        soldMilli: number;
+        revenueCents: number;
+        cogsCents: number;
+      }[]).map((r) => {
+        const soldUnits = fromMilli(r.soldMilli);
+        const revenue = fromCents(r.revenueCents);
+        const cogs = fromCents(r.cogsCents);
+        const profit = Math.round((revenue - cogs) * 100) / 100;
+        const marginPct = revenue > 0 ? Math.round(((revenue - cogs) / revenue) * 1000) / 10 : 0;
+        const avgSellPrice = soldUnits > 0 ? Math.round((revenue / soldUnits) * 100) / 100 : 0;
+        return {
+          SKU: r.SKU,
+          Product: r.Product,
+          Department: r.Department,
+          Unit: r.Unit,
+          UnitsSold: soldUnits,
+          AvgSellingPrice: avgSellPrice,
+          UnitCost: fromCents(r.unitCostCents),
+          TotalRevenue: revenue,
+          CostOfGoodsSold: cogs,
+          GrossProfitEarned: profit,
+          GrossMarginPct: `${marginPct}%`,
+        };
+      });
+    } else if (q.section === 'stock_write_offs') {
+      const periodClause = cutoffIso ? ' AND d.created_at >= ?' : '';
+      const woParams: (number | string)[] = cutoffIso ? [orgId, cutoffIso] : [orgId];
+      if (q.departmentId) woParams.push(q.departmentId);
+
+      rows = (db
+        .prepare(
+          `SELECT d.created_at AS DateLogged,
+                  COALESCE(d.reference, 'WO-#' || d.id) AS Reference,
+                  p.sku AS SKU,
+                  p.name AS Product,
+                  COALESCE(dep.name, 'General Store') AS Department,
+                  w.name AS Warehouse,
+                  COALESCE(d.reason, 'Recorded shrinkage') AS ReasonCode,
+                  u.code AS Unit,
+                  ABS(m.base_delta_milli) AS deltaMilli,
+                  m.unit_cost_cents AS unitCostCents,
+                  usr.name AS AuthorisedBy
+             FROM stock_documents d
+             JOIN stock_movements m ON m.document_id = d.id
+             JOIN products p ON p.id = m.product_id
+             JOIN units_of_measure u ON u.id = p.base_unit_id
+             LEFT JOIN departments dep ON dep.id = p.department_id
+             JOIN warehouses w ON w.id = m.warehouse_id
+             JOIN users usr ON usr.id = d.created_by
+            WHERE d.organisation_id = ?
+              AND d.type = 'write_off'
+              AND NOT EXISTS (SELECT 1 FROM stock_documents rev WHERE rev.reverses_document_id = d.id)
+              ${periodClause}
+              ${q.departmentId ? ' AND p.department_id = ?' : ''}
+            ORDER BY d.created_at DESC`,
+        )
+        .all(...woParams) as {
+        DateLogged: string;
+        Reference: string;
+        SKU: string;
+        Product: string;
+        Department: string;
+        Warehouse: string;
+        ReasonCode: string;
+        Unit: string;
+        deltaMilli: number;
+        unitCostCents: number;
+        AuthorisedBy: string;
+      }[]).map((r) => {
+        const unitsLost = fromMilli(r.deltaMilli);
+        const unitCost = fromCents(r.unitCostCents);
+        const totalLossValue = Math.round(unitsLost * unitCost * 100) / 100;
+        return {
+          DateLogged: r.DateLogged.slice(0, 16).replace('T', ' '),
+          Reference: r.Reference,
+          Product: r.Product,
+          SKU: r.SKU,
+          Department: r.Department,
+          Warehouse: r.Warehouse,
+          ReasonCode: r.ReasonCode,
+          UnitsWrittenOff: unitsLost,
+          Unit: r.Unit,
+          UnitCost: unitCost,
+          TotalFinancialLoss: totalLossValue,
+          AuthorisedBy: r.AuthorisedBy,
+        };
+      });
     } else if (q.section === 'movements') {
       rows = (db
         .prepare(

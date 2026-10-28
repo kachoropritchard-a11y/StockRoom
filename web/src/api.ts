@@ -414,6 +414,82 @@ export interface InventoryReports {
     lineCount: number;
     netBaseChange: number;
   }[];
+  allRestockLevels?: {
+    productId: number;
+    sku: string;
+    productName: string;
+    categoryName: string;
+    departmentId: number | null;
+    departmentName: string;
+    unit: string;
+    currentStock: number;
+    reorderLevel: number;
+    shortfall: number;
+    unitCost: number;
+    sellingPrice: number;
+    estimatedRestockCost: number;
+    restockStatus: 'out_of_stock' | 'reorder_needed' | 'healthy';
+  }[];
+  soldStockSummary?: {
+    period: 'today' | 'week' | 'month' | 'all';
+    departmentId: number | null;
+    totalSoldUnits: number;
+    totalRevenue: number;
+    totalCogs: number;
+    totalGrossProfit: number;
+    overallMarginPct: number;
+    items: {
+      productId: number;
+      sku: string;
+      productName: string;
+      departmentId: number | null;
+      departmentName: string;
+      categoryName: string;
+      unit: string;
+      soldUnits: number;
+      avgSellingPrice: number;
+      unitCost: number;
+      revenue: number;
+      cogs: number;
+      grossProfit: number;
+      grossMarginPct: number;
+    }[];
+  };
+  writeOffSummary?: {
+    period: 'today' | 'week' | 'month' | 'all';
+    departmentId: number | null;
+    totalUnits: number;
+    totalLossValue: number;
+    log: {
+      documentId: number;
+      reference: string;
+      reason: string;
+      createdAt: string;
+      createdByName: string;
+      productId: number;
+      sku: string;
+      productName: string;
+      departmentId: number | null;
+      departmentName: string;
+      warehouseName: string;
+      unit: string;
+      quantity: number;
+      unitCost: number;
+      totalLossValue: number;
+    }[];
+    byReason: {
+      reason: string;
+      count: number;
+      units: number;
+      lossValue: number;
+    }[];
+    byDepartment: {
+      departmentName: string;
+      count: number;
+      units: number;
+      lossValue: number;
+    }[];
+  };
   ownerSummary?: {
     period: 'today' | 'week' | 'month' | 'all';
     totalBoughtUnits: number;
@@ -659,17 +735,81 @@ export const api = {
   departments: () => request<{ id: number; branchId: number; branchName?: string; name: string; active: number }[]>('/api/departments'),
   createDepartment: (body: { branchId: number; name: string }) =>
     request<{ id: number }>('/api/departments', { method: 'POST', body: JSON.stringify(body) }),
-  updateDepartment: (id: number, body: { name?: string; active?: boolean }) =>
+  updateDepartment: (id: number, body: { branchId?: number; name?: string; active?: boolean; isPosDepartment?: boolean }) =>
     request<{ ok: true }>(`/api/departments/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteDepartment: (id: number) =>
     request<{ ok: true }>(`/api/departments/${id}`, { method: 'DELETE' }),
 
   users: () =>
-    request<{ id: number; email: string; name: string; role: User['role']; branchId: number | null; branchName: string | null; active: boolean; lockedUntil: string | null }[]>('/api/users'),
-  createUser: (body: { email: string; name: string; password: string; role: User['role']; branchId?: number | null }) =>
-    request<{ id: number }>('/api/users', { method: 'POST', body: JSON.stringify(body) }),
-  updateUser: (id: number, body: { active?: boolean; role?: User['role']; branchId?: number | null; unlock?: boolean }) =>
-    request<{ ok: true }>(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    request<
+      {
+        id: number;
+        email: string;
+        name: string;
+        role: User['role'];
+        branchId: number | null;
+        branchName: string | null;
+        active: boolean;
+        lockedUntil: string | null;
+        pinCode?: string | null;
+        departmentScope?: string | null;
+        canViewCost?: boolean;
+        canWriteOff?: boolean;
+        createdAt?: string;
+      }[]
+    >('/api/users'),
+  createUser: (body: {
+    email: string;
+    name: string;
+    password: string;
+    role: User['role'];
+    branchId?: number | null;
+    pinCode?: string;
+    departmentScope?: string;
+    canViewCost?: boolean;
+    canWriteOff?: boolean;
+  }) => request<{ id: number }>('/api/users', { method: 'POST', body: JSON.stringify(body) }),
+  updateUser: (
+    id: number,
+    body: {
+      name?: string;
+      active?: boolean;
+      role?: User['role'];
+      branchId?: number | null;
+      password?: string;
+      pinCode?: string;
+      departmentScope?: string;
+      canViewCost?: boolean;
+      canWriteOff?: boolean;
+      unlock?: boolean;
+    },
+  ) => request<{ ok: true }>(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteUser: (id: number) => request<{ ok: true }>(`/api/users/${id}`, { method: 'DELETE' }),
+
+  profile: () =>
+    request<{
+      id: number;
+      name: string;
+      email: string;
+      role: User['role'];
+      organisationName: string;
+      currencyCode: string;
+      branchName: string;
+      pinCode: string | null;
+      departmentScope: string;
+      createdAt: string;
+    }>('/api/auth/profile'),
+  updateProfile: (body: {
+    name?: string;
+    email?: string;
+    pinCode?: string;
+    currentPassword?: string;
+    newPassword?: string;
+  }) =>
+    request<{ ok: true; user: User; pinCode: string | null }>('/api/auth/profile', {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
 
   categories: () => request<{ id: number; name: string; parentId: number | null; active: number }[]>('/api/categories'),
   createCategory: (body: { name: string }) =>

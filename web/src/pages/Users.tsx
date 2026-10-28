@@ -5,17 +5,22 @@ import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
 
-type UsersSubTab = 'pins' | 'permissions';
+type UsersSubTab = 'users' | 'permissions';
 
-interface FastPinStaffMember {
-  id: string;
+interface UserAccount {
+  id: number;
+  email: string;
   name: string;
-  station: string;
-  fastPin: string;
-  phone: string;
-  hideCostPrices: boolean;
-  restrictWriteOffs: boolean;
+  role: User['role'];
+  branchId: number | null;
+  branchName: string | null;
   active: boolean;
+  lockedUntil: string | null;
+  pinCode?: string | null;
+  departmentScope?: string | null;
+  canViewCost?: boolean;
+  canWriteOff?: boolean;
+  createdAt?: string;
 }
 
 export function Users() {
@@ -23,69 +28,200 @@ export function Users() {
   const { subLabel } = useZim();
   const isExec = currentUser?.role === 'executive_manager';
 
-  const [activeTab, setActiveTab] = useState<UsersSubTab>('pins');
-  const [pinStaff, setPinStaff] = useState<FastPinStaffMember[]>([]);
-  const [users, setUsers] = useState<
-    { id: number; email: string; name: string; role: User['role']; branchId: number | null; branchName: string | null; active: boolean; lockedUntil: string | null }[]
-  >([]);
+  const [activeTab, setActiveTab] = useState<UsersSubTab>('users');
+  const [users, setUsers] = useState<UserAccount[]>([]);
+  const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
   const [branches, setBranches] = useState<{ id: number; name: string }[]>([]);
   const [permissions, setPermissions] = useState<GranularPermissionItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
 
-  // Fast PIN creation form (for staff without emails)
-  const [staffName, setStaffName] = useState('');
-  const [staffStation, setStaffStation] = useState('Storefloor Runner / Till');
-  const [staffPin, setStaffPin] = useState('4410');
-  const [staffPhone, setStaffPhone] = useState('');
+  // Show/hide add user form
+  const [showAddForm, setShowAddForm] = useState(false);
 
-  // Full web account creation form (Executive only)
-  const [uEmail, setUEmail] = useState('');
-  const [uName, setUName] = useState('');
-  const [uPassword, setUPassword] = useState('');
-  const [uRole, setURole] = useState<User['role']>('inventory_manager');
-  const [uBranchId, setUBranchId] = useState('');
+  // Add User Form State
+  const [formName, setFormName] = useState('');
+  const [formEmail, setFormEmail] = useState('');
+  const [formRole, setFormRole] = useState<User['role']>('inventory_manager');
+  const [formPin, setFormPin] = useState('');
+  const [formPassword, setFormPassword] = useState('');
+  const [formDept, setFormDept] = useState('');
+  const [formHideCost, setFormHideCost] = useState(true);
+  const [formRestrictWriteOff, setFormRestrictWriteOff] = useState(true);
+
+  // Edit / Reset User Modal State
+  const [editingUser, setEditingUser] = useState<UserAccount | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editRole, setEditRole] = useState<User['role']>('inventory_manager');
+  const [editPin, setEditPin] = useState('');
+  const [editPassword, setEditPassword] = useState('');
+  const [editDept, setEditDept] = useState('');
+  const [editHideCost, setEditHideCost] = useState(true);
+  const [editRestrictWriteOff, setEditRestrictWriteOff] = useState(true);
+  const [editActive, setEditActive] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [bRes, smeRes] = await Promise.all([
+      const [uRes, dRes, bRes, pRes] = await Promise.all([
+        api.users().catch(() => []),
+        api.departments().catch(() => []),
         api.branches().catch(() => []),
-        api.smeOverview().catch(() => null),
+        api.permissions().catch(() => ({ permissions: [] })),
       ]);
+      setUsers(uRes);
+      setDepartments(dRes);
       setBranches(bRes);
-      if (bRes[0]) setUBranchId((prev) => prev || String(bRes[0].id));
-      if (smeRes) {
-        setPinStaff(
-          (smeRes.staffPins || []).map((p) => ({
-            id: String(p.id),
-            name: p.staffName,
-            station: `${p.roleTitle} (${p.departmentScope})`,
-            fastPin: p.pinCode,
-            phone: p.departmentScope,
-            hideCostPrices: !p.canViewCost,
-            restrictWriteOffs: !p.canWriteOff,
-            active: p.active,
-          })),
-        );
-      }
-
-      if (isExec) {
-        const [uRes, pRes] = await Promise.all([api.users(), api.permissions()]);
-        setUsers(uRes);
-        setPermissions(pRes.permissions);
+      setPermissions(pRes.permissions);
+      if (dRes[0] && !formDept) {
+        setFormDept(dRes[0].name);
       }
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [isExec]);
+  }, [formDept]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  async function handleCreateUser(e: FormEvent) {
+    e.preventDefault();
+    setError('');
+    setMsg('');
+
+    if (!formName.trim() || !formEmail.trim() || !formPassword.trim()) {
+      setError('Please fill in user name, email address, and initial password.');
+      return;
+    }
+
+    if (formPassword.length < 8) {
+      setError('Initial password must be at least 8 characters.');
+      return;
+    }
+
+    if (formPin.trim() && !/^\d{4}$/.test(formPin.trim())) {
+      setError('Staff 4-Digit Fast PIN must be exactly 4 numbers.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await api.createUser({
+        name: formName.trim(),
+        email: formEmail.trim().toLowerCase(),
+        password: formPassword,
+        role: formRole,
+        pinCode: formPin.trim() || undefined,
+        departmentScope: formDept.trim() || 'All Departments',
+        canViewCost: !formHideCost,
+        canWriteOff: !formRestrictWriteOff,
+      });
+
+      setFormName('');
+      setFormEmail('');
+      setFormPin('');
+      setFormPassword('');
+      setShowAddForm(false);
+      setMsg(`User "${formName.trim()}" created successfully! They can log in with their email/password or 4-digit PIN.`);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function openEditModal(u: UserAccount) {
+    setEditingUser(u);
+    setEditName(u.name);
+    setEditRole(u.role);
+    setEditPin(u.pinCode || '');
+    setEditPassword('');
+    setEditDept(u.departmentScope || (departments[0]?.name ?? 'All Departments'));
+    setEditHideCost(!u.canViewCost);
+    setEditRestrictWriteOff(!u.canWriteOff);
+    setEditActive(u.active);
+  }
+
+  async function handleSaveEdit(e: FormEvent) {
+    e.preventDefault();
+    if (!editingUser) return;
+    setError('');
+    setMsg('');
+
+    if (editPin.trim() && !/^\d{4}$/.test(editPin.trim())) {
+      setError('Staff PIN must be exactly 4 digits.');
+      return;
+    }
+
+    if (editPassword && editPassword.length < 8) {
+      setError('New password must be at least 8 characters long.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await api.updateUser(editingUser.id, {
+        name: editName.trim() !== editingUser.name ? editName.trim() : undefined,
+        role: editRole !== editingUser.role ? editRole : undefined,
+        active: editActive !== editingUser.active ? editActive : undefined,
+        password: editPassword.trim() || undefined,
+        pinCode: editPin.trim() || undefined,
+        departmentScope: editDept.trim() || undefined,
+        canViewCost: !editHideCost,
+        canWriteOff: !editRestrictWriteOff,
+      });
+
+      setEditingUser(null);
+      setMsg(`Account settings for "${editName}" updated successfully.`);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleToggleActive(u: UserAccount) {
+    if (u.id === currentUser?.id) {
+      setError('You cannot deactivate your own logged-in account.');
+      return;
+    }
+    const nextState = !u.active;
+    setError('');
+    setMsg('');
+    try {
+      await api.updateUser(u.id, { active: nextState });
+      setMsg(`User "${u.name}" has been ${nextState ? 'activated' : 'suspended'}.`);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function handleDeleteUser(u: UserAccount) {
+    if (u.id === currentUser?.id) {
+      setError('You cannot delete your own logged-in account.');
+      return;
+    }
+    if (!window.confirm(`Are you sure you want to permanently delete user account "${u.name}" (${u.email})?`)) {
+      return;
+    }
+    setError('');
+    setMsg('');
+    try {
+      await api.deleteUser(u.id);
+      setMsg(`User "${u.name}" was permanently removed.`);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
 
   async function handleTogglePermission(key: GranularPermissionItem['key'], allowed: boolean) {
     setError('');
@@ -99,40 +235,18 @@ export function Users() {
     }
   }
 
-  async function handleCreateWebUser(e: FormEvent) {
-    e.preventDefault();
-    setError('');
-    setMsg('');
-    try {
-      await api.createUser({
-        email: uEmail,
-        name: uName,
-        password: uPassword,
-        role: uRole,
-        branchId: uBranchId ? Number(uBranchId) : null,
-      });
-      setUEmail('');
-      setUName('');
-      setUPassword('');
-      setMsg('Full web user account created.');
-      await load();
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }
-
   const tabs: TabDefinition<UsersSubTab>[] = [
     {
-      key: 'pins',
-      label: '1. Staff 4-Digit Fast PIN Directory',
-      badge: pinStaff.length + users.length,
-      purpose: 'Register 4-digit Fast PINs for shopfloor runners, till operators, and yard staff who do not have email addresses.',
+      key: 'users',
+      label: '1. User Accounts & Staff Directory',
+      badge: users.length,
+      purpose: 'Manage staff accounts, assign roles, configure 4-digit Fast PINs, and set anti-fraud cost locks.',
     },
     {
       key: 'permissions',
       label: '2. Role Permissions & Anti-Fraud Locks',
       badge: permissions.length || 4,
-      purpose: 'Hide wholesale cost prices from counter staff, lock unauthorized stock write-offs, and enforce separation of duties.',
+      purpose: 'Server-enforced anti-fraud locks: hide wholesale costs, restrict write-offs, and enforce separation of duties.',
     },
   ];
 
@@ -140,18 +254,41 @@ export function Users() {
     <>
       <div className="page-header">
         <div>
-          <h1>Users, 4-Digit Fast PINs &amp; Anti-Fraud Locks</h1>
+          <h1>User Accounts &amp; Staff Management</h1>
           <span className="vernacular-sub">
             {subLabel(
-              'Vashandi veChitoro (4-Digit Fast PIN Pasina Email) & Mitemo Yekudzivirira Kubiridzira',
-              'Izisebenzi Zesitolo (4-Digit PIN) &emithetho Yokuvikela Ukwebiwa Kwempahla',
+              'Kugadzirisa Vashandi veChitoro, maPIN Ekupinda & Mitemo yeKudzivirira Kubiridzira',
+              'Izisebenzi Zesitolo, ama-PIN Okungena &emithetho Yokuvikela Impahla',
             )}
           </span>
         </div>
+        <div className="quick-actions">
+          {isExec && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setShowAddForm((s) => !s)}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+            >
+              {showAddForm ? '✕ Close Form' : '+ Add New User'}
+            </button>
+          )}
+          <button type="button" className="btn btn-outline" onClick={load}>
+            ↻ Refresh
+          </button>
+        </div>
       </div>
 
-      {error && <p className="form-error" role="alert">{error}</p>}
-      {msg && <p className="form-success" role="status">{msg}</p>}
+      {error && (
+        <div className="form-error" role="alert" style={{ marginBottom: '1rem' }}>
+          {error}
+        </div>
+      )}
+      {msg && (
+        <div className="form-success" role="status" style={{ marginBottom: '1rem' }}>
+          {msg}
+        </div>
+      )}
 
       {loading ? (
         <Spinner label="Loading staff directory and permissions" />
@@ -166,183 +303,332 @@ export function Users() {
             onChange={setActiveTab}
           />
 
-          {/* SUB-MENU 1: Staff 4-Digit Fast PIN Directory */}
-          {activeTab === 'pins' && (
-            <div id="users-panel-pins" role="tabpanel" aria-labelledby="users-tab-pins">
-              <div className="section-head">
+          {/* SUB-MENU 1: User Accounts & Staff Directory */}
+          {activeTab === 'users' && (
+            <div id="users-panel-users" role="tabpanel" aria-labelledby="users-tab-users">
+              {/* Executive Add User Form (Card Drawer) */}
+              {isExec && showAddForm && (
+                <div
+                  className="subcard animate-fade-in"
+                  style={{
+                    marginBottom: '1.75rem',
+                    background: 'var(--surface)',
+                    border: '1.5px solid var(--zim-green-700)',
+                    borderRadius: '14px',
+                    padding: '1.5rem',
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.06)',
+                  }}
+                >
+                  <div className="section-head" style={{ marginBottom: '1rem' }}>
+                    <div>
+                      <h3 style={{ margin: 0, color: 'var(--charcoal)' }}>Create New Staff / Manager Account</h3>
+                      <span className="vernacular-sub" style={{ fontSize: '0.78rem' }}>
+                        Set their details, system role, initial web password, and 4-digit Fast PIN for 1-tap counter sign-in.
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setShowAddForm(false)}
+                      style={{ fontSize: '1rem' }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleCreateUser} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
+                      <label>
+                        Full Name
+                        <input
+                          type="text"
+                          value={formName}
+                          onChange={(e) => setFormName(e.target.value)}
+                          placeholder="e.g. Tendai Moyo"
+                          required
+                          autoFocus
+                        />
+                      </label>
+
+                      <label>
+                        Email Address (Username)
+                        <input
+                          type="email"
+                          value={formEmail}
+                          onChange={(e) => setFormEmail(e.target.value)}
+                          placeholder="e.g. tendai@store.co.zw"
+                          required
+                        />
+                      </label>
+
+                      <label>
+                        System Role
+                        <select
+                          value={formRole}
+                          onChange={(e) => {
+                            const newRole = e.target.value as User['role'];
+                            setFormRole(newRole);
+                            if (newRole === 'executive_manager') {
+                              setFormHideCost(false);
+                              setFormRestrictWriteOff(false);
+                            } else {
+                              setFormHideCost(true);
+                              setFormRestrictWriteOff(true);
+                            }
+                          }}
+                        >
+                          <option value="inventory_manager">Inventory / Storefloor Manager (Standard)</option>
+                          <option value="executive_manager">Executive Manager / Owner (Full Access)</option>
+                        </select>
+                      </label>
+
+                      <label>
+                        Assigned Department / Counter
+                        <select value={formDept} onChange={(e) => setFormDept(e.target.value)}>
+                          <option value="All Departments">All Departments</option>
+                          {departments.map((d) => (
+                            <option key={d.id} value={d.name}>
+                              {d.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label>
+                        4-Digit Fast Sign-in PIN
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={4}
+                          pattern="\d{4}"
+                          value={formPin}
+                          onChange={(e) => setFormPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                          placeholder="4 digits e.g. 1234"
+                          style={{ letterSpacing: '0.2em', fontWeight: 700 }}
+                          required
+                        />
+                        <span className="muted" style={{ fontSize: '0.72rem' }}>
+                          Used for 1-tap PIN login on POS counters and floor tablets.
+                        </span>
+                      </label>
+
+                      <label>
+                        Initial Web Password
+                        <input
+                          type="password"
+                          value={formPassword}
+                          onChange={(e) => setFormPassword(e.target.value)}
+                          placeholder="Min. 8 characters"
+                          required
+                        />
+                        <span className="muted" style={{ fontSize: '0.72rem' }}>
+                          Used for full email + password sign-in.
+                        </span>
+                      </label>
+                    </div>
+
+                    {/* Anti-fraud security locks */}
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: '1.5rem',
+                        padding: '0.85rem 1rem',
+                        background: 'var(--zim-cream)',
+                        borderRadius: '8px',
+                        border: '1px solid var(--line)',
+                      }}
+                    >
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0, cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={formHideCost}
+                          onChange={(e) => setFormHideCost(e.target.checked)}
+                          disabled={formRole === 'executive_manager'}
+                        />
+                        <span style={{ fontSize: '0.84rem' }}>
+                          <strong>🔒 Hide Wholesale Cost Prices</strong> (Staff only sees selling prices)
+                        </span>
+                      </label>
+
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0, cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={formRestrictWriteOff}
+                          onChange={(e) => setFormRestrictWriteOff(e.target.checked)}
+                          disabled={formRole === 'executive_manager'}
+                        />
+                        <span style={{ fontSize: '0.84rem' }}>
+                          <strong>🔒 Restrict Stock Write-Offs</strong> (Requires supervisor PIN/approval)
+                        </span>
+                      </label>
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        onClick={() => setShowAddForm(false)}
+                        disabled={saving}
+                      >
+                        Cancel
+                      </button>
+                      <button type="submit" className="btn btn-primary" disabled={saving}>
+                        {saving ? 'Creating Account…' : '✓ Create User Account'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              {/* Users Directory Table */}
+              <div className="section-head" style={{ marginBottom: '0.75rem' }}>
                 <div>
-                  <h2>Storefloor 4-Digit Fast PIN Directory (No Email Required)</h2>
-                  <p className="muted" style={{ margin: 0, fontSize: '0.84rem' }}>
-                    Ideal for tuckshop cashiers, hardware yard loaders, and butchery blockmen who share a store tablet or terminal.
-                  </p>
+                  <h3 style={{ margin: 0 }}>Registered Staff &amp; Manager Accounts ({users.length})</h3>
+                  <span className="vernacular-sub" style={{ fontSize: '0.78rem' }}>
+                    Staff can log in with their email &amp; password or their 4-digit Fast PIN on the sign-in screen.
+                  </span>
                 </div>
               </div>
-
-              <form
-                className="form-grid subcard"
-                style={{ marginBottom: '1.25rem' }}
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  if (!staffName.trim()) return;
-                  const cleanPin = staffPin.trim().slice(0, 4).padStart(4, '0');
-                  await api
-                    .createStaffPin({
-                      staffName: staffName.trim(),
-                      roleTitle: staffStation,
-                      pinCode: cleanPin,
-                      departmentScope: staffPhone.trim() || 'Groceries & Hardware',
-                      canViewCost: false,
-                      canWriteOff: false,
-                    })
-                    .catch(() => null);
-                  setStaffName('');
-                  setStaffPhone('');
-                  setMsg(`Issued 4-Digit Fast PIN (${cleanPin}) for ${staffName}. They can now sign in on the Login screen!`);
-                  await load();
-                }}
-              >
-                <label>
-                  Staff Full Name
-                  <input value={staffName} onChange={(e) => setStaffName(e.target.value)} placeholder="e.g. Tatenda Sibanda" required />
-                </label>
-                <label>
-                  Store Station / Duty
-                  <input value={staffStation} onChange={(e) => setStaffStation(e.target.value)} required />
-                </label>
-                <label>
-                  4-Digit Fast PIN
-                  <input
-                    maxLength={4}
-                    pattern="\d{4}"
-                    value={staffPin}
-                    onChange={(e) => setStaffPin(e.target.value)}
-                    placeholder="4 digits e.g. 5521"
-                    required
-                  />
-                </label>
-                <label>
-                  WhatsApp / Phone
-                  <input value={staffPhone} onChange={(e) => setStaffPhone(e.target.value)} placeholder="+263 77..." />
-                </label>
-                <div className="form-actions">
-                  <button type="submit" className="btn btn-primary">+ Issue 4-Digit PIN</button>
-                </div>
-              </form>
 
               <div className="table-wrap">
                 <table className="data-table">
                   <thead>
                     <tr>
                       <th>Staff Member</th>
-                      <th>Assigned Station</th>
+                      <th>System Role</th>
+                      <th>Assigned Station / Dept</th>
                       <th>4-Digit Fast PIN</th>
-                      <th>Cost Price Visibility</th>
-                      <th>Write-Off Lock</th>
+                      <th>Security Locks</th>
                       <th>Status</th>
-                      <th className="num">Action</th>
+                      {isExec && <th className="num">Actions</th>}
                     </tr>
                   </thead>
                   <tbody>
-                    {pinStaff.length === 0 ? (
+                    {users.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="muted text-center" style={{ padding: '2.5rem', color: 'var(--muted)' }}>
-                          No staff PIN codes registered yet. Add storefloor till operators or runners using the form above.
+                        <td colSpan={isExec ? 7 : 6} className="muted text-center" style={{ padding: '2.5rem' }}>
+                          No staff accounts registered yet. Click &quot;+ Add New User&quot; above to create accounts.
                         </td>
                       </tr>
                     ) : (
-                      pinStaff.map((s) => (
-                        <tr key={s.id}>
-                          <td>
-                            <strong>{s.name}</strong>
-                            <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>{s.phone}</div>
-                          </td>
-                          <td>{s.station}</td>
-                          <td>
-                            <code style={{ fontSize: '0.96rem', fontWeight: 800, letterSpacing: '0.12em' }}>
-                              PIN: {s.fastPin}
-                            </code>
-                          </td>
-                          <td>
-                            <span className={`status-pill ${s.hideCostPrices ? 'optimal' : 'low'}`}>
-                              {s.hideCostPrices ? '🔒 Cost Prices Hidden' : '👁️ Can View Costs'}
-                            </span>
-                          </td>
-                          <td>
-                            <span className={`status-pill ${s.restrictWriteOffs ? 'optimal' : 'low'}`}>
-                              {s.restrictWriteOffs ? '🔒 Write-Offs Locked' : 'Unlocked'}
-                            </span>
-                          </td>
-                          <td>
-                            <span className={`status-pill ${s.active ? 'optimal' : 'out'}`}>
-                              {s.active ? 'Active' : 'Suspended'}
-                            </span>
-                          </td>
-                          <td className="num">
-                            <button
-                              type="button"
-                              className="btn btn-outline btn-sm"
-                              onClick={async () => {
-                                const nextHide = !s.hideCostPrices;
-                                setPinStaff((prev) =>
-                                  prev.map((x) => (x.id === s.id ? { ...x, hideCostPrices: nextHide } : x)),
-                                );
-                                if (typeof s.id === 'number') {
-                                  try {
-                                    await api.updateStaffPin(s.id, { canViewCost: !nextHide });
-                                  } catch {
-                                    /* keep optimistic update if offline */
-                                  }
-                                }
-                              }}
-                            >
-                              {s.hideCostPrices ? 'Show Costs' : 'Hide Costs'}
-                            </button>
-                          </td>
-                        </tr>
-                      ))
+                      users.map((u) => {
+                        const isSelf = u.id === currentUser?.id;
+                        return (
+                          <tr key={u.id}>
+                            <td>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                                <div
+                                  style={{
+                                    width: '34px',
+                                    height: '34px',
+                                    borderRadius: '50%',
+                                    background: u.role === 'executive_manager' ? 'var(--zim-gold-500)' : 'var(--zim-green-700)',
+                                    color: '#fff',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontWeight: 800,
+                                    fontSize: '0.9rem',
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  {u.name.slice(0, 1).toUpperCase()}
+                                </div>
+                                <div>
+                                  <strong>
+                                    {u.name} {isSelf && <span className="muted">(You)</span>}
+                                  </strong>
+                                  <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>
+                                    {u.email}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                            <td>
+                              <span
+                                className={`status-pill ${u.role === 'executive_manager' ? 'optimal' : 'low'}`}
+                                style={{ fontWeight: 600 }}
+                              >
+                                {u.role === 'executive_manager' ? 'Executive Manager' : 'Inventory Manager'}
+                              </span>
+                            </td>
+                            <td>{u.departmentScope || 'All Departments'}</td>
+                            <td>
+                              {u.pinCode ? (
+                                <code
+                                  style={{
+                                    fontSize: '0.92rem',
+                                    fontWeight: 800,
+                                    letterSpacing: '0.12em',
+                                    padding: '0.2rem 0.5rem',
+                                    borderRadius: '6px',
+                                    background: 'var(--zim-gold-50)',
+                                    color: 'var(--zim-gold-700)',
+                                    border: '1px solid var(--zim-gold-100)',
+                                  }}
+                                >
+                                  PIN: {u.pinCode}
+                                </code>
+                              ) : (
+                                <span className="muted" style={{ fontSize: '0.8rem' }}>
+                                  No PIN set
+                                </span>
+                              )}
+                            </td>
+                            <td>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', fontSize: '0.76rem' }}>
+                                <span>{u.canViewCost ? '👁️ Can View Costs' : '🔒 Cost Prices Hidden'}</span>
+                                <span>{u.canWriteOff ? '✓ Can Write Off' : '🔒 Write-Offs Locked'}</span>
+                              </div>
+                            </td>
+                            <td>
+                              <span className={`status-pill ${u.active ? 'optimal' : 'out'}`}>
+                                {u.active ? 'Active' : 'Suspended'}
+                              </span>
+                            </td>
+                            {isExec && (
+                              <td className="num">
+                                <div className="action-row" style={{ justifyContent: 'flex-end', gap: '0.4rem' }}>
+                                  <button
+                                    type="button"
+                                    className="btn btn-outline btn-sm"
+                                    onClick={() => openEditModal(u)}
+                                    title="Edit user details, reset PIN or password"
+                                  >
+                                    ⚙️ Manage
+                                  </button>
+                                  {!isSelf && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className="btn btn-outline btn-sm"
+                                        onClick={() => handleToggleActive(u)}
+                                        title={u.active ? 'Suspend account' : 'Activate account'}
+                                      >
+                                        {u.active ? 'Suspend' : 'Activate'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="btn btn-outline btn-sm"
+                                        style={{ color: 'var(--crimson)', borderColor: 'var(--line)' }}
+                                        onClick={() => handleDeleteUser(u)}
+                                        title="Delete user account"
+                                      >
+                                        🗑
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
               </div>
-
-              {isExec && (
-                <div className="subcard" style={{ marginTop: '1.35rem' }}>
-                  <h3>Executive &amp; Manager Login Accounts ({users.length})</h3>
-                  <form className="form-grid" style={{ marginBottom: '1rem' }} onSubmit={handleCreateWebUser}>
-                    <label>
-                      Full Name
-                      <input value={uName} onChange={(e) => setUName(e.target.value)} required />
-                    </label>
-                    <label>
-                      Email Address
-                      <input type="email" value={uEmail} onChange={(e) => setUEmail(e.target.value)} required />
-                    </label>
-                    <label>
-                      Password
-                      <input type="password" value={uPassword} onChange={(e) => setUPassword(e.target.value)} required />
-                    </label>
-                    <label>
-                      Role
-                      <select value={uRole} onChange={(e) => setURole(e.target.value as User['role'])}>
-                        <option value="inventory_manager">Inventory Manager</option>
-                        <option value="executive_manager">Executive Manager</option>
-                      </select>
-                    </label>
-                    <label>
-                      Branch Scope
-                      <select value={uBranchId} onChange={(e) => setUBranchId(e.target.value)}>
-                        <option value="">All Branches</option>
-                        {branches.map((b) => (
-                          <option key={b.id} value={b.id}>{b.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <div className="form-actions">
-                      <button type="submit" className="btn btn-primary">+ Create Web Account</button>
-                    </div>
-                  </form>
-                </div>
-              )}
             </div>
           )}
 
@@ -351,7 +637,7 @@ export function Users() {
             <div id="users-panel-permissions" role="tabpanel" aria-labelledby="users-tab-permissions">
               <div className="section-head">
                 <div>
-                  <h2>Role Permissions &amp; Storefloor Anti-Fraud Locks</h2>
+                  <h2>Server-Enforced Role Permissions &amp; Anti-Fraud Controls</h2>
                   <span className="vernacular-sub">
                     {subLabel(
                       'Kuviga Mitengo yeWholesale & Kudzivirira Kunyora Zvinhu Zvakafa Pasina Mvumo',
@@ -361,65 +647,227 @@ export function Users() {
                 </div>
               </div>
 
-              <div className="dashboard-panels">
-                <div className="subcard">
-                  <h3>Server-Enforced Role Permission Matrix</h3>
-                  {permissions.length > 0 ? (
-                    <div className="table-wrap">
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>Permission Control</th>
-                            <th>Status</th>
-                            <th className="num">Toggle</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {permissions.map((p) => (
-                            <tr key={p.key}>
-                              <td>
-                                <strong>{p.label}</strong>
-                                <div className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>{p.description}</div>
-                              </td>
-                              <td>
-                                <span className={`status-pill ${p.allowed ? 'optimal' : 'out'}`}>
-                                  {p.allowed ? 'Allowed' : 'Locked'}
-                                </span>
-                              </td>
-                              <td className="num">
-                                <button
-                                  type="button"
-                                  className="btn btn-outline btn-sm"
-                                  onClick={() => handleTogglePermission(p.key, !p.allowed)}
-                                >
-                                  {p.allowed ? 'Lock' : 'Allow'}
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : (
-                    <p className="muted">
-                      Granular role permissions are enforced by the server and configurable by an Executive Manager.
-                    </p>
-                  )}
-                </div>
-
-                <div className="subcard">
-                  <h3>Active Anti-Fraud Safeguards</h3>
-                  <ul style={{ margin: 0, paddingLeft: '1.2rem', fontSize: '0.88rem', lineHeight: 1.7 }}>
-                    <li><strong>Wholesale Cost Shield:</strong> Counter PIN staff only see shelf quantities and retail prices.</li>
-                    <li><strong>Mandatory Shrinkage Reason:</strong> No stock write-off can be posted without a reason code.</li>
-                    <li><strong>Append-Only SQLite Triggers:</strong> Posted stock movements and audit logs cannot be edited or deleted.</li>
-                    <li><strong>Separation of Duties:</strong> Creators cannot approve their own Purchase Orders or Requisitions.</li>
-                  </ul>
-                </div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Permission Policy</th>
+                      <th>Current Enforcement Status</th>
+                      {isExec && <th className="num">Toggle Status</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {permissions.map((p) => (
+                      <tr key={p.key}>
+                        <td>
+                          <strong>{p.label}</strong>
+                          <div className="muted" style={{ margin: 0, fontSize: '0.8rem' }}>
+                            {p.description}
+                          </div>
+                        </td>
+                        <td>
+                          <span className={`status-pill ${p.allowed ? 'optimal' : 'low'}`}>
+                            {p.allowed ? '✓ Granted / Active' : '🔒 Locked / Restricted'}
+                          </span>
+                        </td>
+                        {isExec && (
+                          <td className="num">
+                            <button
+                              type="button"
+                              className={`btn ${p.allowed ? 'btn-outline' : 'btn-primary'} btn-sm`}
+                              onClick={() => handleTogglePermission(p.key, !p.allowed)}
+                            >
+                              {p.allowed ? 'Lock' : 'Grant'}
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
         </section>
+      )}
+
+      {/* Executive Edit / Reset User Modal */}
+      {editingUser && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(17, 36, 33, 0.72)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: '1rem',
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !saving) setEditingUser(null);
+          }}
+        >
+          <div
+            className="card animate-scale-up"
+            style={{
+              width: '100%',
+              maxWidth: '520px',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+              padding: '1.75rem',
+              borderRadius: '16px',
+              background: 'var(--surface)',
+              border: '1.5px solid var(--line)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.25rem' }}>
+              <div>
+                <h3 style={{ margin: 0, color: 'var(--charcoal)' }}>Manage Account: {editingUser.name}</h3>
+                <span className="muted" style={{ fontSize: '0.8rem' }}>{editingUser.email}</span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setEditingUser(null)}
+                disabled={saving}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEdit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <label>
+                Full Name
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  required
+                />
+              </label>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                <label>
+                  System Role
+                  <select
+                    value={editRole}
+                    onChange={(e) => setEditRole(e.target.value as User['role'])}
+                    disabled={editingUser.id === currentUser?.id}
+                  >
+                    <option value="inventory_manager">Inventory Manager</option>
+                    <option value="executive_manager">Executive Manager</option>
+                  </select>
+                </label>
+
+                <label>
+                  Department / Counter
+                  <select value={editDept} onChange={(e) => setEditDept(e.target.value)}>
+                    <option value="All Departments">All Departments</option>
+                    {departments.map((d) => (
+                      <option key={d.id} value={d.name}>
+                        {d.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                <label>
+                  4-Digit Fast Sign-in PIN
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={4}
+                    pattern="\d{4}"
+                    value={editPin}
+                    onChange={(e) => setEditPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                    placeholder="e.g. 1234"
+                    style={{ letterSpacing: '0.2em', fontWeight: 700 }}
+                  />
+                </label>
+
+                <label>
+                  Reset Password (Optional)
+                  <input
+                    type="password"
+                    value={editPassword}
+                    onChange={(e) => setEditPassword(e.target.value)}
+                    placeholder="Leave blank to keep current"
+                  />
+                </label>
+              </div>
+
+              {/* Security locks */}
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.65rem',
+                  padding: '0.85rem 1rem',
+                  background: 'var(--zim-cream)',
+                  borderRadius: '8px',
+                  border: '1px solid var(--line)',
+                }}
+              >
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={editHideCost}
+                    onChange={(e) => setEditHideCost(e.target.checked)}
+                    disabled={editRole === 'executive_manager'}
+                  />
+                  <span style={{ fontSize: '0.82rem' }}>
+                    <strong>🔒 Hide Wholesale Cost Prices</strong>
+                  </span>
+                </label>
+
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={editRestrictWriteOff}
+                    onChange={(e) => setEditRestrictWriteOff(e.target.checked)}
+                    disabled={editRole === 'executive_manager'}
+                  />
+                  <span style={{ fontSize: '0.82rem' }}>
+                    <strong>🔒 Restrict Stock Write-Offs &amp; Adjustments</strong>
+                  </span>
+                </label>
+
+                {editingUser.id !== currentUser?.id && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={editActive}
+                      onChange={(e) => setEditActive(e.target.checked)}
+                    />
+                    <span style={{ fontSize: '0.82rem' }}>
+                      <strong>Active Account</strong> (Uncheck to suspend login)
+                    </span>
+                  </label>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={() => setEditingUser(null)}
+                  disabled={saving}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={saving}>
+                  {saving ? 'Saving…' : '✓ Save Account Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </>
   );

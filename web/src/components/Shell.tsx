@@ -2,10 +2,11 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { api, type NotificationItem } from '../api';
 import { portalPath, useAuth } from '../auth';
-import { useZim, type CurrencyCode, type VernacularMode } from '../zimContext';
+import { useZim, type CurrencyCode } from '../zimContext';
 import { QuickTransferModal } from './QuickTransferModal';
+import { ProfileModal } from './ProfileModal';
 import { Logo } from './Logo';
-import { StorefloorIcon, ExecutiveIcon, EyeIcon, BellIcon, SunIcon, MoonIcon, ZapIcon } from './Icons';
+import { StorefloorIcon, ExecutiveIcon, BellIcon, SunIcon, MoonIcon } from './Icons';
 
 interface NavItem {
   to: string;
@@ -33,32 +34,32 @@ function buildNavItems(base: string): NavItem[] {
 }
 
 export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const {
     currency,
     setCurrency,
     vernacular,
-    setVernacular,
-    easyMode,
-    setEasyMode,
     roleView,
     setRoleView,
-    zesaGridOnline,
-    setZesaGridOnline,
-    triggerOfflineSync,
   } = useZim();
 
   const navigate = useNavigate();
   const location = useLocation();
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('sidebar') === 'collapsed');
+
+  // Navigation Retraction States (Independently & Globally Collapsible for Full-Screen Focus)
+  const [sidebarRetracted, setSidebarRetracted] = useState(() => localStorage.getItem('stockroom_sidebar_retracted') === 'true');
+  const [topbarRetracted, setTopbarRetracted] = useState(() => localStorage.getItem('stockroom_topbar_retracted') === 'true');
   const [drawer, setDrawer] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('stockroom_theme') === 'dark' ? 'dark' : 'light'));
   const [quickSearch, setQuickSearch] = useState('');
   const [transferOpen, setTransferOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [syncFlash, setSyncFlash] = useState('');
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  const isFullScreen = sidebarRetracted && topbarRetracted;
 
   const base = user ? portalPath(user.role) : `/${portal}`;
   const navItems = buildNavItems(base);
@@ -86,19 +87,51 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
     return () => window.removeEventListener('stockroom:sync', onSync);
   }, []);
 
-  useEffect(() => localStorage.setItem('sidebar', collapsed ? 'collapsed' : 'open'), [collapsed]);
+  useEffect(() => {
+    localStorage.setItem('stockroom_sidebar_retracted', String(sidebarRetracted));
+  }, [sidebarRetracted]);
+
+  useEffect(() => {
+    localStorage.setItem('stockroom_topbar_retracted', String(topbarRetracted));
+  }, [topbarRetracted]);
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('stockroom_theme', theme);
   }, [theme]);
 
-  // Global keyboard navigation (Alt+1..9 for pages, Alt+K for search, Alt+T for Quick Transfer)
+  function toggleFullScreen() {
+    if (isFullScreen) {
+      setSidebarRetracted(false);
+      setTopbarRetracted(false);
+    } else {
+      setSidebarRetracted(true);
+      setTopbarRetracted(true);
+    }
+  }
+
+  // Global keyboard navigation & shortcuts:
+  // Alt+1..9 for pages, Alt+K for search, Alt+T for Quick Transfer, Alt+F or F for Fullscreen, Esc to exit Fullscreen
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const inInput = target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA');
 
+      // Esc exits fullscreen or unretracts bars
+      if (e.key === 'Escape') {
+        if (sidebarRetracted || topbarRetracted) {
+          setSidebarRetracted(false);
+          setTopbarRetracted(false);
+          return;
+        }
+      }
+
       if (e.altKey && !e.ctrlKey && !e.metaKey) {
+        if (e.key.toLowerCase() === 'f') {
+          e.preventDefault();
+          toggleFullScreen();
+          return;
+        }
         const num = Number(e.key);
         if (num >= 1 && num <= navItems.length) {
           e.preventDefault();
@@ -116,14 +149,32 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
           return;
         }
       }
-      if (!inInput && e.key === '/') {
-        e.preventDefault();
-        searchInputRef.current?.focus();
+
+      if (!inInput) {
+        if (e.key === 'f' || e.key === 'F') {
+          if (!e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            toggleFullScreen();
+            return;
+          }
+        }
+        if (e.key === '/') {
+          e.preventDefault();
+          searchInputRef.current?.focus();
+        }
+        if (e.ctrlKey && e.key === '[') {
+          e.preventDefault();
+          setSidebarRetracted((s) => !s);
+        }
+        if (e.ctrlKey && e.key === ']') {
+          e.preventDefault();
+          setTopbarRetracted((t) => !t);
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [navItems, navigate]);
+  }, [navItems, navigate, sidebarRetracted, topbarRetracted, isFullScreen]);
 
   function handleGlobalSearch(e: FormEvent) {
     e.preventDefault();
@@ -132,93 +183,153 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
   }
 
   return (
-    <div className={`shell${collapsed ? ' is-collapsed' : ''}${drawer ? ' drawer-open' : ''}`}>
+    <div
+      className={`shell${sidebarRetracted ? ' is-sidebar-retracted' : ''}${topbarRetracted ? ' is-topbar-retracted' : ''}${isFullScreen ? ' is-fullscreen' : ''}${drawer ? ' drawer-open' : ''}`}
+    >
       <a className="skip-link" href="#main">Skip to main content</a>
 
-      {/* TIER 1: Collapsible Left Sidebar with 10 Core Modules + ZESA Load-Shedding Offline Status Widget */}
+      {/* Floating Workspace Controller when Topbar is Retracted or in Fullscreen */}
+      {(topbarRetracted || isFullScreen) && (
+        <aside className="floating-retract-bar" aria-label="Fullscreen workspace controller">
+          <div className="floating-bar-pill">
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              onClick={() => {
+                setSidebarRetracted(false);
+                setTopbarRetracted(false);
+              }}
+              title="Expand all navigation and menu bars (Esc / Alt+F)"
+              style={{ fontWeight: 700, gap: '0.35rem' }}
+            >
+              ⤢ Expand All Bars <kbd style={{ background: 'rgba(0,0,0,0.25)', padding: '1px 5px', borderRadius: '4px', fontSize: '0.72rem' }}>Esc</kbd>
+            </button>
+
+            {sidebarRetracted && (
+              <button
+                type="button"
+                className="btn btn-sm btn-outline"
+                onClick={() => setSidebarRetracted(false)}
+                title="Expand left navigation sidebar"
+              >
+                ⇥ Show Nav
+              </button>
+            )}
+
+            {topbarRetracted && !sidebarRetracted && (
+              <button
+                type="button"
+                className="btn btn-sm btn-outline"
+                onClick={() => setTopbarRetracted(false)}
+                title="Expand top menu bar"
+              >
+                ▼ Show Menu
+              </button>
+            )}
+
+            <span className="floating-page-title">
+              {currentNav?.short ?? 'StockRoom'}
+            </span>
+
+            <div className="floating-actions">
+              <div className="topbar-seg-group" role="group" aria-label="Quick currency toggle">
+                {(['USD', 'ZiG', 'ZAR'] as CurrencyCode[]).map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    className={`topbar-seg-btn ${currency === c ? 'active-gold' : ''}`}
+                    onClick={() => setCurrency(c)}
+                  >
+                    {c === 'USD' ? '$' : c === 'ZiG' ? 'ZiG' : 'R'}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+                title="Toggle Theme"
+              >
+                {theme === 'dark' ? <SunIcon size={14} /> : <MoonIcon size={14} />}
+              </button>
+
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                onClick={() => setProfileOpen(true)}
+                title="My Profile & Fast PIN"
+              >
+                👤 {user?.name?.split(' ')[0]}
+              </button>
+            </div>
+          </div>
+        </aside>
+      )}
+
+      {/* TIER 1: Retractable Left Sidebar with 10 Core Modules */}
       <aside className="sidebar" aria-label="Primary navigation">
-        <div className="brand" style={{ padding: '0.75rem 1rem' }}>
-          <Logo size={36} variant="full" themeColor="light" />
+        <div className="brand" style={{ padding: '0.65rem 0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+          <Logo size={32} variant="full" themeColor="light" />
+          <button
+            type="button"
+            className="sidebar-toggle-btn"
+            onClick={() => setSidebarRetracted(true)}
+            aria-label="Retract navigation sidebar"
+            title="Retract Navigation Sidebar (Ctrl+[)"
+          >
+            ⇤
+          </button>
         </div>
         <div className="denderedzwa-frieze sidebar-frieze" aria-hidden="true" />
 
         <nav aria-label="Main sections">
           {navItems.map((i) => (
-            <NavLink key={i.to} to={i.to} end={i.end} className="nav-link" title={`${i.label} — ${i.shona} / ${i.ndebele} (${i.keyHint})`}>
+            <NavLink
+              key={i.to}
+              to={i.to}
+              end={i.end}
+              className="nav-link"
+              title={`${i.label} (${i.keyHint})`}
+            >
               <span className="nav-dot" aria-hidden="true" />
               <span className="nav-label">{i.label}</span>
               <kbd className="nav-kbd">{i.keyHint}</kbd>
             </NavLink>
           ))}
         </nav>
-
-        {/* Bottom ZESA Load-Shedding Offline Status & Sync Widget */}
-        <div className="zesa-widget" role="region" aria-label="ZESA Power and Offline Sync status">
-          <div className="zesa-widget-top">
-            <strong style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
-              <ZapIcon size={14} style={{ color: 'var(--zim-gold-400)' }} /> ZESA / Solar UPS
-            </strong>
-            <span className={`zesa-status-pill ${zesaGridOnline ? 'online' : 'battery'}`}>
-              {zesaGridOnline ? '● Grid Online' : 'Inverter Backup'}
-            </span>
-          </div>
-          <span style={{ fontSize: '0.71rem', opacity: 0.9 }}>
-            {zesaGridOnline
-              ? 'Local SQLite WAL ledger synced. Safe against power cuts.'
-              : 'Load-shedding mode active — all sales & stock saved locally.'}
-          </span>
-          <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.15rem' }}>
-            <button
-              type="button"
-              className="zesa-sync-btn"
-              style={{ flex: 1 }}
-              onClick={() => {
-                triggerOfflineSync();
-                setSyncFlash('Offline queue synced & verified');
-                setTimeout(() => setSyncFlash(''), 3000);
-              }}
-            >
-              ↻ Sync Now
-            </button>
-            <button
-              type="button"
-              className="zesa-sync-btn"
-              onClick={() => setZesaGridOnline(!zesaGridOnline)}
-              title="Simulate ZESA power cut / solar inverter switchover"
-            >
-              {zesaGridOnline ? 'Test Cut' : 'Restore'}
-            </button>
-          </div>
-        </div>
-
-        <div className="sidebar-help">
-          <div className="sidebar-help-title">Keyboard Shortcuts</div>
-          <div className="sidebar-help-row"><span>Jump pages</span><kbd>Alt+1..{navItems.length}</kbd></div>
-          <div className="sidebar-help-row"><span>Quick search</span><kbd>Alt+K</kbd></div>
-          <div className="sidebar-help-row"><span>Quick transfer</span><kbd>Alt+T</kbd></div>
-          <div className="sidebar-help-row"><span>Switch tabs</span><kbd>← / →</kbd></div>
-        </div>
       </aside>
+
       {drawer && <button className="scrim" aria-label="Close menu" onClick={() => setDrawer(false)} />}
 
       <div className="content">
         {/* Top 4px Ndebele Stepped Geometric Ribbon */}
         <div className="ndebele-ribbon" aria-hidden="true" />
 
-        {/* TIER 2: Top Navigation & 1-Tap Store Action Bar */}
+        {/* TIER 2: Retractable Top Navigation & Action Bar */}
         <header className="topbar">
-          <button
-            type="button"
-            className="btn btn-ghost"
-            aria-label="Toggle navigation"
-            aria-expanded={drawer || !collapsed}
-            onClick={() => (window.matchMedia('(max-width: 860px)').matches ? setDrawer((d) => !d) : setCollapsed((c) => !c))}
-          >
-            ☰
-          </button>
-          <div className="topbar-brand-group">
-            <strong className="topbar-ops-title">StockRoom ZW</strong>
-            <span className="live-pill" aria-label="Live ledger active">● LIVE</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+            <button
+              type="button"
+              className="btn btn-ghost topbar-toggle-btn"
+              aria-label="Toggle sidebar navigation"
+              onClick={() => {
+                if (window.matchMedia('(max-width: 860px)').matches) {
+                  setDrawer((d) => !d);
+                } else {
+                  setSidebarRetracted((s) => !s);
+                }
+              }}
+              title={sidebarRetracted ? "Expand Sidebar Nav (Ctrl+[)" : "Retract Sidebar Nav (Ctrl+[)"}
+              style={{ fontWeight: 700 }}
+            >
+              {sidebarRetracted ? '⇥ Nav' : '☰'}
+            </button>
+
+            <div className="topbar-brand-group">
+              <strong className="topbar-ops-title">StockRoom ZW</strong>
+              <span className="live-pill" aria-label="Live ledger active">● LIVE</span>
+            </div>
           </div>
 
           <form className="topbar-search" onSubmit={handleGlobalSearch} role="search">
@@ -242,7 +353,7 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
                 title="Operational Storefloor Focus"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
               >
-                <StorefloorIcon size={14} /> Storefloor View
+                <StorefloorIcon size={13} /> Storefloor
               </button>
               <button
                 type="button"
@@ -251,7 +362,7 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
                 title="Capital Valuation, Margin & ZIMRA VAT Focus"
                 style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
               >
-                <ExecutiveIcon size={14} /> Executive View
+                <ExecutiveIcon size={13} /> Executive
               </button>
             </div>
 
@@ -270,95 +381,71 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
               ))}
             </div>
 
-            {/* 3. Vernacular Language Helper Selector */}
-            <select
-              aria-label="Vernacular language helper"
-              value={vernacular}
-              onChange={(e) => setVernacular(e.target.value as VernacularMode)}
-              style={{ minHeight: '34px', padding: '0.22rem 0.55rem', fontSize: '0.78rem', borderRadius: '999px', fontWeight: 700 }}
-              title="Toggle plain-language Shona & Ndebele helper subtitles"
-            >
-              <option value="bilingual">EN + Shona / Ndebele</option>
-              <option value="shona">ChiShona Subtitles</option>
-              <option value="ndebele">IsiNdebele Subtitles</option>
-              <option value="english">English Only</option>
-            </select>
-
-            {/* 4. Visual Easy Mode Toggle */}
+            {/* 3. Alerts Bell */}
             <button
               type="button"
-              className="btn btn-pill-action"
-              onClick={() => setEasyMode(!easyMode)}
-              aria-pressed={easyMode}
-              title="Toggle larger touch buttons and zero-jargon visual helpers"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
-            >
-              <EyeIcon size={14} /> Easy Mode: <strong>{easyMode ? 'ON' : 'OFF'}</strong>
-            </button>
-
-            <button
-              type="button"
-              className="btn btn-pill-action"
-              onClick={() => setTransferOpen(true)}
-              title="Open Quick-Transfer Modal (Alt+T)"
-            >
-              <span className="dot-green" aria-hidden="true" /> Quick Transfer
-            </button>
-
-            <button
-              type="button"
-              className="btn btn-pill-action"
+              className={`btn btn-pill-action ${notifOpen ? 'btn-active' : ''}`}
               onClick={() => setNotifOpen((o) => !o)}
               aria-label={`Notifications (${notifications.length})`}
               aria-expanded={notifOpen}
               title="Live System Notifications"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem', padding: '0.25rem 0.55rem' }}
             >
               <BellIcon size={14} /> Alerts
               {notifications.length > 0 && (
-                <span className="badge badge-warn" style={{ marginLeft: '0.25rem' }}>
+                <span className="badge badge-warn" style={{ padding: '1px 5px', fontSize: '0.68rem', marginLeft: '0.15rem' }}>
                   {notifications.length}
                 </span>
               )}
             </button>
 
+            {/* 4. Fullscreen Workspace Mode Toggle */}
             <button
               type="button"
-              className="btn btn-pill-action"
-              onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
-              aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-              title="Toggle Light / Dark theme"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}
+              className={`btn btn-pill-action ${isFullScreen ? 'btn-active' : ''}`}
+              onClick={toggleFullScreen}
+              title="Toggle Fullscreen Mode (Alt+F / F / Esc)"
+              aria-label="Toggle Fullscreen"
+              style={{ fontWeight: 700, padding: '0.25rem 0.55rem' }}
             >
-              {theme === 'dark' ? <><SunIcon size={14} /> Light</> : <><MoonIcon size={14} /> Dark</>}
+              ⛶
             </button>
 
-            <span className="user-chip" title={user?.email}>
-              <span className="user-avatar" aria-hidden="true">{user?.name?.slice(0, 1) ?? 'U'}</span>
-              <span>{user?.name}</span>
-            </span>
-
+            {/* 5. User Profile Trigger */}
             <button
               type="button"
-              className="btn btn-outline btn-sm"
-              onClick={async () => {
-                await logout();
-                navigate('/login', { replace: true });
+              className="btn btn-pill-action user-profile-trigger"
+              onClick={() => setProfileOpen(true)}
+              title="My Profile, PIN, Display & Sign Out"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.45rem',
+                cursor: 'pointer',
+                fontWeight: 600,
+                padding: '0.22rem 0.55rem',
               }}
             >
-              Sign out
+              <span className="user-avatar" aria-hidden="true" style={{ width: '22px', height: '22px', fontSize: '0.68rem' }}>
+                {user?.name?.slice(0, 1).toUpperCase() ?? 'U'}
+              </span>
+              <span>{user?.name}</span>
             </button>
           </div>
         </header>
 
+        {/* Profile Manager Modal */}
+        <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} theme={theme} setTheme={setTheme} />
+
         {/* Subtle Great Zimbabwe dry-stone chevron (denderedzwa) frieze strip under the header */}
         <div className="denderedzwa-frieze" aria-hidden="true" />
 
+        {/* Slim Breadcrumb & Status Subbar */}
         <div className="subbar" aria-label="Breadcrumb and status">
           <div className="breadcrumb">
             <span>{portalTitle}</span>
             <span className="crumb-sep">/</span>
-            <strong>{currentNav?.short ?? 'Stockroom'}</strong>
+            <strong>{currentNav?.label ?? 'Stockroom'}</strong>
             {vernacular !== 'english' && currentNav && (
               <>
                 <span className="crumb-sep">•</span>
@@ -373,11 +460,6 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
             )}
           </div>
           {syncFlash && <span className="sync-toast" role="status">{syncFlash}</span>}
-          <div className="subbar-shortcuts">
-            <span>
-              Active Currency: <strong>{currency}</strong> | Focus Mode: <strong>{roleView === 'executive' ? 'Executive (Margins & VAT)' : 'Storefloor (Fast Stepper)'}</strong>
-            </span>
-          </div>
         </div>
 
         <main id="main" className="main" tabIndex={-1}>
@@ -392,53 +474,45 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
                     Real-time alerts computed from stock balances, batch expiry dates, approval queues, and system security.
                   </p>
                 </div>
-                <button type="button" className="btn btn-outline btn-sm" onClick={() => setNotifOpen(false)}>
-                  Close
-                </button>
+                <button type="button" className="btn btn-outline btn-sm" onClick={() => setNotifOpen(false)}>✕ Close</button>
               </div>
-              {notifications.length === 0 ? (
-                <div className="empty-state-box">All clear — no low-stock, expiry, or approval alerts right now.</div>
-              ) : (
-                <div className="table-wrap">
-                  <table className="data-table">
-                    <thead>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Category</th>
+                      <th>Severity</th>
+                      <th>Alert</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {notifications.length === 0 ? (
                       <tr>
-                        <th>Severity</th>
-                        <th>Alert</th>
-                        <th>Details</th>
-                        <th>Action</th>
+                        <td colSpan={3} className="muted text-center" style={{ padding: '1.5rem' }}>
+                          No pending alerts. All systems operational.
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {notifications.map((n) => (
+                    ) : (
+                      notifications.map((n) => (
                         <tr key={n.id}>
+                          <td><strong>{n.category.replace(/_/g, ' ')}</strong></td>
                           <td>
-                            <span className={`badge ${n.severity === 'critical' ? 'badge-danger' : n.severity === 'warning' ? 'badge-warn' : 'badge-info'}`}>
-                              {n.severity.toUpperCase()}
+                            <span className={`badge badge-${n.severity === 'warning' ? 'pending' : n.severity === 'critical' ? 'rejected' : 'optimal'}`}>
+                              {n.severity}
                             </span>
                           </td>
-                          <td><strong>{n.title}</strong></td>
-                          <td>{n.message}</td>
                           <td>
-                            <button
-                              type="button"
-                              className="btn btn-outline btn-sm"
-                              onClick={() => {
-                                setNotifOpen(false);
-                                navigate(n.link);
-                              }}
-                            >
-                              Open →
-                            </button>
+                            <strong>{n.title}:</strong> {n.message}
                           </td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </section>
           )}
+
           <Outlet />
         </main>
       </div>
@@ -446,9 +520,7 @@ export function Shell({ portal }: { portal: 'executive' | 'inventory' }) {
       <QuickTransferModal
         open={transferOpen}
         onClose={() => setTransferOpen(false)}
-        onSuccess={(message) => {
-          setSyncFlash(message);
-          setTimeout(() => setSyncFlash(''), 4000);
+        onSuccess={() => {
           window.dispatchEvent(new CustomEvent('stockroom:sync'));
         }}
       />

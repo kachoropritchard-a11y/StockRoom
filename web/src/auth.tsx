@@ -9,6 +9,8 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   pinLogin: (pin: string) => Promise<void>;
   setupInitialManager: (body: Parameters<typeof api.setupInitialManager>[0]) => Promise<User>;
+  updateCurrentUser: (user: User) => void;
+  refreshUser: () => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -60,6 +62,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return res.user;
   }, []);
 
+  const updateCurrentUser = useCallback((updated: User) => {
+    setUser(updated);
+  }, []);
+
+  const refreshUser = useCallback(async () => {
+    try {
+      const res = await api.me();
+      setUser(res.user);
+    } catch {
+      setUser(null);
+    }
+  }, []);
+
   const logout = useCallback(async () => {
     await api.logout().catch(() => undefined);
     setUser(null);
@@ -67,8 +82,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [checkStatus]);
 
   const value = useMemo(
-    () => ({ user, loading, needsSetup, checkStatus, login, pinLogin, setupInitialManager, logout }),
-    [user, loading, needsSetup, checkStatus, login, pinLogin, setupInitialManager, logout],
+    () => ({
+      user,
+      loading,
+      needsSetup,
+      checkStatus,
+      login,
+      pinLogin,
+      setupInitialManager,
+      updateCurrentUser,
+      refreshUser,
+      logout,
+    }),
+    [user, loading, needsSetup, checkStatus, login, pinLogin, setupInitialManager, updateCurrentUser, refreshUser, logout],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
