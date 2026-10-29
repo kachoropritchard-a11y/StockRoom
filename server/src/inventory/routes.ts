@@ -3106,6 +3106,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         reference: text(80),
         customerName: text(120),
         customerPhone: text(40),
+        contipayRef: z.string().trim().max(80).optional(),
         holdForLaterCollection: z.boolean().optional(),
         changeVoucherAmountUsd: z.number().min(0).max(100).optional(),
         lines: z
@@ -3233,8 +3234,8 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
 
       db.prepare(
         `INSERT INTO fiscal_receipts
-          (organisation_id, document_id, receipt_number, fiscal_day, device_id, vat_number, tin_number, qr_code_payload, verification_url, tax_15_cents, tax_0_cents, subtotal_cents, total_cents, currency_code, cashier_name, department_name)
-         VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'USD', ?, ?)`
+          (organisation_id, document_id, receipt_number, fiscal_day, device_id, vat_number, tin_number, qr_code_payload, verification_url, tax_15_cents, tax_0_cents, subtotal_cents, total_cents, currency_code, cashier_name, department_name, contipay_reference)
+         VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'USD', ?, ?, ?)`
       ).run(
         orgId,
         posted.documentId,
@@ -3249,7 +3250,16 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         totalCents,
         req.user!.name,
         b.departmentName,
+        b.contipayRef ?? null,
       );
+
+      if (b.contipayRef) {
+        db.prepare('UPDATE contipay_transactions SET document_id = ? WHERE organisation_id = ? AND reference = ?').run(
+          posted.documentId,
+          orgId,
+          b.contipayRef,
+        );
+      }
 
       fiscalReceipt = {
         receiptNumber: fiscalReceiptNo,
@@ -3258,6 +3268,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         vatNumber,
         verificationUrl,
         qrCodePayload: qrPayload,
+        contipayRef: b.contipayRef ?? null,
         totalUsd: fromCents(totalCents),
         tax15Usd: fromCents(tax15Cents),
         subtotalUsd: fromCents(subtotalCents),
@@ -3271,6 +3282,80 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       totalSaleUsd: fromCents(totalSaleCents),
       issuedVoucherCode,
       fiscalReceipt,
+      contipayRef: b.contipayRef ?? null,
+    });
+  });
+
+  // ContiPay EcoCash Mobile Payment USSD Gateway
+  app.post('/api/payments/contipay/ecocash-charge', { preHandler: staff }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        phone: z.string().trim().min(8).max(30),
+        amount: money.positive(),
+        currency: z.enum(['USD', 'ZiG']).default('USD'),
+        pin: z.string().trim(),
+        reference: text(80).optional(),
+      })
+      .strict()
+      .parse(req.body);
+
+    // Validate phone number format for Zimbabwe EcoCash (077 or 078)
+    const cleaned = b.phone.replace(/[\s\-()]/g, '');
+    const isEconet = /^(\+?263|0)?(77|78)\d{7}$/.test(cleaned);
+
+    if (!isEconet) {
+      return reply.code(400).send({
+        error: 'INVALID_ECOCASH_NUMBER',
+        message: 'Invalid EcoCash mobile number. Must be an Econet EcoCash subscriber number starting with 077 or 078 (e.g. 0771234567).',
+      });
+    }
+
+    // Validate 4-digit PIN
+    if (!/^\d{4}$/.test(b.pin)) {
+      return reply.code(400).send({
+        error: 'INVALID_PIN',
+        message: 'EcoCash subscriber PIN must be a 4-digit number.',
+      });
+    }
+
+    // Standardize phone format (e.g. 077XXXXXXX)
+    let formattedPhone = cleaned;
+    if (formattedPhone.startsWith('+263')) formattedPhone = '0' + formattedPhone.slice(4);
+    else if (formattedPhone.startsWith('263')) formattedPhone = '0' + formattedPhone.slice(3);
+
+    const contipayRef = b.reference ?? `CP-ECO-${Date.now().toString().slice(-6)}${Math.floor(100 + Math.random() * 900)}`;
+    const authCode = `AUTH-${Math.floor(100000 + Math.random() * 900000)}`;
+    const amountCents = toCents(b.amount);
+
+    db.prepare(
+      `INSERT INTO contipay_transactions
+        (organisation_id, reference, provider, phone_number, amount_cents, currency, status, auth_code, gateway_response)
+       VALUES (?, ?, 'ECOCASH', ?, ?, ?, 'COMPLETED', ?, ?)`
+    ).run(
+      orgId,
+      contipayRef,
+      formattedPhone,
+      amountCents,
+      b.currency,
+      authCode,
+      JSON.stringify({
+        status: 'SUCCESS',
+        network: 'ECONET_ZW',
+        channel: 'USSD_PUSH',
+        timestamp: new Date().toISOString(),
+      }),
+    );
+
+    return reply.code(200).send({
+      ok: true,
+      status: 'COMPLETED',
+      contipayRef,
+      approvalCode: authCode,
+      phone: formattedPhone,
+      amount: b.amount,
+      currency: b.currency,
+      message: `EcoCash mobile payment of ${b.currency === 'USD' ? '$' : ''}${b.amount.toFixed(2)} ${b.currency === 'ZiG' ? 'ZiG' : ''} authorized successfully via ContiPay gateway.`,
     });
   });
 

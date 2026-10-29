@@ -1040,6 +1040,7 @@ export const api = {
       reference?: string;
       customerName?: string;
       customerPhone?: string;
+      contipayRef?: string;
       holdForLaterCollection?: boolean;
       changeVoucherAmountUsd?: number;
       lines: { productId: number; unitId: number; quantity: number; unitSellingPrice?: number }[];
@@ -1051,6 +1052,7 @@ export const api = {
       document: { id: number };
       totalSaleUsd: number;
       issuedVoucherCode: string | null;
+      contipayRef?: string | null;
       fiscalReceipt?: {
         receiptNumber: string;
         deviceId: string;
@@ -1058,6 +1060,7 @@ export const api = {
         vatNumber: string;
         verificationUrl: string;
         qrCodePayload: string;
+        contipayRef?: string | null;
         totalUsd: number;
         tax15Usd: number;
         subtotalUsd: number;
@@ -1071,6 +1074,27 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
+
+  contipayEcoCashCharge: (body: {
+    phone: string;
+    amount: number;
+    currency: 'USD' | 'ZiG';
+    pin: string;
+    reference?: string;
+  }) =>
+    request<{
+      ok: true;
+      status: string;
+      contipayRef: string;
+      approvalCode: string;
+      phone: string;
+      amount: number;
+      currency: string;
+      message: string;
+    }>('/api/payments/contipay/ecocash-charge', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   createDebtor: (body: {
     customerName: string;
     phone: string;

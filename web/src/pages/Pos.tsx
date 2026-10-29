@@ -50,8 +50,13 @@ export function Pos() {
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<'all' | 'groceries' | 'hardware'>('all');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [tenderType, setTenderType] = useState<
-    'USD_CASH' | 'ZIG_CASH' | 'ZAR_CASH' | 'ECOCASH_USD' | 'ECOCASH_ZIG' | 'INNBUCKS' | 'ONEMONEY_ZIG' | 'CREDIT'
+    'USD_CASH' | 'ZIG_CASH' | 'ZAR_CASH' | 'ECOCASH_USD' | 'ECOCASH_ZIG'
   >('USD_CASH');
+  const [showContiPayModal, setShowContiPayModal] = useState(false);
+  const [contiPayPhone, setContiPayPhone] = useState('');
+  const [contiPayPin, setContiPayPin] = useState('');
+  const [contiPayBusy, setContiPayBusy] = useState(false);
+  const [contiPayError, setContiPayError] = useState('');
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [changeVoucherAmountUsd, setChangeVoucherAmountUsd] = useState<number>(0);
@@ -166,8 +171,7 @@ export function Pos() {
   const totalZig = Math.round(totalUsd * rates.ZiG * 100) / 100;
   const totalZar = Math.round(totalUsd * rates.ZAR * 100) / 100;
 
-  async function handleCheckout(e: FormEvent) {
-    e.preventDefault();
+  async function executeSale(overrideContipayRef?: string, overridePhone?: string) {
     if (cart.length === 0) return;
     setBusyCheckout(true);
     setError('');
@@ -179,42 +183,103 @@ export function Pos() {
         unitSellingPrice: item.unitSellingPrice,
       }));
 
+      const finalPhone = overridePhone || customerPhone.trim() || undefined;
+
       const res = await api.counterSale({
         warehouseId: defaultWarehouseId,
         departmentId: posDeptId,
         departmentName: posDeptName,
         tenderType,
         customerName: customerName.trim() || undefined,
-        customerPhone: customerPhone.trim() || undefined,
+        customerPhone: finalPhone,
+        contipayRef: overrideContipayRef,
         holdForLaterCollection: holdForYardCollection,
         changeVoucherAmountUsd: changeVoucherAmountUsd > 0 ? changeVoucherAmountUsd : undefined,
         lines: saleLines,
       });
 
-      // Show receipt modal with real ZIMRA fiscal record
+      // Show receipt modal with real ZIMRA fiscal record and ContiPay ref
       setReceiptModal({
         sale: res,
         lines: [...cart],
         subtotalUsd,
         vat15Usd,
         totalUsd,
+        totalZig,
         tenderType,
         customerName: customerName || 'Walk-In Customer',
-        customerPhone,
+        customerPhone: finalPhone,
         cashier: user?.name ?? 'Counter Staff',
         department: posDeptName,
         issuedVoucherCode: res.issuedVoucherCode,
         fiscalReceipt: res.fiscalReceipt,
+        contipayRef: overrideContipayRef || res.contipayRef,
         date: new Date().toLocaleString(),
       });
 
-      setSuccessNotice(`✓ Sale #${res.document.id} recorded with ZIMRA fiscalization!`);
+      setSuccessNotice(
+        `✓ Sale #${res.document.id} recorded with ZIMRA fiscalization${
+          overrideContipayRef ? ` & ContiPay ${overrideContipayRef}` : ''
+        }!`,
+      );
       clearCart();
       loadCatalog();
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setBusyCheckout(false);
+    }
+  }
+
+  function handleCheckout(e: FormEvent) {
+    e.preventDefault();
+    if (cart.length === 0) return;
+
+    // EcoCash requires ContiPay USSD Push and subscriber PIN entry
+    if (tenderType === 'ECOCASH_USD' || tenderType === 'ECOCASH_ZIG') {
+      setContiPayPhone(customerPhone.trim());
+      setContiPayPin('');
+      setContiPayError('');
+      setShowContiPayModal(true);
+      return;
+    }
+
+    // Cash sale (USD, ZiG, ZAR)
+    executeSale();
+  }
+
+  async function handleContiPayAuthorize() {
+    const phone = contiPayPhone.trim();
+    if (!phone) {
+      setContiPayError('Please enter the customer EcoCash phone number (077... or 078...).');
+      return;
+    }
+    if (contiPayPin.length !== 4) {
+      setContiPayError('Please enter the 4-digit EcoCash authorization PIN.');
+      return;
+    }
+
+    setContiPayBusy(true);
+    setContiPayError('');
+
+    try {
+      const isZig = tenderType === 'ECOCASH_ZIG';
+      const amount = isZig ? totalZig : totalUsd;
+      const currency = isZig ? 'ZiG' : 'USD';
+
+      const res = await api.contipayEcoCashCharge({
+        phone,
+        amount,
+        currency,
+        pin: contiPayPin,
+      });
+
+      setShowContiPayModal(false);
+      await executeSale(res.contipayRef, res.phone);
+    } catch (err) {
+      setContiPayError((err as Error).message);
+    } finally {
+      setContiPayBusy(false);
     }
   }
 
@@ -517,28 +582,30 @@ export function Pos() {
               </div>
             </div>
 
-            {/* Payment Tender Selection */}
+            {/* Payment Tender Selection (Cash & ContiPay EcoCash Only) */}
             <form onSubmit={handleCheckout}>
               <div style={{ marginBottom: '0.75rem' }}>
-                <label style={{ fontSize: '0.82rem', fontWeight: 700, marginBottom: '0.35rem', display: 'block' }}>
-                  Select Tender / Payment Method:
-                </label>
-                <div className="tender-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.35rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                  <label style={{ fontSize: '0.82rem', fontWeight: 700, margin: 0 }}>
+                    Select Tender / Payment Method:
+                  </label>
+                  <span className="muted" style={{ fontSize: '0.74rem', color: 'var(--emerald)', fontWeight: 600 }}>
+                    Cash & ContiPay EcoCash
+                  </span>
+                </div>
+                <div className="tender-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr) repeat(2, 1fr)', gap: '0.4rem' }}>
                   {[
-                    { id: 'USD_CASH', label: 'USD ($)' },
-                    { id: 'ZIG_CASH', label: 'ZiG (Cash)' },
-                    { id: 'ZAR_CASH', label: 'ZAR (R)' },
-                    { id: 'ECOCASH_USD', label: 'EcoCash $' },
-                    { id: 'ECOCASH_ZIG', label: 'EcoCash ZiG' },
-                    { id: 'INNBUCKS', label: 'InnBucks' },
-                    { id: 'CREDIT', label: 'Chikwereti' },
-                    { id: 'ONEMONEY_ZIG', label: 'OneMoney' },
+                    { id: 'USD_CASH', label: '💵 Cash (USD $)' },
+                    { id: 'ZIG_CASH', label: '💵 Cash (ZiG)' },
+                    { id: 'ZAR_CASH', label: '💵 Cash (Rand R)' },
+                    { id: 'ECOCASH_USD', label: '📱 EcoCash USD (ContiPay)' },
+                    { id: 'ECOCASH_ZIG', label: '📱 EcoCash ZiG (ContiPay)' },
                   ].map((t) => (
                     <button
                       key={t.id}
                       type="button"
                       className={`btn btn-sm ${tenderType === t.id ? 'btn-primary' : 'btn-outline'}`}
-                      style={{ padding: '0.45rem 0.2rem', fontSize: '0.76rem', fontWeight: 700 }}
+                      style={{ padding: '0.45rem 0.3rem', fontSize: '0.75rem', fontWeight: 700, textAlign: 'center' }}
                       onClick={() => setTenderType(t.id as any)}
                     >
                       {t.label}
@@ -649,6 +716,11 @@ export function Pos() {
                 <div>Department: {receiptModal.department}</div>
                 <div>Customer: {receiptModal.customerName} {receiptModal.customerPhone}</div>
                 <div>Tender: {receiptModal.tenderType}</div>
+                {receiptModal.contipayRef && (
+                  <div style={{ color: '#15803d', fontWeight: 700 }}>
+                    ContiPay Ref: {receiptModal.contipayRef} (EcoCash Mobile)
+                  </div>
+                )}
                 <div style={{ borderBottom: '1px dashed #000', margin: '0.5rem 0' }} />
               </div>
 
@@ -708,6 +780,188 @@ export function Pos() {
               </button>
               <button type="button" className="btn btn-outline" onClick={() => setReceiptModal(null)}>
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ContiPay EcoCash USSD Push & PIN Prompt Modal */}
+      {showContiPayModal && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-card animate-scale-up" style={{ maxWidth: '440px', padding: '1.25rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span style={{ fontSize: '1.5rem' }}>📱</span>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--charcoal)' }}>ContiPay EcoCash Payment</h3>
+                  <span className="muted" style={{ fontSize: '0.72rem' }}>
+                    EcoCash USSD Push Gateway • Zimbabwe
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn btn-link btn-sm"
+                onClick={() => {
+                  if (!contiPayBusy) setShowContiPayModal(false);
+                }}
+                disabled={contiPayBusy}
+                style={{ fontSize: '1.1rem', color: 'var(--muted)' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Prompt Alert Message */}
+            <div style={{ background: '#ecfdf5', border: '1px solid #6ee7b7', borderRadius: '8px', padding: '0.75rem', marginBottom: '1rem', color: '#065f46', fontSize: '0.82rem' }}>
+              <div style={{ fontWeight: 800, marginBottom: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                <span>⚡</span> EcoCash Payment Request Sent!
+              </div>
+              <div>
+                Please check customer mobile phone for the EcoCash USSD push prompt, or prompt the customer to enter their 4-digit EcoCash authorization PIN below to complete transaction via ContiPay.
+              </div>
+            </div>
+
+            {/* Total Due in Selected Tender */}
+            <div style={{ background: 'var(--surface-alt)', border: '1.5px solid var(--line)', padding: '0.75rem', borderRadius: '8px', textAlign: 'center', marginBottom: '1rem' }}>
+              <span className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase', fontWeight: 700 }}>
+                Total Due ({tenderType === 'ECOCASH_ZIG' ? 'ZiG' : 'USD'})
+              </span>
+              <div style={{ fontSize: '1.75rem', fontWeight: 900, color: 'var(--emerald)', margin: '0.15rem 0' }}>
+                {tenderType === 'ECOCASH_ZIG' ? `${totalZig.toFixed(2)} ZiG` : `$${totalUsd.toFixed(2)}`}
+              </div>
+              <div className="muted" style={{ fontSize: '0.72rem' }}>
+                Customer: <strong>{customerName || 'Walk-In Customer'}</strong>
+              </div>
+            </div>
+
+            {contiPayError && (
+              <div className="banner danger animate-scale-up" style={{ marginBottom: '0.85rem', padding: '0.5rem 0.75rem', fontSize: '0.82rem' }}>
+                {contiPayError}
+              </div>
+            )}
+
+            {/* Phone Number Input */}
+            <div style={{ marginBottom: '0.85rem' }}>
+              <label style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '0.25rem' }}>
+                Customer EcoCash Number (077... / 078...) *
+              </label>
+              <input
+                type="tel"
+                value={contiPayPhone}
+                onChange={(e) => setContiPayPhone(e.target.value)}
+                placeholder="e.g. 0771234567 or 0782345678"
+                disabled={contiPayBusy}
+                style={{ width: '100%', padding: '0.55rem', fontSize: '0.92rem', borderRadius: '6px' }}
+              />
+            </div>
+
+            {/* 4-Digit PIN Box */}
+            <div style={{ marginBottom: '1rem', textAlign: 'center' }}>
+              <label style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '0.4rem' }}>
+                Customer 4-Digit EcoCash PIN *
+              </label>
+              <div style={{ display: 'flex', justifyContent: 'center', gap: '0.6rem', marginBottom: '0.5rem' }}>
+                {[0, 1, 2, 3].map((idx) => {
+                  const hasDigit = contiPayPin.length > idx;
+                  return (
+                    <div
+                      key={idx}
+                      style={{
+                        width: '46px',
+                        height: '48px',
+                        border: hasDigit ? '2.5px solid var(--emerald)' : '2px solid var(--line)',
+                        borderRadius: '8px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '1.4rem',
+                        fontWeight: 900,
+                        background: hasDigit ? '#ecfdf5' : 'var(--surface)',
+                        color: 'var(--charcoal)',
+                      }}
+                    >
+                      {hasDigit ? '●' : ''}
+                    </div>
+                  );
+                })}
+              </div>
+              <span className="muted" style={{ fontSize: '0.72rem' }}>
+                Protected with 256-bit ContiPay TLS Banking Encryption
+              </span>
+            </div>
+
+            {/* Till Keypad for Fast Pin Entry */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(3, 1fr)',
+                gap: '0.35rem',
+                maxWidth: '260px',
+                margin: '0 auto 1.25rem',
+              }}
+            >
+              {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫'].map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  disabled={contiPayBusy}
+                  className="btn btn-secondary"
+                  style={{
+                    padding: '0.65rem 0',
+                    fontSize: '1.1rem',
+                    fontWeight: 800,
+                    borderRadius: '6px',
+                    color: k === 'C' ? 'var(--danger)' : undefined,
+                  }}
+                  onClick={() => {
+                    if (k === 'C') {
+                      setContiPayPin('');
+                    } else if (k === '⌫') {
+                      setContiPayPin((prev) => prev.slice(0, -1));
+                    } else if (contiPayPin.length < 4) {
+                      setContiPayPin((prev) => prev + k);
+                    }
+                  }}
+                >
+                  {k}
+                </button>
+              ))}
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={contiPayBusy || contiPayPin.length !== 4 || !contiPayPhone.trim()}
+                onClick={handleContiPayAuthorize}
+                style={{
+                  flex: 1,
+                  padding: '0.75rem',
+                  fontSize: '0.98rem',
+                  fontWeight: 800,
+                  background: 'linear-gradient(135deg, var(--zim-green-700), var(--zim-green-800))',
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                }}
+              >
+                {contiPayBusy ? (
+                  <span>Contacting ContiPay Gateway…</span>
+                ) : (
+                  <span>Authorize ContiPay Payment</span>
+                )}
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline"
+                disabled={contiPayBusy}
+                onClick={() => setShowContiPayModal(false)}
+              >
+                Cancel
               </button>
             </div>
           </div>

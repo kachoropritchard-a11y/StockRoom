@@ -10,7 +10,7 @@ import {
 import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
-import { formatBulkStock } from '../bulkStock';
+import { formatBulkStock, formatUnitCount, getSingularForm, getPluralForm } from '../bulkStock';
 
 type IntakeSubTab = 'intake' | 'expiry' | 'serials' | 'history' | 'creditors';
 
@@ -277,12 +277,12 @@ export function StockIntake() {
       ].filter(Boolean);
 
       const breakdownParts: string[] = [];
-      if (bulkQtyNum > 0) breakdownParts.push(`${bulkQtyNum} ${selectedUnitObj?.unit || 'bulk packs'}`);
-      if (singlesAsideNum > 0) breakdownParts.push(`${singlesAsideNum} singles aside (broken bulk)`);
-      const breakdownText = breakdownParts.join(' + ') || `${totalSinglesAdded} ${selectedProduct?.baseUnit ?? 'units'}`;
+      if (bulkQtyNum > 0) breakdownParts.push(formatUnitCount(bulkQtyNum, selectedUnitObj?.unit || 'bulk pack'));
+      if (singlesAsideNum > 0) breakdownParts.push(`${formatUnitCount(singlesAsideNum, 'single')} aside (broken bulk)`);
+      const breakdownText = breakdownParts.join(' + ') || formatUnitCount(totalSinglesAdded, selectedProduct?.baseUnit ?? 'unit');
 
       setMsg(
-        `✓ Stock Intake #${res.document.id} (${ref}) posted: ${breakdownText} (+${totalSinglesAdded} ${selectedProduct?.baseUnit ?? 'units'} total) credited to inventory!${
+        `✓ Stock Intake #${res.document.id} (${ref}) posted: ${breakdownText} (+${formatUnitCount(totalSinglesAdded, selectedProduct?.baseUnit ?? 'unit')} total) credited to inventory!${
           extras.length > 0 ? ` (${extras.join(', ')})` : ''
         }`,
       );
@@ -683,7 +683,7 @@ export function StockIntake() {
                   />
                   {factor > 1 && singlesAsideNum >= factor && (
                     <div style={{ marginTop: '0.3rem', fontSize: '0.78rem', color: 'var(--accent, #0284c7)' }}>
-                      💡 {singlesAsideNum} singles can make {Math.floor(singlesAsideNum / factor)} full {selectedUnitObj?.unit} + {singlesAsideNum % factor} singles aside.{' '}
+                      💡 {formatUnitCount(singlesAsideNum, 'single')} can make {formatUnitCount(Math.floor(singlesAsideNum / factor), selectedUnitObj?.unit || 'bulk pack')} + {formatUnitCount(singlesAsideNum % factor, 'single')} aside.{' '}
                       <button
                         type="button"
                         className="btn btn-secondary btn-sm"
@@ -741,7 +741,7 @@ export function StockIntake() {
                     />
                     {quickTotalSingles && (
                       <span style={{ color: 'var(--emerald)', fontWeight: 600 }}>
-                        = {bulkQtyNum} {selectedUnitObj?.unit || 'packs'} + {singlesAsideNum} singles aside
+                        = {formatUnitCount(bulkQtyNum, selectedUnitObj?.unit || 'pack')} + {formatUnitCount(singlesAsideNum, 'single')} aside
                       </span>
                     )}
                   </div>
@@ -867,10 +867,10 @@ export function StockIntake() {
                       📦 Bulk Packages Received
                     </span>
                     <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--charcoal)', marginTop: '0.2rem' }}>
-                      {bulkQtyNum} {selectedUnitObj?.unit || 'Packs'}
+                      {formatUnitCount(bulkQtyNum, selectedUnitObj?.unit || 'Pack')}
                     </div>
                     <span className="muted" style={{ fontSize: '0.74rem' }}>
-                      {(bulkQtyNum * factor).toLocaleString()} singles in complete packages
+                      {formatUnitCount(bulkQtyNum * factor, selectedProduct?.baseUnit ?? 'single')} in complete packages
                     </span>
                   </div>
 
@@ -879,11 +879,11 @@ export function StockIntake() {
                       🧩 Singles Aside (Broken Bulk)
                     </span>
                     <div style={{ fontSize: '1.4rem', fontWeight: 800, color: singlesAsideNum > 0 ? 'var(--accent, #0284c7)' : 'var(--muted)', marginTop: '0.2rem' }}>
-                      {singlesAsideNum} {selectedProduct?.baseUnit ?? 'singles'}
+                      {formatUnitCount(singlesAsideNum, selectedProduct?.baseUnit ?? 'single')}
                     </div>
                     <div style={{ fontSize: '0.74rem', fontWeight: 600, color: singlesAsideNum > 0 ? 'var(--accent, #0284c7)' : 'var(--emerald)', marginTop: '0.1rem' }}>
                       {singlesAsideNum > 0
-                        ? `⚡ Broken Bulk: ${singlesAsideNum} loose singles not enough for a full ${selectedUnitObj?.unit ?? 'pack'} (${singlesAsideNum}/${factor}). Separated aside for loose shelf retail!`
+                        ? `⚡ Broken Bulk: ${formatUnitCount(singlesAsideNum, 'loose single')} not enough for a full ${getSingularForm(selectedUnitObj?.unit ?? 'pack')} (${singlesAsideNum}/${factor}). Separated aside for loose shelf retail!`
                         : `✓ Clean bulk intake (0 singles aside)`}
                     </div>
                   </div>
@@ -893,10 +893,10 @@ export function StockIntake() {
                       📊 Net Shelf Stock Credited
                     </span>
                     <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--emerald)', marginTop: '0.2rem' }}>
-                      +{totalSinglesAdded.toLocaleString()} {selectedProduct?.baseUnit ?? 'units'}
+                      +{formatUnitCount(totalSinglesAdded, selectedProduct?.baseUnit ?? 'unit')}
                     </div>
                     <span className="muted" style={{ fontSize: '0.74rem' }}>
-                      Ratio: 1 {selectedUnitObj?.unit || 'pack'} = {factor} {selectedProduct?.baseUnit}
+                      Ratio: 1 {getSingularForm(selectedUnitObj?.unit || 'pack')} = {factor} {getPluralForm(selectedProduct?.baseUnit ?? 'unit')}
                     </span>
                   </div>
 

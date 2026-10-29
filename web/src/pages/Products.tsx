@@ -5,7 +5,7 @@ import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
 import { ProductRetailIcon } from '../components/Icons';
-import { formatBulkStock, formatBulkReorder } from '../bulkStock';
+import { formatBulkStock, formatBulkReorder, formatUnitCount } from '../bulkStock';
 
 const PAGE_SIZE = 10;
 type ProductTab = 'catalog' | 'categories' | 'packaging';
@@ -691,7 +691,7 @@ export function Products() {
                                 const b = formatBulkStock(p.totalStock, p.packagings, p.baseUnit);
                                 return b.hasBulkPackaging && b.singles > 0 && b.fullPacks > 0 ? (
                                   <span className="badge badge-info" style={{ marginLeft: '0.4rem', fontSize: '0.72rem' }}>
-                                    {b.singles} singles aside
+                                    {formatUnitCount(b.singles, 'single')} aside
                                   </span>
                                 ) : null;
                               })()}
@@ -818,7 +818,7 @@ export function Products() {
                                   const b = formatBulkStock(p.totalStock, p.packagings, p.baseUnit);
                                   return b.hasBulkPackaging && b.singles > 0 && b.fullPacks > 0 ? (
                                     <span className="badge badge-info" style={{ marginLeft: '4px', fontSize: '0.7rem' }}>
-                                      {b.singles} singles aside
+                                      {formatUnitCount(b.singles, 'single')} aside
                                     </span>
                                   ) : null;
                                 })()}
