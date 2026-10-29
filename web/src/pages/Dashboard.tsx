@@ -154,10 +154,6 @@ export function Dashboard() {
   if (!data && !error) return <Spinner label="Loading comprehensive stock dashboard" />;
 
   // 1. Catalog & Valuation Metrics
-  const totalSkus = data?.products ?? products.length ?? balances.length;
-  const lowStockCount = data?.lowStockCount ?? 0;
-  const healthySkus = Math.max(0, totalSkus - lowStockCount);
-  const healthPct = totalSkus > 0 ? Math.round((healthySkus / totalSkus) * 100) : 100;
   const totalUnitsAll =
     data?.totalStockUnits !== undefined
       ? data.totalStockUnits
@@ -166,6 +162,37 @@ export function Dashboard() {
     data?.totalStockValue !== undefined
       ? data.totalStockValue
       : (data?.warehouseSummary ?? []).reduce((acc, w) => acc + w.stockValue, 0);
+
+  const totalSkus = data?.products ?? products.length ?? balances.length;
+
+  // Real on-shelf stock health evaluation:
+  // Out-of-stock products: registered SKUs with 0 or negative stock
+  const outOfStockCount =
+    products.length > 0
+      ? products.filter((p) => (p.totalStock ?? 0) <= 0).length
+      : totalUnitsAll === 0 && totalSkus > 0
+        ? totalSkus
+        : 0;
+
+  // Low-stock products: positive stock, but at or below reorder level
+  const effectiveLowStock =
+    products.length > 0
+      ? products.filter((p) => (p.totalStock ?? 0) > 0 && (p.totalStock ?? 0) <= p.reorderLevel && p.reorderLevel > 0).length
+      : data?.lowStockCount ?? 0;
+
+  // Healthy products: strictly positive stock AND above reorder level
+  const healthySkus =
+    totalUnitsAll === 0 || totalSkus === 0
+      ? 0
+      : products.length > 0
+        ? products.filter((p) => (p.totalStock ?? 0) > 0 && ((p.totalStock ?? 0) > p.reorderLevel || p.reorderLevel === 0)).length
+        : Math.max(0, totalSkus - effectiveLowStock - outOfStockCount);
+
+  // Health %: If there is zero stock or zero SKUs, health is strictly 0%
+  const healthPct =
+    totalUnitsAll === 0 || totalSkus === 0
+      ? 0
+      : Math.min(100, Math.max(0, Math.round((healthySkus / totalSkus) * 100)));
 
   // 2. Batch & FEFO Expiry Calculations
   const expiredBatches = batches.filter((b) => b.daysRemaining <= 0 || b.status === 'EXPIRED');
@@ -373,8 +400,10 @@ export function Dashboard() {
     `⏳ Expiring Batches: ${expiredBatches.length} expired, ${criticalBatches.length} critical (≤30d)`,
     `🔢 Serial/IMEI Units: ${inStockSerials.length} in stock`,
     `🤝 Customer Balances: ${pendingLaybys.length} Lay-bys (${formatMoney(totalLaybyValue)}), ${activeDebtors.length} Chikwereti Debts (${formatMoney(totalDebtorBalance)})`,
-    `⚠️ Low-Stock Items (${lowStockCount}):`,
-    lowItemsList || '• All items healthy above reorder level ✓',
+    `⚠️ Stock Attention Items (${outOfStockCount > 0 ? `${outOfStockCount} Out, ` : ''}${effectiveLowStock} Low):`,
+    totalUnitsAll === 0
+      ? '• No inventory currently on hand (0 base units). Stock intake required.'
+      : lowItemsList || '• All active items are above reorder level ✓',
   ].join('\n');
 
   return (
@@ -420,7 +449,7 @@ export function Dashboard() {
         <article className="ops-kpi-card">
           <div className="ops-kpi-top">
             <span className="ops-kpi-title">Stock Valuation</span>
-            <span className="ops-kpi-trend">{totalSkus} SKUs</span>
+            <span className="ops-kpi-trend">{totalSkus} {totalSkus === 1 ? 'SKU' : 'SKUs'}</span>
           </div>
           <div className="ops-kpi-Mid">
             <div>
@@ -433,13 +462,13 @@ export function Dashboard() {
               <path
                 d="M2 30 L18 25 L32 28 L48 16 L63 21 L78 10 L94 14 L108 4"
                 fill="none"
-                stroke="var(--zim-green-700)"
+                stroke={totalValUsd > 0 ? 'var(--zim-green-700)' : 'var(--line)'}
                 strokeWidth="2.5"
                 strokeLinecap="round"
               />
               <path
                 d="M2 30 L18 25 L32 28 L48 16 L63 21 L78 10 L94 14 L108 4 L108 38 L2 38 Z"
-                fill="var(--accent-indigo-soft)"
+                fill={totalValUsd > 0 ? 'var(--accent-indigo-soft)' : 'transparent'}
               />
             </svg>
           </div>
@@ -457,9 +486,11 @@ export function Dashboard() {
             {totalUnitsAll.toLocaleString()} <small style={{ fontSize: '0.85rem' }}>base units</small>
           </div>
           <div className="ops-dot-strip">
-            <span className="dot active" aria-hidden="true" />
+            <span className={`dot ${totalUnitsAll > 0 ? 'active' : ''}`} aria-hidden="true" />
             <span className="ops-dot-caption">
-              Across all storefloors &amp; storage yards
+              {totalUnitsAll > 0
+                ? 'Across all storefloors & storage yards'
+                : 'Zero stock in system (Stock Intake required)'}
             </span>
           </div>
         </article>
@@ -483,7 +514,7 @@ export function Dashboard() {
           </div>
           <div className="ops-dot-strip">
             <span className="ops-dot-caption">
-              {data?.transfersUnits ?? 0} units moved between departments
+              {(data?.transfersUnits ?? 0).toLocaleString()} units moved between departments
             </span>
           </div>
         </article>
@@ -493,12 +524,32 @@ export function Dashboard() {
           <div>
             <span className="ops-kpi-title">Shelf Health</span>
             <div className="ops-gauge-sub">
-              <strong>{healthPct}% Optimal</strong>
-              <span>({lowStockCount} low · {expiredBatches.length} expired)</span>
+              <strong>
+                {totalUnitsAll === 0 || totalSkus === 0
+                  ? '0% (No Stock)'
+                  : healthPct >= 80
+                    ? `${healthPct}% Optimal`
+                    : healthPct >= 50
+                      ? `${healthPct}% Moderate`
+                      : `${healthPct}% Critical`}
+              </strong>
+              <span>
+                {totalUnitsAll === 0 || totalSkus === 0
+                  ? '(Empty inventory)'
+                  : `(${outOfStockCount > 0 ? `${outOfStockCount} out · ` : ''}${effectiveLowStock} low · ${expiredBatches.length} expired)`}
+              </span>
             </div>
             <div className="ops-gauge-legend">
-              <span className="warn">▲ {lowStockCount} Low</span>
-              <span className="opt">● {healthySkus} In Stock</span>
+              {totalUnitsAll === 0 ? (
+                <span className="warn" style={{ color: 'var(--danger)' }}>▲ 0 In Stock (Empty)</span>
+              ) : (
+                <>
+                  {outOfStockCount + effectiveLowStock > 0 && (
+                    <span className="warn">▲ {outOfStockCount + effectiveLowStock} Restock</span>
+                  )}
+                  <span className="opt">● {healthySkus} In Stock</span>
+                </>
+              )}
             </div>
           </div>
           <div className="ops-gauge-wrap" aria-hidden="true">
@@ -513,7 +564,15 @@ export function Dashboard() {
               <path
                 d="M 12 50 A 38 38 0 0 1 88 50"
                 fill="none"
-                stroke="var(--zim-green-600)"
+                stroke={
+                  totalUnitsAll === 0 || healthPct === 0
+                    ? 'var(--line)'
+                    : healthPct < 50
+                      ? '#ef4444'
+                      : healthPct < 80
+                        ? '#f59e0b'
+                        : 'var(--zim-green-600)'
+                }
                 strokeWidth="10"
                 strokeLinecap="round"
                 strokeDasharray="120"
@@ -522,7 +581,15 @@ export function Dashboard() {
             </svg>
             <div className="ops-gauge-center">
               <strong>{healthPct}%</strong>
-              <span>Healthy</span>
+              <span>
+                {totalUnitsAll === 0
+                  ? 'No Stock'
+                  : healthPct >= 80
+                    ? 'Healthy'
+                    : healthPct >= 50
+                      ? 'Moderate'
+                      : 'Critical'}
+              </span>
             </div>
           </div>
         </article>
@@ -637,9 +704,22 @@ export function Dashboard() {
                     <div style={{ fontSize: '1.2rem', fontWeight: 800 }}>{categories.length}</div>
                   </div>
                   <div className="subcard" style={{ padding: '0.6rem' }}>
-                    <span className="muted" style={{ fontSize: '0.7rem', textTransform: 'uppercase' }}>Low Stock</span>
-                    <div style={{ fontSize: '1.2rem', fontWeight: 800, color: lowStockCount > 0 ? 'var(--warning)' : 'var(--emerald)' }}>
-                      {lowStockCount}
+                    <span className="muted" style={{ fontSize: '0.7rem', textTransform: 'uppercase' }}>
+                      {outOfStockCount > 0 ? 'Out of Stock' : 'Low Stock'}
+                    </span>
+                    <div
+                      style={{
+                        fontSize: '1.2rem',
+                        fontWeight: 800,
+                        color:
+                          outOfStockCount > 0
+                            ? 'var(--danger)'
+                            : effectiveLowStock > 0
+                              ? 'var(--warning)'
+                              : 'var(--emerald)',
+                      }}
+                    >
+                      {outOfStockCount > 0 ? outOfStockCount : effectiveLowStock}
                     </div>
                   </div>
                 </div>

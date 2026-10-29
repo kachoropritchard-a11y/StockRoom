@@ -327,27 +327,6 @@ export function Products() {
         </div>
       </div>
 
-      {/* Helpful context banner explaining where Batch/Expiry & Layby are managed */}
-      <div className="card" style={{ marginBottom: '1.25rem', backgroundColor: 'var(--card-subtle-bg, rgba(0,0,0,0.02))' }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-            <span style={{ fontSize: '1.4rem' }}>💡</span>
-            <div style={{ fontSize: '0.875rem', lineHeight: 1.4 }}>
-              <strong>Looking for Batch &amp; Expiry dates or Serial / IMEI numbers?</strong>
-              <div>These are embedded directly in <strong>Stock Intake</strong> when receiving new goods. Customer lay-by orders &amp; till small-change slips are in the dedicated <strong>Lay-by &amp; Customer Change</strong> tab.</div>
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <Link to="/inventory/intake" className="btn btn-sm btn-outline">
-              📦 Go to Stock Intake
-            </Link>
-            <Link to="/inventory/layby-and-change" className="btn btn-sm btn-outline">
-              🪙 Lay-by &amp; Change
-            </Link>
-          </div>
-        </div>
-      </div>
-
       {error && <p className="form-error" role="alert">{error}</p>}
       {msg && <p className="form-success" role="status">{msg}</p>}
 
