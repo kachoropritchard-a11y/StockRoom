@@ -567,7 +567,7 @@ export function StockIntake() {
                   >
                     {products.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name} ({p.sku}) — Current Stock: {p.totalStock} {p.baseUnit}
+                        {p.name} ({p.sku}) — Current Stock: {formatBulkStock(p.totalStock, p.packagings, p.baseUnit).text}
                       </option>
                     ))}
                   </select>

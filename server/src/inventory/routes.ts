@@ -3962,6 +3962,25 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     const warehouses = db.prepare('SELECT id, name FROM warehouses WHERE branch_id IN (SELECT id FROM branches WHERE organisation_id = ?) AND active = 1').all(orgId) as { id: number; name: string }[];
     const allDepartments = db.prepare('SELECT id, name FROM departments WHERE branch_id IN (SELECT id FROM branches WHERE organisation_id = ?) AND active = 1').all(orgId) as { id: number; name: string }[];
 
+    const pkgRows = db
+      .prepare(
+        `SELECT g.id, g.product_id AS productId, g.unit_id AS unitId, u.code AS unit, g.factor_milli
+           FROM product_packagings g
+           JOIN units_of_measure u ON u.id = g.unit_id
+          WHERE g.product_id IN (SELECT id FROM products WHERE organisation_id = ?)`
+      )
+      .all(orgId) as { id: number; productId: number; unitId: number; unit: string; factor_milli: number }[];
+    const packagingsByProduct: Record<number, { id: number; unitId: number; unit: string; factor: number }[]> = {};
+    for (const pkg of pkgRows) {
+      if (!packagingsByProduct[pkg.productId]) packagingsByProduct[pkg.productId] = [];
+      packagingsByProduct[pkg.productId].push({
+        id: pkg.id,
+        unitId: pkg.unitId,
+        unit: pkg.unit,
+        factor: fromMilli(pkg.factor_milli),
+      });
+    }
+
     return {
       posDepartmentId: posDeptId,
       posDepartmentName: deptName,
@@ -3975,6 +3994,7 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
         name: r.name,
         unitId: r.unitId,
         unitCode: r.unitCode,
+        packagings: packagingsByProduct[r.id] || [],
         unitCost: fromCents(r.unit_cost_cents),
         sellingPrice: fromCents(r.selling_price_cents || Math.round(r.unit_cost_cents * 1.3)),
         wholesalePrice: fromCents(r.wholesale_price_cents || r.selling_price_cents),

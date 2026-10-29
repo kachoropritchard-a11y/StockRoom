@@ -4,6 +4,7 @@ import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs
 import { QuickTransferModal } from '../components/QuickTransferModal';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
+import { formatBulkStock } from '../bulkStock';
 
 type TransferSubTab = 'transfer' | 'history';
 
@@ -245,7 +246,7 @@ export function Transfers() {
                 >
                   {products.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.name} ({p.sku}) — Total Store Stock: {p.totalStock} {p.baseUnit}
+                      {p.name} ({p.sku}) — Total Store Stock: {formatBulkStock(p.totalStock, p.packagings, p.baseUnit).text}
                     </option>
                   ))}
                 </select>
@@ -261,6 +262,11 @@ export function Transfers() {
                   onChange={(e) => setQty(e.target.value)}
                   required
                 />
+                {selectedProduct && (
+                  <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginTop: '0.25rem' }}>
+                    Available on hand: <strong>{formatBulkStock(selectedProduct.totalStock, selectedProduct.packagings, selectedProduct.baseUnit).text}</strong>
+                  </div>
+                )}
               </label>
 
               <label>

@@ -16,7 +16,7 @@ import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs
 import { QuickTransferModal } from '../components/QuickTransferModal';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
-import { formatBulkStock } from '../bulkStock';
+import { formatBulkStock, formatBulkReorder } from '../bulkStock';
 import {
   GoodsInIcon,
   QuickAdjustIcon,
@@ -394,7 +394,10 @@ export function Dashboard() {
 
   // WhatsApp Daily Stock Report
   const lowItemsList = (data?.lowStockItems ?? [])
-    .map((i) => `• ${i.productName} (${i.sku}): Only ${i.quantity} ${i.unit} left (Reorder at ${i.reorderLevel})`)
+    .map((i) => {
+      const matchProd = products.find((p) => p.sku === i.sku);
+      return `• ${i.productName} (${i.sku}): Only ${formatBulkStock(i.quantity, matchProd?.packagings, i.unit).text} left (Reorder at ${formatBulkReorder(i.reorderLevel, matchProd?.packagings, i.unit)})`;
+    })
     .join('\n');
   const whatsappText = [
     `🇿🇼 *GREAT ZIMBABWE STOCKROOM — COMPREHENSIVE STOCK SUMMARY*`,
@@ -1561,7 +1564,7 @@ export function Dashboard() {
                             {p.stock <= 0 ? (
                               <span className="status-pill danger">Out of Stock</span>
                             ) : p.isLowStock ? (
-                              <span className="status-pill warn">Low Stock (≤{p.reorderLevel})</span>
+                              <span className="status-pill warn">Low Stock (≤ {formatBulkReorder(p.reorderLevel, p.packagings, p.unit)})</span>
                             ) : (
                               <span className="status-pill optimal">In Stock</span>
                             )}

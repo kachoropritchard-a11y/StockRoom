@@ -29,10 +29,13 @@ export function formatBulkStock(
 
   const pkg = packagings[0];
   const factor = pkg.factor;
-  const fullPacks = Math.floor(roundedTotal / factor);
-  const singles = Math.round((roundedTotal % factor) * 1000) / 1000;
+  const isNeg = roundedTotal < 0;
+  const roundedAbs = Math.abs(roundedTotal);
+  const fullPacks = Math.floor(roundedAbs / factor);
+  const singles = Math.round((roundedAbs % factor) * 1000) / 1000;
+  const sign = isNeg ? '-' : '';
 
-  if (roundedTotal <= 0) {
+  if (roundedTotal === 0) {
     return {
       fullPacks: 0,
       singles: 0,
@@ -40,7 +43,7 @@ export function formatBulkStock(
       baseUnit,
       hasBulkPackaging: true,
       factor,
-      text: `0 ${baseUnit}`,
+      text: `0 ${pkg.unit} (0 ${baseUnit})`,
       shortText: `0 ${pkg.unit}`,
     };
   }
@@ -48,39 +51,49 @@ export function formatBulkStock(
   if (fullPacks === 0) {
     return {
       fullPacks: 0,
-      singles,
+      singles: isNeg ? -singles : singles,
       packUnit: pkg.unit,
       baseUnit,
       hasBulkPackaging: true,
       factor,
-      text: `${singles.toLocaleString()} ${baseUnit} (Singles aside)`,
-      shortText: `${singles} singles`,
+      text: `${sign}${singles.toLocaleString()} ${baseUnit} (${sign}${singles} singles aside)`,
+      shortText: `${sign}${singles} singles`,
     };
   }
 
   if (singles === 0) {
     return {
-      fullPacks,
+      fullPacks: isNeg ? -fullPacks : fullPacks,
       singles: 0,
       packUnit: pkg.unit,
       baseUnit,
       hasBulkPackaging: true,
       factor,
-      text: `${fullPacks.toLocaleString()} ${pkg.unit} (${roundedTotal.toLocaleString()} ${baseUnit})`,
-      shortText: `${fullPacks} ${pkg.unit}`,
+      text: `${sign}${fullPacks.toLocaleString()} ${pkg.unit} (${sign}${roundedAbs.toLocaleString()} ${baseUnit})`,
+      shortText: `${sign}${fullPacks} ${pkg.unit}`,
     };
   }
 
   return {
-    fullPacks,
-    singles,
+    fullPacks: isNeg ? -fullPacks : fullPacks,
+    singles: isNeg ? -singles : singles,
     packUnit: pkg.unit,
     baseUnit,
     hasBulkPackaging: true,
     factor,
-    text: `${fullPacks.toLocaleString()} ${pkg.unit} + ${singles} singles (${roundedTotal.toLocaleString()} ${baseUnit})`,
-    shortText: `${fullPacks} ${pkg.unit} + ${singles} singles`,
+    text: `${sign}${fullPacks.toLocaleString()} ${pkg.unit} + ${singles} singles (${sign}${roundedAbs.toLocaleString()} ${baseUnit})`,
+    shortText: `${sign}${fullPacks} ${pkg.unit} + ${singles} singles`,
   };
+}
+
+export function formatBulkReorder(
+  reorderLevel: number,
+  packagings?: { unit: string; factor: number }[],
+  baseUnit = 'units'
+): string {
+  if (reorderLevel <= 0) return `0 (No Reorder Threshold)`;
+  const b = formatBulkStock(reorderLevel, packagings, baseUnit);
+  return b.text;
 }
 
 export function computeIntakeBreakdown(opts: {

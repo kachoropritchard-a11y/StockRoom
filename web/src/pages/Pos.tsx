@@ -5,6 +5,7 @@ import { useAuth } from '../auth';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
 import { StorefloorIcon, CartIcon, PrinterIcon, CheckCircleIcon } from '../components/Icons';
+import { formatBulkStock } from '../bulkStock';
 
 interface CartItem {
   productId: number;
@@ -32,6 +33,7 @@ interface PosProduct {
   departmentId: number | null;
   departmentName: string;
   currentStock: number;
+  packagings?: { id: number; unitId: number; unit: string; factor: number }[];
 }
 
 export function Pos() {
@@ -393,7 +395,7 @@ export function Pos() {
                           {formatMoney(p.sellingPrice)}
                         </span>
                         <span style={{ fontSize: '0.74rem', color: isOutOfStock ? 'var(--danger)' : 'var(--emerald)', fontWeight: 600 }}>
-                          {p.currentStock} {p.unitCode}
+                          {formatBulkStock(p.currentStock, p.packagings, p.unitCode).text}
                         </span>
                       </div>
 

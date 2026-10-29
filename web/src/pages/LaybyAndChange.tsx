@@ -3,6 +3,7 @@ import { api, type ProductItem } from '../api';
 import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
+import { formatBulkStock } from '../bulkStock';
 
 type LaybySubTab = 'layby' | 'credit' | 'change';
 
@@ -549,13 +550,22 @@ export function LaybyAndChange() {
                           <div style={{ fontSize: '0.75rem', opacity: 0.7 }}>{l.warehouseName}</div>
                         </td>
                         <td style={{ textAlign: 'right' }}>
-                          {l.orderedQty} {l.unit}
+                          {(() => {
+                            const prod = products.find((p) => p.id === l.productId);
+                            return prod ? formatBulkStock(l.orderedQty, prod.packagings, l.unit).text : `${l.orderedQty} ${l.unit}`;
+                          })()}
                         </td>
                         <td style={{ textAlign: 'right', color: l.collectedQty > 0 ? 'var(--accent, #0284c7)' : undefined }}>
-                          {l.collectedQty} {l.unit}
+                          {(() => {
+                            const prod = products.find((p) => p.id === l.productId);
+                            return prod ? formatBulkStock(l.collectedQty, prod.packagings, l.unit).text : `${l.collectedQty} ${l.unit}`;
+                          })()}
                         </td>
                         <td style={{ textAlign: 'right', fontWeight: 700, color: l.remainingQty > 0 ? 'var(--warning, #eab308)' : 'var(--success, #16a34a)' }}>
-                          {l.remainingQty} {l.unit}
+                          {(() => {
+                            const prod = products.find((p) => p.id === l.productId);
+                            return prod ? formatBulkStock(l.remainingQty, prod.packagings, l.unit).text : `${l.remainingQty} ${l.unit}`;
+                          })()}
                         </td>
                         <td style={{ textAlign: 'right', fontWeight: 600 }}>
                           {formatMoney(l.totalPaid, 'USD')}
@@ -1019,7 +1029,7 @@ export function LaybyAndChange() {
                 >
                   {products.map((p) => (
                     <option key={p.id} value={p.id}>
-                      [{p.sku}] {p.name}
+                      [{p.sku}] {p.name} — Current Stock: {formatBulkStock(p.totalStock, p.packagings, p.baseUnit).text}
                     </option>
                   ))}
                 </select>

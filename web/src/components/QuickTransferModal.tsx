@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { api, type BalanceItem, type ProductItem } from '../api';
+import { formatBulkStock } from '../bulkStock';
 
 export interface QuickTransferModalProps {
   open: boolean;
@@ -128,7 +129,7 @@ export function QuickTransferModal({
             <select ref={firstSelectRef} value={productId} onChange={(e) => setProductId(e.target.value)} required>
               {products.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.sku} ({p.name})
+                  [{p.sku}] {p.name} — Store: {formatBulkStock(p.totalStock, p.packagings, p.baseUnit).text}
                 </option>
               ))}
             </select>
@@ -145,7 +146,7 @@ export function QuickTransferModal({
             </select>
             <div className="source-meter-row">
               <span className="muted" style={{ margin: 0, fontSize: '.8rem' }}>
-                Available in source: <strong>{sourceBalance} {selectedProduct?.baseUnit ?? 'units'}</strong>
+                Available in source: <strong>{formatBulkStock(sourceBalance, selectedProduct?.packagings, selectedProduct?.baseUnit).text}</strong>
               </span>
               <div className="stock-bar-track" style={{ maxWidth: '120px' }}>
                 <div className="stock-bar-fill optimal" style={{ width: `${capacityPct}%` }} />

@@ -5,7 +5,7 @@ import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
 import { ProductRetailIcon } from '../components/Icons';
-import { formatBulkStock } from '../bulkStock';
+import { formatBulkStock, formatBulkReorder } from '../bulkStock';
 
 const PAGE_SIZE = 10;
 type ProductTab = 'catalog' | 'categories' | 'packaging';
@@ -611,7 +611,7 @@ export function Products() {
                     </select>
                   </label>
                   <label>
-                    Reorder Level ({editingProduct.baseUnit})
+                    Reorder Level ({editingProduct.baseUnit}) · <em>{formatBulkReorder(Number(editReorderLevel) || 0, editingProduct.packagings, editingProduct.baseUnit)}</em>
                     <input type="number" step="0.001" min="0" value={editReorderLevel} onChange={(e) => setEditReorderLevel(e.target.value)} required />
                   </label>
                   <div className="form-actions">
@@ -707,7 +707,7 @@ export function Products() {
                             <div className={`stock-bar-fill ${statusClass}`} style={{ width: `${Math.max(8, pct)}%` }} />
                           </div>
                           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.74rem', color: 'var(--muted)', marginTop: '0.2rem' }}>
-                            <span>Reorder at: {p.reorderLevel} {p.baseUnit}</span>
+                            <span>Reorder at: <strong>{formatBulkReorder(p.reorderLevel, p.packagings, p.baseUnit)}</strong></span>
                             <span>
                               {firstPack ? `1 ${firstPack.unit} = ${firstPack.factor} ${p.baseUnit}` : `Base: ${p.baseUnit}`}
                             </span>
@@ -823,6 +823,9 @@ export function Products() {
                                   ) : null;
                                 })()}
                               </span>
+                              <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: '2px' }}>
+                                Reorder: <strong>{formatBulkReorder(p.reorderLevel, p.packagings, p.baseUnit)}</strong>
+                              </div>
                             </div>
                           </td>
                           <td>

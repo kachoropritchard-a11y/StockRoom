@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
-import { api, type BalanceItem, type InventoryReports } from '../api';
+import { api, type BalanceItem, type InventoryReports, type ProductItem } from '../api';
 import { portalPath, useAuth } from '../auth';
 import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { QuickTransferModal } from '../components/QuickTransferModal';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
+import { formatBulkStock, formatBulkReorder } from '../bulkStock';
 
 type DeptSubTab = 'zones' | 'stock';
 
@@ -23,6 +24,7 @@ export function Warehouses() {
   const [reports, setReports] = useState<InventoryReports | null>(null);
   const [selectedWhId, setSelectedWhId] = useState<number | undefined>(undefined);
   const [balances, setBalances] = useState<BalanceItem[]>([]);
+  const [products, setProducts] = useState<ProductItem[]>([]);
   const [transferTarget, setTransferTarget] = useState<{ productId?: number; warehouseId?: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
@@ -49,19 +51,21 @@ export function Warehouses() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [brRes, whRes, dpRes, repRes, balRes, posRes] = await Promise.all([
+      const [brRes, whRes, dpRes, repRes, balRes, posRes, prodRes] = await Promise.all([
         api.branches(),
         api.warehouses(),
         api.departments(),
         api.inventoryReports(),
         api.balances(selectedWhId),
         api.posCatalog().catch(() => null),
+        api.products('', { limit: 200 }).catch(() => ({ items: [] as ProductItem[] })),
       ]);
       setBranches(brRes);
       setWarehouses(whRes);
       setDepartments(dpRes);
       setReports(repRes);
       setBalances(balRes.items);
+      setProducts(prodRes.items);
       if (posRes) {
         setPosDeptId(posRes.posDepartmentId ?? null);
       }
@@ -476,6 +480,7 @@ export function Warehouses() {
                     </thead>
                     <tbody>
                       {balances.map((b) => {
+                        const matchProd = products.find((p) => p.id === b.productId);
                         const statusClass = b.quantity <= 0 ? 'out' : b.lowStock ? 'low' : 'optimal';
                         const pct = b.reorderLevel > 0 ? Math.min(100, Math.round((b.quantity / (b.reorderLevel * 2)) * 100)) : 80;
                         return (
@@ -488,13 +493,15 @@ export function Warehouses() {
                                 <div className="stock-bar-track">
                                   <div className={`stock-bar-fill ${statusClass}`} style={{ width: `${Math.max(8, pct)}%` }} />
                                 </div>
-                                <span className="stock-level-num">{b.quantity} {b.unit}</span>
+                                <span className="stock-level-num">
+                                  <strong>{formatBulkStock(b.quantity, matchProd?.packagings, b.unit).text}</strong>
+                                </span>
                               </div>
                             </td>
                             <td className="num">{formatMoney(b.stockValue)}</td>
                             <td>
                               <span className={`status-pill ${statusClass}`}>
-                                {b.lowStock ? `Low (≤ ${b.reorderLevel})` : 'In Stock'}
+                                {b.lowStock ? `Low (≤ ${formatBulkReorder(b.reorderLevel, matchProd?.packagings, b.unit)})` : 'In Stock'}
                               </span>
                             </td>
                             <td className="num">
@@ -561,6 +568,7 @@ export function Warehouses() {
                       </tr>
                     ) : (
                       balances.map((b) => {
+                        const matchProd = products.find((p) => p.id === b.productId);
                         const statusClass = b.quantity <= 0 ? 'out' : b.lowStock ? 'low' : 'optimal';
                         const pct = b.reorderLevel > 0 ? Math.min(100, Math.round((b.quantity / (b.reorderLevel * 2)) * 100)) : 80;
                         return (
@@ -573,13 +581,15 @@ export function Warehouses() {
                                 <div className="stock-bar-track">
                                   <div className={`stock-bar-fill ${statusClass}`} style={{ width: `${Math.max(8, pct)}%` }} />
                                 </div>
-                                <span className="stock-level-num">{b.quantity} {b.unit}</span>
+                                <span className="stock-level-num">
+                                  <strong>{formatBulkStock(b.quantity, matchProd?.packagings, b.unit).text}</strong>
+                                </span>
                               </div>
                             </td>
                             <td className="num">{formatMoney(b.stockValue)}</td>
                             <td>
                               <span className={`status-pill ${statusClass}`}>
-                                {b.lowStock ? `Low (≤ ${b.reorderLevel})` : 'In Stock'}
+                                {b.lowStock ? `Low (≤ ${formatBulkReorder(b.reorderLevel, matchProd?.packagings, b.unit)})` : 'In Stock'}
                               </span>
                             </td>
                             <td className="num">

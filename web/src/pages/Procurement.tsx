@@ -5,6 +5,7 @@ import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
+import { formatBulkStock } from '../bulkStock';
 
 type ReceivingSubTab = 'wizard' | 'landed' | 'creditors';
 
@@ -421,7 +422,7 @@ export function Procurement() {
                         >
                           {products.map((p) => (
                             <option key={p.id} value={p.id}>
-                              {p.name} ({p.sku}) — On shelf: {p.totalStock} {p.baseUnit}
+                              {p.name} ({p.sku}) — On shelf: {formatBulkStock(p.totalStock, p.packagings, p.baseUnit).text}
                             </option>
                           ))}
                         </select>

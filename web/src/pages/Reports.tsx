@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api, type InventoryReports } from '../api';
+import { api, type InventoryReports, type ProductItem } from '../api';
 import { portalPath, useAuth } from '../auth';
 import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
+import { formatBulkStock, formatBulkReorder } from '../bulkStock';
 
 type ReportSubTab = 'restock' | 'valuation' | 'sold' | 'writeoffs';
 type RestockFilter = 'all' | 'reorder' | 'out' | 'healthy';
@@ -18,6 +19,7 @@ export function Reports() {
   const [period, setPeriod] = useState<'today' | 'week' | 'month' | 'all'>('all');
   const [departments, setDepartments] = useState<{ id: number; name: string }[]>([]);
   const [selectedDeptId, setSelectedDeptId] = useState<number | 'all'>('all');
+  const [products, setProducts] = useState<ProductItem[]>([]);
 
   const [reports, setReports] = useState<InventoryReports | null>(null);
   const [exportSection, setExportSection] = useState<'goods_restock' | 'stock_sold' | 'stock_write_offs' | 'valuation' | 'low_stock' | 'movements' | 'audit_logs'>('goods_restock');
@@ -38,15 +40,17 @@ export function Reports() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [repRes, deptRes] = await Promise.all([
+      const [repRes, deptRes, prodRes] = await Promise.all([
         api.inventoryReports({
           period,
           departmentId: selectedDeptId === 'all' ? undefined : selectedDeptId,
         }),
         api.departments().catch(() => []),
+        api.products('', { limit: 200 }).catch(() => ({ items: [] as ProductItem[] })),
       ]);
       setReports(repRes);
       setDepartments(deptRes);
+      setProducts(prodRes.items);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -428,6 +432,7 @@ export function Reports() {
                 </thead>
                 <tbody>
                   {filteredRestockList.map((item) => {
+                    const prod = products.find((p) => p.id === item.productId || p.sku === item.sku);
                     const maxVal = Math.max(1, item.reorderLevel, item.currentStock);
                     const pct = Math.min(100, Math.round((item.currentStock / maxVal) * 100));
                     return (
@@ -444,15 +449,18 @@ export function Reports() {
                               />
                             </div>
                             <span className={`stock-level-num ${item.currentStock <= 0 ? 'badge-danger-text' : ''}`}>
-                              {item.currentStock} / {item.reorderLevel} {item.unit}
+                              <strong>{formatBulkStock(item.currentStock, prod?.packagings, item.unit).shortText}</strong> ({item.currentStock} {item.unit})
                             </span>
+                            <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: '2px' }}>
+                              Reorder: <strong>{formatBulkReorder(item.reorderLevel, prod?.packagings, item.unit)}</strong>
+                            </div>
                           </div>
                         </td>
                         <td className="num">
                           {item.shortfall > 0 ? (
-                            <strong className="neg">+{item.shortfall} {item.unit}</strong>
+                            <strong className="neg">+{formatBulkStock(item.shortfall, prod?.packagings, item.unit).text}</strong>
                           ) : (
-                            <span className="muted">0 {item.unit}</span>
+                            <span className="muted">0</span>
                           )}
                         </td>
                         <td className="num">{formatMoney(item.unitCost)}</td>
@@ -761,15 +769,17 @@ export function Reports() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredSoldItems.map((item) => (
-                    <tr key={item.productId}>
-                      <td>
-                        <strong>{item.productName}</strong> <code>({item.sku})</code>
-                      </td>
-                      <td>{item.departmentName}</td>
-                      <td className="num">
-                        <strong>{item.soldUnits.toLocaleString()} {item.unit}</strong>
-                      </td>
+                  {filteredSoldItems.map((item) => {
+                    const prod = products.find((p) => p.id === item.productId || p.sku === item.sku);
+                    return (
+                      <tr key={item.productId}>
+                        <td>
+                          <strong>{item.productName}</strong> <code>({item.sku})</code>
+                        </td>
+                        <td>{item.departmentName}</td>
+                        <td className="num">
+                          <strong>{formatBulkStock(item.soldUnits, prod?.packagings, item.unit).text}</strong>
+                        </td>
                       <td className="num">{formatMoney(item.avgSellingPrice)}</td>
                       <td className="num">{formatMoney(item.unitCost)}</td>
                       <td className="num" style={{ color: 'var(--emerald)' }}>
@@ -785,7 +795,8 @@ export function Reports() {
                         </span>
                       </td>
                     </tr>
-                  ))}
+                  );
+                })}
                   {filteredSoldItems.length === 0 && (
                     <tr>
                       <td colSpan={9} className="muted text-center" style={{ padding: '2rem' }}>

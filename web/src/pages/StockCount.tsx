@@ -5,7 +5,7 @@ import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs
 import { Spinner } from '../components/Spinner';
 import { useAuth } from '../auth';
 import { useZim } from '../zimContext';
-import { formatBulkStock } from '../bulkStock';
+import { formatBulkStock, formatBulkReorder } from '../bulkStock';
 
 type StockCountSubTab = 'count' | 'history' | 'reorder';
 
@@ -236,7 +236,7 @@ export function StockCount() {
                 <select value={selectedProdId} onChange={(e) => setSelectedProdId(e.target.value)} required>
                   {products.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.name} ({p.sku}) — Total: {p.totalStock} {p.baseUnit}
+                      {p.name} ({p.sku}) — Total: {formatBulkStock(p.totalStock, p.packagings, p.baseUnit).text}
                     </option>
                   ))}
                 </select>
@@ -481,11 +481,11 @@ export function StockCount() {
                             </strong>
                           </td>
                           <td className="num">
-                            {p.reorderLevel} {p.baseUnit}
+                            {formatBulkReorder(p.reorderLevel, p.packagings, p.baseUnit)}
                           </td>
                           <td className="num">
                             <span className="neg" style={{ color: 'var(--danger)', fontWeight: 700 }}>
-                              -{shortfall} {p.baseUnit}
+                              -{formatBulkStock(shortfall, p.packagings, p.baseUnit).text}
                             </span>
                           </td>
                           <td className="num">{formatMoney(p.unitCost)}</td>

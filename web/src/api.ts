@@ -1281,6 +1281,7 @@ export const api = {
         name: string;
         unitId: number;
         unitCode: string;
+        packagings?: { id: number; unitId: number; unit: string; factor: number }[];
         unitCost: number;
         sellingPrice: number;
         wholesalePrice: number;

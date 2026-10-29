@@ -11,6 +11,7 @@ import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
+import { formatBulkStock } from '../bulkStock';
 
 type MovementSubTab = 'history' | 'cashup' | 'shrinkage';
 type OpMode = 'issues' | 'transfers' | 'returns' | 'adjustments' | 'write-offs' | 'receipts';
@@ -468,7 +469,7 @@ export function Operations() {
               >
                 {products.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name} ({p.sku}) — Shelf: {p.totalStock} {p.baseUnit} | Sell: {formatMoney(p.sellingPrice ?? p.unitCost * 1.3)}
+                    {p.name} ({p.sku}) — Shelf: {formatBulkStock(p.totalStock, p.packagings, p.baseUnit).text} | Sell: {formatMoney(p.sellingPrice ?? p.unitCost * 1.3)}
                   </option>
                 ))}
               </select>
@@ -582,7 +583,7 @@ export function Operations() {
               >
                 {products.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.name} ({p.sku}) — On hand: {p.totalStock} {p.baseUnit}
+                    {p.name} ({p.sku}) — On hand: {formatBulkStock(p.totalStock, p.packagings, p.baseUnit).text}
                   </option>
                 ))}
               </select>
@@ -1098,7 +1099,7 @@ export function Operations() {
                 >
                   {products.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.name} ({p.sku}) — {p.totalStock} {p.baseUnit} on hand
+                      {p.name} ({p.sku}) — {formatBulkStock(p.totalStock, p.packagings, p.baseUnit).text} on hand
                     </option>
                   ))}
                 </select>
