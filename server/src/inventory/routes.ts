@@ -493,6 +493,38 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     const r = db.prepare('INSERT INTO units_of_measure (organisation_id, code, name) VALUES (?, ?, ?)').run(req.user!.organisationId, finalCode, b.name);
     return reply.code(201).send({ id: Number(r.lastInsertRowid), code: finalCode });
   });
+  app.patch('/api/units/:id', { preHandler: staff }, async (req) => {
+    const { id: rowId } = idParam.parse(req.params);
+    const orgId = req.user!.organisationId;
+    owned('units_of_measure', rowId, orgId, 'unit_not_found');
+    const b = z
+      .object({
+        code: z.string().trim().min(1).max(12).optional(),
+        name: z.string().trim().min(1).max(100).optional(),
+      })
+      .strict()
+      .parse(req.body);
+
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    if (b.code !== undefined) {
+      const coll = db
+        .prepare('SELECT id FROM units_of_measure WHERE organisation_id = ? AND code = ? COLLATE NOCASE AND id != ?')
+        .get(orgId, b.code, rowId);
+      if (coll) throw new AppError(409, 'unit_code_exists');
+      sets.push('code = ?');
+      params.push(b.code);
+    }
+    if (b.name !== undefined) {
+      sets.push('name = ?');
+      params.push(b.name);
+    }
+    if (sets.length > 0) {
+      params.push(rowId, orgId);
+      db.prepare(`UPDATE units_of_measure SET ${sets.join(', ')} WHERE id = ? AND organisation_id = ?`).run(...params);
+    }
+    return { ok: true };
+  });
 
   app.get('/api/suppliers', { preHandler: anyUser }, async (req) =>
     db.prepare('SELECT id, name, email, phone, active FROM suppliers WHERE organisation_id = ? ORDER BY name').all(req.user!.organisationId),
@@ -711,6 +743,15 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
     if (b.unitId === p.base_unit_id) throw new AppError(400, 'unit_is_base_unit');
     const r = db.prepare('INSERT INTO product_packagings (product_id, unit_id, factor_milli) VALUES (?, ?, ?)').run(rowId, b.unitId, toMilli(b.factor));
     return reply.code(201).send({ id: Number(r.lastInsertRowid) });
+  });
+  app.delete('/api/products/:id/packagings/:pkgId', { preHandler: staff }, async (req) => {
+    const { id: rowId } = idParam.parse(req.params);
+    const { pkgId } = z.object({ pkgId: z.coerce.number().int().positive() }).parse(req.params);
+    const orgId = req.user!.organisationId;
+    const p = db.prepare('SELECT id FROM products WHERE id = ? AND organisation_id = ?').get(rowId, orgId);
+    if (!p) throw new AppError(404, 'not_found');
+    db.prepare('DELETE FROM product_packagings WHERE id = ? AND product_id = ?').run(pkgId, rowId);
+    return { ok: true };
   });
 
   // ---------- stock postings ----------

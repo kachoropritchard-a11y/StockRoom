@@ -10,6 +10,7 @@ import {
 import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
+import { formatBulkStock } from '../bulkStock';
 
 type IntakeSubTab = 'intake' | 'expiry' | 'serials' | 'history' | 'creditors';
 
@@ -50,14 +51,22 @@ export function StockIntake() {
   const [invoiceRef, setInvoiceRef] = useState('');
   const [productId, setProductId] = useState('');
   const [unitId, setUnitId] = useState('');
-  const [quantity, setQuantity] = useState('10');
-  const [unitCost, setUnitCost] = useState('2.50');
+  const [bulkQuantity, setBulkQuantity] = useState('5');
+  const [singlesAside, setSinglesAside] = useState('0');
+  const [quickTotalSingles, setQuickTotalSingles] = useState('');
+  const [unitCost, setUnitCost] = useState('24.00');
   const [batchNum, setBatchNum] = useState('');
   const [expiryDate, setExpiryDate] = useState('');
   const [trackSerials, setTrackSerials] = useState(false);
   const [serialsText, setSerialsText] = useState('');
   const [imeisText, setImeisText] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // Quick Bulk Packaging inline setup
+  const [showQuickPkg, setShowQuickPkg] = useState(false);
+  const [quickPkgUnitId, setQuickPkgUnitId] = useState('');
+  const [quickPkgFactor, setQuickPkgFactor] = useState('12');
+  const [units, setUnits] = useState<{ id: number; code: string; name: string }[]>([]);
 
   // Filters for Expiry & Serials tabs
   const [expiryFilter, setExpiryFilter] = useState<'all' | 'expired' | 'soon' | 'near' | 'good'>('all');
@@ -73,7 +82,7 @@ export function StockIntake() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [pRes, wRes, sRes, poRes, smeRes, expRes, serRes] = await Promise.all([
+      const [pRes, wRes, sRes, poRes, smeRes, expRes, serRes, uRes] = await Promise.all([
         api.products('', { limit: 200 }),
         api.warehouses(),
         api.suppliers(),
@@ -81,6 +90,7 @@ export function StockIntake() {
         api.smeOverview().catch(() => null),
         api.batchExpiryTracker().catch(() => ({ items: [] })),
         api.stockSerials().catch(() => ({ items: [] })),
+        api.units().catch(() => []),
       ]);
       setProducts(pRes.items);
       setWarehouses(wRes);
@@ -89,6 +99,8 @@ export function StockIntake() {
       if (smeRes) setCreditors(smeRes.creditors || []);
       setBatchExpiryItems(expRes.items || []);
       setSerialItems(serRes.items || []);
+      setUnits(uRes);
+      if (uRes[0]) setQuickPkgUnitId((prev) => prev || String(uRes[0].id));
 
       if (wRes[0]) setWarehouseId((prev) => prev || String(wRes[0].id));
       if (sRes[0]) setSupplierId((prev) => prev || String(sRes[0].id));
@@ -96,8 +108,13 @@ export function StockIntake() {
         const first = pRes.items[0];
         setProductId((prev) => {
           if (prev) return prev;
-          setUnitId(String(first.baseUnitId));
-          setUnitCost(first.unitCost.toFixed(2));
+          if (first.packagings.length > 0) {
+            setUnitId(String(first.packagings[0].unitId));
+            setUnitCost((first.unitCost * first.packagings[0].factor).toFixed(2));
+          } else {
+            setUnitId(String(first.baseUnitId));
+            setUnitCost(first.unitCost.toFixed(2));
+          }
           return String(first.id);
         });
       }
@@ -116,24 +133,81 @@ export function StockIntake() {
   }, [load]);
 
   const selectedProduct = products.find((p) => String(p.id) === productId);
+  const bulkPackagings = selectedProduct?.packagings ?? [];
+  const hasBulkPackaging = bulkPackagings.length > 0;
+
+  // Enforce Bulk Packaging in Stock Intake: only bulk containers are selectable if configured!
   const availableUnits = selectedProduct
-    ? [
-        { id: selectedProduct.baseUnitId, label: `${selectedProduct.baseUnit} (Base Single Unit × 1)`, factor: 1 },
-        ...selectedProduct.packagings.map((g) => ({
-          id: g.unitId,
-          label: `${g.unit} (Bulk Pack × ${g.factor} ${selectedProduct.baseUnit})`,
-          factor: g.factor,
-        })),
-      ]
+    ? (hasBulkPackaging
+        ? bulkPackagings.map((g) => ({
+            id: g.unitId,
+            unit: g.unit,
+            factor: g.factor,
+            label: `📦 ${g.unit} (Bulk Pack × ${g.factor} ${selectedProduct.baseUnit})`,
+            isBulk: true,
+          }))
+        : [
+            {
+              id: selectedProduct.baseUnitId,
+              unit: selectedProduct.baseUnit,
+              factor: 1,
+              label: `⚠️ ${selectedProduct.baseUnit} (Base Single Unit - Bulk Packaging Not Configured)`,
+              isBulk: false,
+            },
+          ])
     : [];
 
   const selectedUnitObj = availableUnits.find((u) => String(u.id) === unitId) ?? availableUnits[0];
   const factor = selectedUnitObj?.factor ?? 1;
-  const qtyEntered = Math.max(0, Number(quantity) || 0);
+
+  const bulkQtyNum = Math.max(0, Number(bulkQuantity) || 0);
+  const singlesAsideNum = Math.max(0, Number(singlesAside) || 0);
   const costEntered = Math.max(0, Number(unitCost) || 0);
-  const totalCost = qtyEntered * costEntered;
-  const totalSinglesAdded = qtyEntered * factor;
-  const trueCostPerSingle = totalSinglesAdded > 0 ? totalCost / totalSinglesAdded : 0;
+
+  // If bulk packaging is used, unitCost represents price per bulk container
+  const trueCostPerSingle = factor > 0 ? costEntered / factor : costEntered;
+  const totalSinglesAdded = (bulkQtyNum * factor) + singlesAsideNum;
+  const totalCost = (bulkQtyNum * costEntered) + (singlesAsideNum * trueCostPerSingle);
+
+  function handleQuickTotalSinglesChange(val: string) {
+    setQuickTotalSingles(val);
+    const num = Math.max(0, Number(val) || 0);
+    if (factor > 1) {
+      const packs = Math.floor(num / factor);
+      const rem = Math.round((num % factor) * 1000) / 1000;
+      setBulkQuantity(String(packs));
+      setSinglesAside(String(rem));
+    } else {
+      setBulkQuantity(String(num));
+      setSinglesAside('0');
+    }
+  }
+
+  function bundleSinglesIntoPacks() {
+    if (factor <= 1 || singlesAsideNum < factor) return;
+    const additionalPacks = Math.floor(singlesAsideNum / factor);
+    const rem = Math.round((singlesAsideNum % factor) * 1000) / 1000;
+    setBulkQuantity(String(bulkQtyNum + additionalPacks));
+    setSinglesAside(String(rem));
+  }
+
+  async function handleCreateQuickPackaging(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedProduct || !quickPkgUnitId) return;
+    setError('');
+    try {
+      await api.addPackaging(selectedProduct.id, {
+        unitId: Number(quickPkgUnitId),
+        factor: Math.max(1, Number(quickPkgFactor) || 12),
+      });
+      setShowQuickPkg(false);
+      setMsg(`Bulk packaging rule saved for ${selectedProduct.name}.`);
+      await load();
+      setUnitId(String(quickPkgUnitId));
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
 
   // Days until expiry calculation
   const daysUntilExpiry = expiryDate
@@ -150,8 +224,8 @@ export function StockIntake() {
 
   async function handleFastIntake(e: FormEvent) {
     e.preventDefault();
-    if (!supplierId || !warehouseId || !productId || qtyEntered <= 0) {
-      setError('Please select supplier, store location, product, and positive quantity.');
+    if (!supplierId || !warehouseId || !productId || totalSinglesAdded <= 0) {
+      setError('Please select supplier, store location, product, and positive bulk packaging quantity or singles.');
       return;
     }
     setError('');
@@ -159,23 +233,41 @@ export function StockIntake() {
     setBusy(true);
     try {
       const ref = invoiceRef.trim() || `GRN-${Date.now().toString().slice(-6)}`;
+      const lines = [];
+
+      // Line 1: Bulk packaging line (if bulk packages entered)
+      if (bulkQtyNum > 0 && selectedUnitObj) {
+        lines.push({
+          productId: Number(productId),
+          warehouseId: Number(warehouseId),
+          unitId: Number(selectedUnitObj.id),
+          quantity: bulkQtyNum,
+          unitCost: costEntered,
+          batchNumber: batchNum.trim() || undefined,
+          expiryDate: expiryDate.trim() || undefined,
+          serials: enteredSerials.length > 0 ? enteredSerials : undefined,
+          imeis: enteredImeis.length > 0 ? enteredImeis : undefined,
+        });
+      }
+
+      // Line 2: Singles aside line (if loose remainder units entered that don't make up a full bulk container)
+      if (singlesAsideNum > 0 && selectedProduct) {
+        lines.push({
+          productId: Number(productId),
+          warehouseId: Number(warehouseId),
+          unitId: Number(selectedProduct.baseUnitId),
+          quantity: singlesAsideNum,
+          unitCost: trueCostPerSingle,
+          batchNumber: batchNum.trim() || undefined,
+          expiryDate: expiryDate.trim() || undefined,
+        });
+      }
+
       const res = await api.postStock('receipts', {
         warehouseId: Number(warehouseId),
         supplierId: Number(supplierId),
         reference: ref,
-        lines: [
-          {
-            productId: Number(productId),
-            warehouseId: Number(warehouseId),
-            unitId: Number(unitId),
-            quantity: qtyEntered,
-            unitCost: costEntered,
-            batchNumber: batchNum.trim() || undefined,
-            expiryDate: expiryDate.trim() || undefined,
-            serials: enteredSerials.length > 0 ? enteredSerials : undefined,
-            imeis: enteredImeis.length > 0 ? enteredImeis : undefined,
-          },
-        ],
+        lines,
       });
 
       const extras = [
@@ -184,8 +276,13 @@ export function StockIntake() {
         enteredSerials.length > 0 ? `${enteredSerials.length} Serials / IMEIs logged` : null,
       ].filter(Boolean);
 
+      const breakdownParts: string[] = [];
+      if (bulkQtyNum > 0) breakdownParts.push(`${bulkQtyNum} ${selectedUnitObj?.unit || 'bulk packs'}`);
+      if (singlesAsideNum > 0) breakdownParts.push(`${singlesAsideNum} singles aside (broken bulk)`);
+      const breakdownText = breakdownParts.join(' + ') || `${totalSinglesAdded} ${selectedProduct?.baseUnit ?? 'units'}`;
+
       setMsg(
-        `✓ Stock Intake #${res.document.id} (${ref}) posted: +${totalSinglesAdded} ${selectedProduct?.baseUnit ?? 'units'} automatically credited to inventory!${
+        `✓ Stock Intake #${res.document.id} (${ref}) posted: ${breakdownText} (+${totalSinglesAdded} ${selectedProduct?.baseUnit ?? 'units'} total) credited to inventory!${
           extras.length > 0 ? ` (${extras.join(', ')})` : ''
         }`,
       );
@@ -195,6 +292,7 @@ export function StockIntake() {
       setSerialsText('');
       setImeisText('');
       setTrackSerials(false);
+      setQuickTotalSingles('');
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -453,8 +551,16 @@ export function StockIntake() {
                       setProductId(id);
                       const p = products.find((x) => String(x.id) === id);
                       if (p) {
-                        setUnitId(String(p.baseUnitId));
-                        setUnitCost(p.unitCost.toFixed(2));
+                        if (p.packagings.length > 0) {
+                          setUnitId(String(p.packagings[0].unitId));
+                          setUnitCost((p.unitCost * p.packagings[0].factor).toFixed(2));
+                        } else {
+                          setUnitId(String(p.baseUnitId));
+                          setUnitCost(p.unitCost.toFixed(2));
+                        }
+                        setBulkQuantity('5');
+                        setSinglesAside('0');
+                        setQuickTotalSingles('');
                       }
                     }}
                     required
@@ -467,8 +573,76 @@ export function StockIntake() {
                   </select>
                 </label>
 
+                {!hasBulkPackaging && selectedProduct && (
+                  <div
+                    style={{
+                      gridColumn: '1 / -1',
+                      padding: '0.75rem 1rem',
+                      background: 'var(--amber-bg, #fffbeb)',
+                      border: '1.5px solid var(--amber-line, #f59e0b)',
+                      borderRadius: '8px',
+                      color: '#92400e',
+                      fontSize: '0.85rem',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      <div>
+                        <strong>📦 Bulk Packaging Not Configured:</strong> Products are bought in bulk (Cartons, Bales, Crates). Set a bulk packaging ratio to enable bulk intake:
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        style={{ borderColor: '#d97706', color: '#b45309', fontWeight: 600 }}
+                        onClick={() => setShowQuickPkg((prev) => !prev)}
+                      >
+                        {showQuickPkg ? '✕ Close Quick Setup' : '+ Configure Bulk Package Ratio'}
+                      </button>
+                    </div>
+                    {showQuickPkg && (
+                      <div
+                        style={{
+                          marginTop: '0.75rem',
+                          paddingTop: '0.75rem',
+                          borderTop: '1px dashed #fcd34d',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.75rem',
+                          flexWrap: 'wrap',
+                        }}
+                      >
+                        <span>1 bulk container unit:</span>
+                        <select
+                          value={quickPkgUnitId}
+                          onChange={(e) => setQuickPkgUnitId(e.target.value)}
+                          style={{ width: 'auto', minWidth: '140px', padding: '0.35rem 0.5rem' }}
+                        >
+                          {units.map((u) => (
+                            <option key={u.id} value={u.id}>
+                              {u.name} ({u.code})
+                            </option>
+                          ))}
+                        </select>
+                        <span>contains:</span>
+                        <input
+                          type="number"
+                          min="1"
+                          step="any"
+                          value={quickPkgFactor}
+                          onChange={(e) => setQuickPkgFactor(e.target.value)}
+                          style={{ width: '80px', padding: '0.35rem 0.5rem' }}
+                          placeholder="e.g. 12"
+                        />
+                        <span>{selectedProduct.baseUnit}</span>
+                        <button type="button" className="btn btn-primary btn-sm" onClick={handleCreateQuickPackaging}>
+                          ✓ Save Bulk Packaging Rule
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <label>
-                  Container / Packaging Unit *
+                  Bulk Packaging Unit (Carton, Bale, Crate) *
                   <select value={unitId} onChange={(e) => setUnitId(e.target.value)} required>
                     {availableUnits.map((u) => (
                       <option key={u.id} value={u.id}>
@@ -479,28 +653,99 @@ export function StockIntake() {
                 </label>
 
                 <label>
-                  Quantity Received ({selectedUnitObj?.label ? selectedUnitObj.label.split(' ')[0] : 'units'}) *
+                  Bulk Packages Received ({selectedUnitObj?.unit || 'Packs'}) *
                   <input
                     type="number"
-                    min="0.001"
-                    step="any"
-                    value={quantity}
-                    onChange={(e) => setQuantity(e.target.value)}
-                    required
+                    min="0"
+                    step="1"
+                    value={bulkQuantity}
+                    onChange={(e) => {
+                      setBulkQuantity(e.target.value);
+                      setQuickTotalSingles('');
+                    }}
+                    placeholder="e.g. 5"
+                    required={singlesAsideNum === 0}
                   />
                 </label>
 
                 <label>
-                  Unit Purchase Price ($ USD) *
+                  Loose Singles Aside (Broken Bulk Remainder)
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={singlesAside}
+                    onChange={(e) => {
+                      setSinglesAside(e.target.value);
+                      setQuickTotalSingles('');
+                    }}
+                    placeholder="e.g. 4 (if loose units)"
+                  />
+                  {factor > 1 && singlesAsideNum >= factor && (
+                    <div style={{ marginTop: '0.3rem', fontSize: '0.78rem', color: 'var(--accent, #0284c7)' }}>
+                      💡 {singlesAsideNum} singles can make {Math.floor(singlesAsideNum / factor)} full {selectedUnitObj?.unit} + {singlesAsideNum % factor} singles aside.{' '}
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        style={{ padding: '0.1rem 0.4rem', fontSize: '0.72rem' }}
+                        onClick={bundleSinglesIntoPacks}
+                      >
+                        Bundle into Pack
+                      </button>
+                    </div>
+                  )}
+                </label>
+
+                <label>
+                  Purchase Price per Bulk Container ($ USD) *
                   <input
                     type="number"
                     min="0"
                     step="0.01"
                     value={unitCost}
                     onChange={(e) => setUnitCost(e.target.value)}
+                    placeholder="e.g. 24.00"
                     required
                   />
+                  {factor > 1 && (
+                    <div style={{ marginTop: '0.25rem', fontSize: '0.78rem', color: 'var(--muted)' }}>
+                      Single unit cost: {formatMoney(trueCostPerSingle)} per {selectedProduct?.baseUnit ?? 'unit'}
+                    </div>
+                  )}
                 </label>
+
+                {/* Quick Auto Break-Bulk Calculator */}
+                {factor > 1 && (
+                  <div
+                    style={{
+                      gridColumn: '1 / -1',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.75rem',
+                      flexWrap: 'wrap',
+                      padding: '0.6rem 0.85rem',
+                      background: 'var(--surface-alt)',
+                      borderRadius: '8px',
+                      fontSize: '0.82rem',
+                    }}
+                  >
+                    <span style={{ fontWeight: 700 }}>⚡ Quick Breakdown Calculator:</span>
+                    <span className="muted">Enter raw total loose count to auto-compute bulk packs and singles aside:</span>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="e.g. 64"
+                      value={quickTotalSingles}
+                      onChange={(e) => handleQuickTotalSinglesChange(e.target.value)}
+                      style={{ width: '90px', padding: '0.25rem 0.5rem', fontSize: '0.82rem' }}
+                    />
+                    {quickTotalSingles && (
+                      <span style={{ color: 'var(--emerald)', fontWeight: 600 }}>
+                        = {bulkQtyNum} {selectedUnitObj?.unit || 'packs'} + {singlesAsideNum} singles aside
+                      </span>
+                    )}
+                  </div>
+                )}
 
                 {/* BATCH NUMBER & EXPIRY DATE (WITH LIVE DAYS CALCULATION) */}
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', gridColumn: 'span 2' }}>
@@ -604,53 +849,66 @@ export function StockIntake() {
                   )}
                 </div>
 
-                {/* Automatic Break-Bulk Calculation Preview */}
+                {/* Automatic Bulk Intake & Broken-Bulk Breakdown Card */}
                 <div
                   style={{
                     gridColumn: '1 / -1',
                     display: 'grid',
-                    gridTemplateColumns: 'repeat(3, 1fr)',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
                     gap: '1rem',
-                    padding: '1rem',
+                    padding: '1.15rem',
                     background: 'var(--surface)',
                     border: '1.5px solid var(--line)',
                     borderRadius: '10px',
                   }}
                 >
                   <div>
-                    <span className="muted" style={{ fontSize: '0.78rem', textTransform: 'uppercase' }}>
-                      Total Invoice Amount
+                    <span className="muted" style={{ fontSize: '0.76rem', textTransform: 'uppercase', fontWeight: 700 }}>
+                      📦 Bulk Packages Received
                     </span>
-                    <div style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--charcoal)', marginTop: '0.2rem' }}>
+                    <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--charcoal)', marginTop: '0.2rem' }}>
+                      {bulkQtyNum} {selectedUnitObj?.unit || 'Packs'}
+                    </div>
+                    <span className="muted" style={{ fontSize: '0.74rem' }}>
+                      {(bulkQtyNum * factor).toLocaleString()} singles in complete packages
+                    </span>
+                  </div>
+
+                  <div style={{ borderLeft: singlesAsideNum > 0 ? '3px solid var(--accent, #0284c7)' : undefined, paddingLeft: singlesAsideNum > 0 ? '0.75rem' : undefined }}>
+                    <span className="muted" style={{ fontSize: '0.76rem', textTransform: 'uppercase', fontWeight: 700 }}>
+                      🧩 Singles Aside (Broken Bulk)
+                    </span>
+                    <div style={{ fontSize: '1.4rem', fontWeight: 800, color: singlesAsideNum > 0 ? 'var(--accent, #0284c7)' : 'var(--muted)', marginTop: '0.2rem' }}>
+                      {singlesAsideNum} {selectedProduct?.baseUnit ?? 'singles'}
+                    </div>
+                    <div style={{ fontSize: '0.74rem', fontWeight: 600, color: singlesAsideNum > 0 ? 'var(--accent, #0284c7)' : 'var(--emerald)', marginTop: '0.1rem' }}>
+                      {singlesAsideNum > 0
+                        ? `⚡ Broken Bulk: ${singlesAsideNum} loose singles not enough for a full ${selectedUnitObj?.unit ?? 'pack'} (${singlesAsideNum}/${factor}). Separated aside for loose shelf retail!`
+                        : `✓ Clean bulk intake (0 singles aside)`}
+                    </div>
+                  </div>
+
+                  <div>
+                    <span className="muted" style={{ fontSize: '0.76rem', textTransform: 'uppercase', fontWeight: 700 }}>
+                      📊 Net Shelf Stock Credited
+                    </span>
+                    <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--emerald)', marginTop: '0.2rem' }}>
+                      +{totalSinglesAdded.toLocaleString()} {selectedProduct?.baseUnit ?? 'units'}
+                    </div>
+                    <span className="muted" style={{ fontSize: '0.74rem' }}>
+                      Ratio: 1 {selectedUnitObj?.unit || 'pack'} = {factor} {selectedProduct?.baseUnit}
+                    </span>
+                  </div>
+
+                  <div>
+                    <span className="muted" style={{ fontSize: '0.76rem', textTransform: 'uppercase', fontWeight: 700 }}>
+                      Total Delivery Purchase Cost
+                    </span>
+                    <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--charcoal)', marginTop: '0.2rem' }}>
                       {formatMoney(totalCost)}
                     </div>
-                    <span className="muted" style={{ fontSize: '0.75rem' }}>
-                      {formatMoney(totalCost, 'ZiG')} · {formatMoney(totalCost, 'ZAR')}
-                    </span>
-                  </div>
-
-                  <div>
-                    <span className="muted" style={{ fontSize: '0.78rem', textTransform: 'uppercase' }}>
-                      Auto Break-Bulk Shelf Units
-                    </span>
-                    <div style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--emerald)', marginTop: '0.2rem' }}>
-                      +{totalSinglesAdded.toLocaleString()} {selectedProduct?.baseUnit ?? 'singles'}
-                    </div>
-                    <span className="muted" style={{ fontSize: '0.75rem' }}>
-                      Ratio: 1 {selectedUnitObj?.label ? selectedUnitObj.label.split(' ')[0] : 'pack'} = {factor}{' '}
-                      {selectedProduct?.baseUnit}
-                    </span>
-                  </div>
-
-                  <div>
-                    <span className="muted" style={{ fontSize: '0.78rem', textTransform: 'uppercase' }}>
-                      True Single Unit Cost
-                    </span>
-                    <div style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--charcoal)', marginTop: '0.2rem' }}>
-                      {formatMoney(trueCostPerSingle)}
-                    </div>
-                    <span className="muted" style={{ fontSize: '0.75rem' }}>
-                      Suggested Retail: {formatMoney(trueCostPerSingle * 1.3)} (30% margin)
+                    <span className="muted" style={{ fontSize: '0.74rem' }}>
+                      Single cost: {formatMoney(trueCostPerSingle)} · Suggested Retail: {formatMoney(trueCostPerSingle * 1.3)}
                     </span>
                   </div>
                 </div>
@@ -746,7 +1004,16 @@ export function StockIntake() {
                         </td>
                         <td>{b.warehouseName}</td>
                         <td className="num">
-                          <strong>{b.inStockQty}</strong> {b.unit}
+                          {(() => {
+                            const matchProd = products.find((p) => p.id === b.productId);
+                            return (
+                              <strong>
+                                {matchProd
+                                  ? formatBulkStock(b.inStockQty, matchProd.packagings, b.unit).text
+                                  : `${b.inStockQty} ${b.unit}`}
+                              </strong>
+                            );
+                          })()}
                         </td>
                         <td>{b.expiryDate}</td>
                         <td style={{ textAlign: 'center' }}>

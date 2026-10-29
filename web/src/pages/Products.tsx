@@ -5,6 +5,7 @@ import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
 import { ProductRetailIcon } from '../components/Icons';
+import { formatBulkStock } from '../bulkStock';
 
 const PAGE_SIZE = 10;
 type ProductTab = 'catalog' | 'categories' | 'packaging';
@@ -64,6 +65,12 @@ export function Products() {
   const [newCategory, setNewCategory] = useState('');
   const [newUnitCode, setNewUnitCode] = useState('');
   const [newUnitName, setNewUnitName] = useState('');
+
+  // Edit Unit of Measure state
+  const [editingUnit, setEditingUnit] = useState<{ id: number; code: string; name: string } | null>(null);
+  const [editUnitCode, setEditUnitCode] = useState('');
+  const [editUnitName, setEditUnitName] = useState('');
+  const [editUnitBusy, setEditUnitBusy] = useState(false);
 
   useEffect(() => {
     if (initialQ) setSearch(initialQ);
@@ -268,6 +275,51 @@ export function Products() {
       setNewUnitCode('');
       setNewUnitName('');
       setMsg(`Unit of measure added with code: ${res.code ?? 'saved'}`);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  function startEditUnit(u: { id: number; code: string; name: string }) {
+    setEditingUnit(u);
+    setEditUnitCode(u.code);
+    setEditUnitName(u.name);
+    setError('');
+  }
+
+  function cancelEditUnit() {
+    setEditingUnit(null);
+    setEditUnitCode('');
+    setEditUnitName('');
+  }
+
+  async function handleSaveEditUnit(e: FormEvent) {
+    e.preventDefault();
+    if (!editingUnit || !editUnitName.trim()) return;
+    setError('');
+    setEditUnitBusy(true);
+    try {
+      await api.updateUnit(editingUnit.id, {
+        code: editUnitCode.trim() || undefined,
+        name: editUnitName.trim(),
+      });
+      setMsg(`Unit "${editUnitName.trim()}" updated successfully.`);
+      setEditingUnit(null);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setEditUnitBusy(false);
+    }
+  }
+
+  async function handleDeletePackaging(productId: number, pkgId: number, label: string) {
+    if (!window.confirm(`Are you sure you want to remove the bulk packaging rule "${label}"?`)) return;
+    setError('');
+    try {
+      await api.deletePackaging(productId, pkgId);
+      setMsg(`Bulk packaging rule "${label}" removed.`);
       await load();
     } catch (err) {
       setError((err as Error).message);
@@ -634,7 +686,15 @@ export function Products() {
                         <div style={{ marginTop: '0.75rem' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: '0.25rem', flexWrap: 'wrap', gap: '0.25rem' }}>
                             <span>
-                              On Shelf: <strong>{p.totalStock} {p.baseUnit}</strong>
+                              On Shelf: <strong>{formatBulkStock(p.totalStock, p.packagings, p.baseUnit).text}</strong>
+                              {(() => {
+                                const b = formatBulkStock(p.totalStock, p.packagings, p.baseUnit);
+                                return b.hasBulkPackaging && b.singles > 0 && b.fullPacks > 0 ? (
+                                  <span className="badge badge-info" style={{ marginLeft: '0.4rem', fontSize: '0.72rem' }}>
+                                    {b.singles} singles aside
+                                  </span>
+                                ) : null;
+                              })()}
                             </span>
                             <span>
                               Buy: <strong>{formatMoney(p.unitCost)}</strong> · Sell:{' '}
@@ -752,8 +812,16 @@ export function Products() {
                               <div className="stock-bar-track">
                                 <div className={`stock-bar-fill ${statusClass}`} style={{ width: `${Math.max(8, pct)}%` }} />
                               </div>
-                              <span className="stock-level-num">
-                                {p.totalStock} / {p.reorderLevel} {p.baseUnit}
+                              <span className="stock-level-num" title={`${p.totalStock} ${p.baseUnit} total`}>
+                                <strong>{formatBulkStock(p.totalStock, p.packagings, p.baseUnit).shortText}</strong> ({p.totalStock} {p.baseUnit})
+                                {(() => {
+                                  const b = formatBulkStock(p.totalStock, p.packagings, p.baseUnit);
+                                  return b.hasBulkPackaging && b.singles > 0 && b.fullPacks > 0 ? (
+                                    <span className="badge badge-info" style={{ marginLeft: '4px', fontSize: '0.7rem' }}>
+                                      {b.singles} singles aside
+                                    </span>
+                                  ) : null;
+                                })()}
                               </span>
                             </div>
                           </td>
@@ -953,6 +1021,44 @@ export function Products() {
               </div>
             </div>
 
+            {/* Edit Unit Modal / Card */}
+            {editingUnit && (
+              <div className="subcard" style={{ marginBottom: '1.25rem', border: '2px solid var(--accent, #0284c7)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h3 style={{ margin: 0 }}>✏️ Edit Unit of Measure: {editingUnit.name}</h3>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={cancelEditUnit}>✕ Close</button>
+                </div>
+                <form onSubmit={handleSaveEditUnit} className="form-grid" style={{ marginTop: '0.75rem' }}>
+                  <label>
+                    Unit Label / Name *
+                    <input
+                      value={editUnitName}
+                      onChange={(e) => setEditUnitName(e.target.value)}
+                      placeholder="e.g. Carton of 24"
+                      required
+                    />
+                  </label>
+                  <label>
+                    Unit Code *
+                    <input
+                      value={editUnitCode}
+                      onChange={(e) => setEditUnitCode(e.target.value)}
+                      placeholder="e.g. CTN-24"
+                      required
+                    />
+                  </label>
+                  <div className="form-actions" style={{ gridColumn: '1 / -1', display: 'flex', gap: '0.5rem' }}>
+                    <button type="submit" className="btn btn-primary" disabled={editUnitBusy}>
+                      {editUnitBusy ? 'Saving…' : '✓ Save Unit Changes'}
+                    </button>
+                    <button type="button" className="btn btn-secondary" onClick={cancelEditUnit}>
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
@@ -960,6 +1066,7 @@ export function Products() {
                     <th>Unit Code</th>
                     <th>Unit Name</th>
                     <th>Registered Products with Bulk Packs</th>
+                    <th className="num">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -970,11 +1077,81 @@ export function Products() {
                         <td><code>{u.code}</code></td>
                         <td><strong>{u.name}</strong></td>
                         <td>{productsWithThisUnit.length} products using this unit</td>
+                        <td className="num">
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => startEditUnit(u)}
+                            title="Edit Unit Name and Code"
+                          >
+                            ✏️ Edit Unit
+                          </button>
+                        </td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
+            </div>
+
+            {/* Active Bulk Packaging Conversion Rules */}
+            <div style={{ marginTop: '2rem' }}>
+              <div className="section-head" style={{ marginBottom: '0.75rem' }}>
+                <div>
+                  <h3>Active Bulk Packaging Conversion Rules</h3>
+                  <p className="muted" style={{ fontSize: '0.84rem', margin: 0 }}>
+                    These conversion rules allow the Stock Intake deck to receive whole cartons, bales, and crates and automatically break bulk into individual shelf units.
+                  </p>
+                </div>
+              </div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Product</th>
+                      <th>Bulk Container Unit</th>
+                      <th>Break-Bulk Ratio (Base Units per Pack)</th>
+                      <th className="num">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const activeRules = products.flatMap((p) =>
+                        p.packagings.map((pkg) => ({
+                          product: p,
+                          pkg,
+                        }))
+                      );
+                      if (activeRules.length === 0) {
+                        return (
+                          <tr>
+                            <td colSpan={4} className="muted" style={{ textAlign: 'center' }}>
+                              No bulk packaging conversions configured yet. Use the form above to link a carton, bale, or crate to a product.
+                            </td>
+                          </tr>
+                        );
+                      }
+                      return activeRules.map(({ product, pkg }) => (
+                        <tr key={`${product.id}-${pkg.id}`}>
+                          <td><strong>{product.name}</strong> (<code>{product.sku}</code>)</td>
+                          <td><span className="badge badge-info">{pkg.unit}</span></td>
+                          <td><strong>1 {pkg.unit}</strong> = <strong>{pkg.factor} {product.baseUnit}</strong></td>
+                          <td className="num">
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              style={{ color: 'var(--danger, #dc2626)' }}
+                              onClick={() => handleDeletePackaging(product.id, pkg.id, `${pkg.unit} for ${product.name}`)}
+                            >
+                              🗑️ Remove Rule
+                            </button>
+                          </td>
+                        </tr>
+                      ));
+                    })()}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}

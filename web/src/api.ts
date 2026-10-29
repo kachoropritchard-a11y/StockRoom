@@ -852,6 +852,8 @@ export const api = {
   units: () => request<{ id: number; code: string; name: string }[]>('/api/units'),
   createUnit: (body: { code?: string; name: string }) =>
     request<{ id: number; code?: string }>('/api/units', { method: 'POST', body: JSON.stringify(body) }),
+  updateUnit: (id: number, body: { code?: string; name?: string }) =>
+    request<{ ok: true }>(`/api/units/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
   suppliers: () => request<{ id: number; name: string; email: string | null; phone: string | null; active: number }[]>('/api/suppliers'),
   createSupplier: (body: { name: string; email?: string; phone?: string }) =>
@@ -899,6 +901,8 @@ export const api = {
   ) => request<{ ok: true }>(`/api/products/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   addPackaging: (productId: number, body: { unitId: number; factor: number }) =>
     request<{ id: number }>(`/api/products/${productId}/packagings`, { method: 'POST', body: JSON.stringify(body) }),
+  deletePackaging: (productId: number, pkgId: number) =>
+    request<{ ok: true }>(`/api/products/${productId}/packagings/${pkgId}`, { method: 'DELETE' }),
 
   balances: (warehouseId?: number) =>
     request<{ items: BalanceItem[] }>(`/api/stock/balances${warehouseId ? `?warehouseId=${warehouseId}` : ''}`),

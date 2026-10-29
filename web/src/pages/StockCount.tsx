@@ -5,6 +5,7 @@ import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs
 import { Spinner } from '../components/Spinner';
 import { useAuth } from '../auth';
 import { useZim } from '../zimContext';
+import { formatBulkStock } from '../bulkStock';
 
 type StockCountSubTab = 'count' | 'history' | 'reorder';
 
@@ -282,7 +283,9 @@ export function StockCount() {
                     System Expected Balance
                   </span>
                   <div style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--charcoal)', marginTop: '0.2rem' }}>
-                    {systemQty.toLocaleString()} {activeProduct?.baseUnit ?? 'units'}
+                    {activeProduct
+                      ? formatBulkStock(systemQty, activeProduct.packagings, activeProduct.baseUnit).text
+                      : `${systemQty.toLocaleString()} units`}
                   </div>
                 </div>
 
@@ -291,7 +294,11 @@ export function StockCount() {
                     Your Physical Count
                   </span>
                   <div style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--charcoal)', marginTop: '0.2rem' }}>
-                    {countedNum !== null ? `${countedNum.toLocaleString()} ${activeProduct?.baseUnit ?? 'units'}` : '—'}
+                    {countedNum !== null
+                      ? activeProduct
+                        ? formatBulkStock(countedNum, activeProduct.packagings, activeProduct.baseUnit).text
+                        : `${countedNum.toLocaleString()} units`
+                      : '—'}
                   </div>
                 </div>
 
@@ -470,7 +477,7 @@ export function StockCount() {
                           <td>{p.departmentName}</td>
                           <td className="num">
                             <strong style={{ color: p.totalStock === 0 ? 'var(--danger)' : 'var(--warning)' }}>
-                              {p.totalStock} {p.baseUnit}
+                              {formatBulkStock(p.totalStock, p.packagings, p.baseUnit).text}
                             </strong>
                           </td>
                           <td className="num">

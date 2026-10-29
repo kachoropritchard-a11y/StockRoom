@@ -16,6 +16,7 @@ import { AccessibleTabs, type TabDefinition } from '../components/AccessibleTabs
 import { QuickTransferModal } from '../components/QuickTransferModal';
 import { Spinner } from '../components/Spinner';
 import { useZim } from '../zimContext';
+import { formatBulkStock } from '../bulkStock';
 import {
   GoodsInIcon,
   QuickAdjustIcon,
@@ -61,6 +62,7 @@ interface StoreZoneItem {
     name: string;
     stock: number;
     unit: string;
+    packagings?: { id: number; unitId: number; unit: string; factor: number }[];
     unitCost: number;
     sellingPrice?: number;
     reorderLevel: number;
@@ -283,6 +285,7 @@ export function Dashboard() {
         name: p.name,
         stock: p.totalStock ?? 0,
         unit: p.baseUnit,
+        packagings: p.packagings,
         unitCost: p.unitCost,
         sellingPrice: p.sellingPrice,
         reorderLevel: p.reorderLevel,
@@ -315,17 +318,21 @@ export function Dashboard() {
       totalValue,
       lowStockCount: lowCount,
       status: skuCount === 0 || totalUnits === 0 ? 'empty' : lowCount > 0 ? 'low_stock' : 'optimal',
-      products: whBals.map((b) => ({
-        id: b.productId,
-        sku: b.sku,
-        name: b.productName,
-        stock: b.quantity,
-        unit: b.unit,
-        unitCost: b.unitCost,
-        sellingPrice: undefined,
-        reorderLevel: b.reorderLevel,
-        isLowStock: b.quantity <= b.reorderLevel && b.reorderLevel > 0,
-      })),
+      products: whBals.map((b) => {
+        const prod = products.find((p) => p.id === b.productId);
+        return {
+          id: b.productId,
+          sku: b.sku,
+          name: b.productName,
+          stock: b.quantity,
+          unit: b.unit,
+          packagings: prod?.packagings,
+          unitCost: b.unitCost,
+          sellingPrice: undefined,
+          reorderLevel: b.reorderLevel,
+          isLowStock: b.quantity <= b.reorderLevel && b.reorderLevel > 0,
+        };
+      }),
     };
   });
 
@@ -759,7 +766,7 @@ export function Dashboard() {
                         <tr key={p.id}>
                           <td><code>{p.sku}</code></td>
                           <td><strong>{p.name}</strong></td>
-                          <td className="num">{p.totalStock ?? 0} {p.baseUnit}</td>
+                          <td className="num">{formatBulkStock(p.totalStock ?? 0, p.packagings, p.baseUnit).text}</td>
                           <td>
                             {(p.totalStock ?? 0) <= 0 ? (
                               <span className="status-pill danger">Out</span>
@@ -1430,7 +1437,7 @@ export function Dashboard() {
                                     {p.name}
                                   </span>
                                   <span style={{ color: p.isLowStock ? 'var(--warning)' : 'var(--emerald)', fontWeight: 700 }}>
-                                    {p.stock} {p.unit}
+                                    {formatBulkStock(p.stock, p.packagings, p.unit).text}
                                   </span>
                                 </div>
                               ))}
@@ -1547,7 +1554,7 @@ export function Dashboard() {
                         <tr key={p.id}>
                           <td><code>{p.sku}</code></td>
                           <td><strong>{p.name}</strong></td>
-                          <td className="num"><strong>{p.stock}</strong> <small>{p.unit}</small></td>
+                          <td className="num"><strong>{formatBulkStock(p.stock, p.packagings, p.unit).text}</strong></td>
                           <td className="num">{formatMoney(p.unitCost)}</td>
                           <td className="num">{p.sellingPrice ? formatMoney(p.sellingPrice) : '—'}</td>
                           <td>
