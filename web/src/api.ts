@@ -1315,4 +1315,154 @@ export const api = {
         currentStock: number;
       }[];
     }>('/api/pos/catalog'),
+
+  // SME Payroll
+  payrollEmployees: () =>
+    request<{
+      employees: {
+        id: number;
+        employeeCode: string;
+        fullName: string;
+        nationalId: string | null;
+        jobTitle: string;
+        departmentName: string;
+        baseSalary: number;
+        currency: 'USD' | 'ZiG';
+        ecocashNumber: string | null;
+        bankName: string | null;
+        bankAccount: string | null;
+        paymentMethod: 'ECOCASH' | 'CASH' | 'BANK';
+        active: boolean;
+        createdAt: string;
+      }[];
+    }>('/api/sme/payroll/employees'),
+
+  savePayrollEmployee: (body: {
+    id?: number;
+    employeeCode?: string;
+    fullName: string;
+    nationalId?: string;
+    jobTitle?: string;
+    departmentName?: string;
+    baseSalary: number;
+    currency?: 'USD' | 'ZiG';
+    ecocashNumber?: string;
+    bankName?: string;
+    bankAccount?: string;
+    paymentMethod?: 'ECOCASH' | 'CASH' | 'BANK';
+    active?: boolean;
+  }) =>
+    request<{ ok: true; id: number; employeeCode?: string }>('/api/sme/payroll/employees', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  payrollRuns: () =>
+    request<{
+      runs: {
+        id: number;
+        periodLabel: string;
+        currency: 'USD' | 'ZiG';
+        totalGross: number;
+        totalDeductions: number;
+        totalNet: number;
+        status: 'DRAFT' | 'APPROVED' | 'PAID';
+        paidAt: string | null;
+        processedByName: string;
+        createdAt: string;
+      }[];
+    }>('/api/sme/payroll/runs'),
+
+  runPayroll: (body: {
+    periodLabel: string;
+    currency?: 'USD' | 'ZiG';
+    autoPostCashbook?: boolean;
+    deductionsPct?: number;
+  }) =>
+    request<{
+      ok: true;
+      runId: number;
+      periodLabel: string;
+      employeeCount: number;
+      totalNet: number;
+      currency: string;
+      status: string;
+    }>('/api/sme/payroll/runs', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  payrollPayslips: (runId: number) =>
+    request<{
+      run: {
+        id: number;
+        periodLabel: string;
+        currency: string;
+        totalNet: number;
+        status: string;
+        paidAt: string | null;
+        processedByName: string;
+      };
+      payslips: {
+        id: number;
+        employeeId: number;
+        employeeName: string;
+        jobTitle: string;
+        currency: string;
+        basePay: number;
+        grossPay: number;
+        deductions: number;
+        netPay: number;
+        paymentMethod: string;
+        contipayReference: string | null;
+        paymentStatus: string;
+        createdAt: string;
+      }[];
+    }>(`/api/sme/payroll/runs/${runId}/payslips`),
+
+  // EasyBook CashBook & Balancing
+  cashbook: () =>
+    request<{
+      entries: {
+        id: number;
+        entryDate: string;
+        entryType: 'INCOME' | 'EXPENSE';
+        category: string;
+        description: string;
+        paymentMethod: 'CASH' | 'ECOCASH' | 'BANK';
+        currency: 'USD' | 'ZiG';
+        amount: number;
+        receiptVoucherRef: string | null;
+        reconciled: boolean;
+        createdByName: string;
+        createdAt: string;
+      }[];
+      summary: Record<string, { income: number; expense: number; balance: number }>;
+    }>('/api/sme/cashbook'),
+
+  postCashbookEntry: (body: {
+    entryDate?: string;
+    entryType: 'INCOME' | 'EXPENSE';
+    category: string;
+    description: string;
+    paymentMethod?: 'CASH' | 'ECOCASH' | 'BANK';
+    currency?: 'USD' | 'ZiG';
+    amount: number;
+    receiptVoucherRef?: string;
+  }) =>
+    request<{
+      ok: true;
+      id: number;
+      receiptVoucherRef: string;
+      amount: number;
+      currency: string;
+    }>('/api/sme/cashbook', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  deleteCashbookEntry: (id: number) =>
+    request<{ ok: true; deletedId: number }>(`/api/sme/cashbook/${id}`, {
+      method: 'DELETE',
+    }),
 };

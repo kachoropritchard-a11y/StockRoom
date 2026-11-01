@@ -147,7 +147,7 @@ describe('role-based routing', () => {
     mockFetch({ id: 2, name: 'Eli', role: 'executive_manager', email: 'e@x.com', organisationId: 1, branchId: null });
     renderAt('/');
     expect((await screen.findAllByText('StockRoom')).length).toBeGreaterThan(0);
-    expect(await screen.findByText('5. Settings & Backups')).toBeTruthy();
+    expect(await screen.findByText('7. Settings & Backups')).toBeTruthy();
   });
 
   it('renders executive governance portal with approval queues, permissions, audit logs, and backups', async () => {

@@ -21,6 +21,8 @@ import { StockIntake } from './pages/StockIntake';
 import { StockCount } from './pages/StockCount';
 import { AuditLogs } from './pages/AuditLogs';
 import { LaybyAndChange } from './pages/LaybyAndChange';
+import { Payroll } from './pages/Payroll';
+import { EasyBook } from './pages/EasyBook';
 import { ZimProvider } from './zimContext';
 
 /** Client-side route guard. The server enforces the same rules; this only provides sensible navigation. */
@@ -66,11 +68,13 @@ export function App() {
           }
         />
 
-        {/* Executive Manager Portal: Executive Overview, Reports & ZIMRA VAT, User Management, Audit Logs & Governance, Settings & Backups */}
+        {/* Executive Manager Portal: Executive Overview, Reports & ZIMRA VAT, EasyBook, Payroll, User Management, Audit Logs & Governance, Settings & Backups */}
         <Route element={<RequireRole roles={['executive_manager']} />}>
           <Route path="/executive" element={<Shell portal="executive" />}>
             <Route index element={<Dashboard />} />
             <Route path="reports" element={<Reports />} />
+            <Route path="easybook" element={<EasyBook />} />
+            <Route path="payroll" element={<Payroll />} />
             <Route path="users" element={<Users />} />
             <Route path="audit" element={<AuditLogs />} />
             <Route path="settings" element={<Organisation />} />
@@ -89,7 +93,7 @@ export function App() {
           </Route>
         </Route>
 
-        {/* Inventory Manager Portal: Dashboard & Overview, Products & Packaging, Stock Intake, Transfers, Departments, Stock Count */}
+        {/* Inventory Manager Portal: Dashboard & Overview, Products & Packaging, Stock Intake, Transfers, Departments, Stock Count, Layby, EasyBook, Payroll */}
         <Route element={<RequireRole roles={['inventory_manager']} />}>
           <Route path="/inventory" element={<Shell portal="inventory" />}>
             <Route index element={<Dashboard />} />
@@ -99,6 +103,8 @@ export function App() {
             <Route path="departments" element={<Warehouses />} />
             <Route path="count" element={<StockCount />} />
             <Route path="layby-and-change" element={<LaybyAndChange />} />
+            <Route path="easybook" element={<EasyBook />} />
+            <Route path="payroll" element={<Payroll />} />
             <Route path="layby" element={<Navigate to="/inventory/layby-and-change" replace />} />
             {/* Backward-compatibility aliases */}
             <Route path="procurement" element={<Navigate to="/inventory/intake" replace />} />

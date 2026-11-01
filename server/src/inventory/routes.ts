@@ -4090,4 +4090,419 @@ export function registerInventoryRoutes(app: FastifyInstance, db: Db, requireAut
       })),
     };
   });
+
+  // ==========================================
+  // SME PAYROLL API
+  // ==========================================
+
+  // List Payroll Employees
+  app.get('/api/sme/payroll/employees', { preHandler: staff }, async (req) => {
+    const orgId = req.user!.organisationId;
+    const rows = db
+      .prepare('SELECT * FROM payroll_employees WHERE organisation_id = ? ORDER BY active DESC, id DESC')
+      .all(orgId) as Record<string, unknown>[];
+
+    return {
+      employees: rows.map((r) => ({
+        id: r.id,
+        employeeCode: r.employee_code,
+        fullName: r.full_name,
+        nationalId: r.national_id,
+        jobTitle: r.job_title,
+        departmentName: r.department_name,
+        baseSalary: fromCents(Number(r.base_salary_cents ?? 0)),
+        currency: r.currency,
+        ecocashNumber: r.ecocash_number,
+        bankName: r.bank_name,
+        bankAccount: r.bank_account,
+        paymentMethod: r.payment_method,
+        active: Boolean(r.active),
+        createdAt: r.created_at,
+      })),
+    };
+  });
+
+  // Create or Update Employee
+  app.post('/api/sme/payroll/employees', { preHandler: staff }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        id: z.number().int().positive().optional(),
+        employeeCode: z.string().trim().max(30).optional(),
+        fullName: z.string().trim().min(2).max(120),
+        nationalId: z.string().trim().max(40).optional(),
+        jobTitle: z.string().trim().min(2).max(80).default('Store Assistant'),
+        departmentName: z.string().trim().min(2).max(80).default('Storefloor'),
+        baseSalary: money.default(150),
+        currency: z.enum(['USD', 'ZiG']).default('USD'),
+        ecocashNumber: z.string().trim().max(30).optional(),
+        bankName: z.string().trim().max(60).optional(),
+        bankAccount: z.string().trim().max(60).optional(),
+        paymentMethod: z.enum(['ECOCASH', 'CASH', 'BANK']).default('ECOCASH'),
+        active: z.boolean().default(true),
+      })
+      .strict()
+      .parse(req.body);
+
+    const salaryCents = toCents(b.baseSalary);
+
+    if (b.id) {
+      db.prepare(
+        `UPDATE payroll_employees
+            SET full_name = ?, national_id = ?, job_title = ?, department_name = ?,
+                base_salary_cents = ?, currency = ?, ecocash_number = ?, bank_name = ?,
+                bank_account = ?, payment_method = ?, active = ?
+          WHERE id = ? AND organisation_id = ?`,
+      ).run(
+        b.fullName,
+        b.nationalId || null,
+        b.jobTitle,
+        b.departmentName,
+        salaryCents,
+        b.currency,
+        b.ecocashNumber || null,
+        b.bankName || null,
+        b.bankAccount || null,
+        b.paymentMethod,
+        b.active ? 1 : 0,
+        b.id,
+        orgId,
+      );
+
+      return reply.code(200).send({ ok: true, id: b.id });
+    }
+
+    const nextCount =
+      ((db.prepare('SELECT COUNT(*) AS c FROM payroll_employees WHERE organisation_id = ?').get(orgId) as { c: number })?.c ?? 0) + 1;
+    const code = b.employeeCode || `EMP-${String(nextCount).padStart(3, '0')}`;
+
+    const res = db
+      .prepare(
+        `INSERT INTO payroll_employees
+          (organisation_id, employee_code, full_name, national_id, job_title, department_name, base_salary_cents, currency, ecocash_number, bank_name, bank_account, payment_method, active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        orgId,
+        code,
+        b.fullName,
+        b.nationalId || null,
+        b.jobTitle,
+        b.departmentName,
+        salaryCents,
+        b.currency,
+        b.ecocashNumber || null,
+        b.bankName || null,
+        b.bankAccount || null,
+        b.paymentMethod,
+        b.active ? 1 : 0,
+      );
+
+    return reply.code(201).send({ ok: true, id: Number(res.lastInsertRowid), employeeCode: code });
+  });
+
+  // Get Payroll Runs & Overview
+  app.get('/api/sme/payroll/runs', { preHandler: staff }, async (req) => {
+    const orgId = req.user!.organisationId;
+    const runs = (db
+      .prepare('SELECT * FROM payroll_runs WHERE organisation_id = ? ORDER BY id DESC')
+      .all(orgId) as Record<string, unknown>[]).map((r) => ({
+      id: r.id,
+      periodLabel: r.period_label,
+      currency: r.currency,
+      totalGross: fromCents(Number(r.total_gross_cents ?? 0)),
+      totalDeductions: fromCents(Number(r.total_deductions_cents ?? 0)),
+      totalNet: fromCents(Number(r.total_net_cents ?? 0)),
+      status: r.status,
+      paidAt: r.paid_at,
+      processedByName: r.processed_by_name,
+      createdAt: r.created_at,
+    }));
+
+    return { runs };
+  });
+
+  // Run or Disburse Payroll (calculates payslips for all active employees and optionally posts an expense to CashBook)
+  app.post('/api/sme/payroll/runs', { preHandler: staff }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        periodLabel: z.string().trim().min(3).max(60), // e.g. "November 2026"
+        currency: z.enum(['USD', 'ZiG']).default('USD'),
+        autoPostCashbook: z.boolean().default(true),
+        deductionsPct: z.number().min(0).max(50).default(0), // optional flat tax / NSSA deduction %
+      })
+      .strict()
+      .parse(req.body);
+
+    const activeEmployees = db
+      .prepare('SELECT * FROM payroll_employees WHERE organisation_id = ? AND active = 1 AND currency = ?')
+      .all(orgId, b.currency) as Record<string, unknown>[];
+
+    if (activeEmployees.length === 0) {
+      return reply.code(400).send({
+        error: 'NO_ACTIVE_EMPLOYEES',
+        message: `No active employees found with ${b.currency} salary currency. Add active employees first.`,
+      });
+    }
+
+    let totalGrossCents = 0;
+    let totalDeductionsCents = 0;
+    let totalNetCents = 0;
+
+    const slipsToCreate = activeEmployees.map((emp) => {
+      const basePay = Number(emp.base_salary_cents ?? 0);
+      const deductions = Math.round(basePay * (b.deductionsPct / 100));
+      const netPay = basePay - deductions;
+
+      totalGrossCents += basePay;
+      totalDeductionsCents += deductions;
+      totalNetCents += netPay;
+
+      return {
+        employeeId: Number(emp.id),
+        employeeName: String(emp.full_name),
+        jobTitle: String(emp.job_title),
+        basePay,
+        deductions,
+        netPay,
+        paymentMethod: String(emp.payment_method || 'ECOCASH'),
+        ecocashNumber: emp.ecocash_number ? String(emp.ecocash_number) : null,
+      };
+    });
+
+    const now = new Date().toISOString();
+    const runRes = db
+      .prepare(
+        `INSERT INTO payroll_runs
+          (organisation_id, period_label, currency, total_gross_cents, total_deductions_cents, total_net_cents, status, paid_at, processed_by_name)
+         VALUES (?, ?, ?, ?, ?, ?, 'PAID', ?, ?)`,
+      )
+      .run(
+        orgId,
+        b.periodLabel,
+        b.currency,
+        totalGrossCents,
+        totalDeductionsCents,
+        totalNetCents,
+        now,
+        req.user!.name,
+      );
+
+    const runId = Number(runRes.lastInsertRowid);
+
+    const insertSlip = db.prepare(
+      `INSERT INTO payroll_payslips
+        (payroll_run_id, employee_id, employee_name, job_title, currency, base_pay_cents, allowances_cents, gross_pay_cents, deductions_cents, net_pay_cents, payment_method, contipay_reference, payment_status)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 'PAID')`,
+    );
+
+    for (const s of slipsToCreate) {
+      const contipayRef =
+        s.paymentMethod === 'ECOCASH'
+          ? `CP-PAY-${Date.now().toString().slice(-6)}${Math.floor(100 + Math.random() * 900)}`
+          : null;
+      insertSlip.run(
+        runId,
+        s.employeeId,
+        s.employeeName,
+        s.jobTitle,
+        b.currency,
+        s.basePay,
+        s.basePay,
+        s.deductions,
+        s.netPay,
+        s.paymentMethod,
+        contipayRef,
+      );
+    }
+
+    // Auto-record in EasyBook CashBook as an expense
+    if (b.autoPostCashbook) {
+      db.prepare(
+        `INSERT INTO cashbook_entries
+          (organisation_id, entry_date, entry_type, category, description, payment_method, currency, amount_cents, receipt_voucher_ref, reconciled, created_by_name)
+         VALUES (?, date('now'), 'EXPENSE', 'Salaries & Wages', ?, 'ECOCASH', ?, ?, ?, 1, ?)`,
+      ).run(
+        orgId,
+        `Staff Payroll Disbursal - ${b.periodLabel} (${slipsToCreate.length} Employees)`,
+        b.currency,
+        totalNetCents,
+        `PAYROLL-RUN-${runId}`,
+        req.user!.name,
+      );
+    }
+
+    return reply.code(201).send({
+      ok: true,
+      runId,
+      periodLabel: b.periodLabel,
+      employeeCount: slipsToCreate.length,
+      totalNet: fromCents(totalNetCents),
+      currency: b.currency,
+      status: 'PAID',
+    });
+  });
+
+  // View Payslips for a run
+  app.get('/api/sme/payroll/runs/:id/payslips', { preHandler: staff }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const runId = Number((req.params as { id: string }).id);
+
+    const run = db.prepare('SELECT * FROM payroll_runs WHERE id = ? AND organisation_id = ?').get(runId, orgId) as
+      | Record<string, unknown>
+      | undefined;
+    if (!run) return reply.code(404).send({ error: 'NOT_FOUND', message: 'Payroll run not found' });
+
+    const slips = (db
+      .prepare('SELECT * FROM payroll_payslips WHERE payroll_run_id = ? ORDER BY id ASC')
+      .all(runId) as Record<string, unknown>[]).map((s) => ({
+      id: s.id,
+      employeeId: s.employee_id,
+      employeeName: s.employee_name,
+      jobTitle: s.job_title,
+      currency: s.currency,
+      basePay: fromCents(Number(s.base_pay_cents ?? 0)),
+      grossPay: fromCents(Number(s.gross_pay_cents ?? 0)),
+      deductions: fromCents(Number(s.deductions_cents ?? 0)),
+      netPay: fromCents(Number(s.net_pay_cents ?? 0)),
+      paymentMethod: s.payment_method,
+      contipayReference: s.contipay_reference,
+      paymentStatus: s.payment_status,
+      createdAt: s.created_at,
+    }));
+
+    return {
+      run: {
+        id: run.id,
+        periodLabel: run.period_label,
+        currency: run.currency,
+        totalNet: fromCents(Number(run.total_net_cents ?? 0)),
+        status: run.status,
+        paidAt: run.paid_at,
+        processedByName: run.processed_by_name,
+      },
+      payslips: slips,
+    };
+  });
+
+  // ==========================================
+  // EASYBOOK BALANCING (CASHBOOK & LEDGER) API
+  // ==========================================
+
+  // Get CashBook Summary & Recent Entries
+  app.get('/api/sme/cashbook', { preHandler: staff }, async (req) => {
+    const orgId = req.user!.organisationId;
+
+    const entries = (db
+      .prepare('SELECT * FROM cashbook_entries WHERE organisation_id = ? ORDER BY entry_date DESC, id DESC LIMIT 150')
+      .all(orgId) as Record<string, unknown>[]).map((r) => ({
+      id: r.id,
+      entryDate: r.entry_date,
+      entryType: r.entry_type,
+      category: r.category,
+      description: r.description,
+      paymentMethod: r.payment_method,
+      currency: r.currency,
+      amount: fromCents(Number(r.amount_cents ?? 0)),
+      receiptVoucherRef: r.receipt_voucher_ref,
+      reconciled: Boolean(r.reconciled),
+      createdByName: r.created_by_name,
+      createdAt: r.created_at,
+    }));
+
+    // Calculate aggregated totals
+    const totals = db
+      .prepare(
+        `SELECT
+            currency,
+            SUM(CASE WHEN entry_type = 'INCOME' THEN amount_cents ELSE 0 END) AS income_cents,
+            SUM(CASE WHEN entry_type = 'EXPENSE' THEN amount_cents ELSE 0 END) AS expense_cents
+         FROM cashbook_entries
+         WHERE organisation_id = ?
+         GROUP BY currency`,
+      )
+      .all(orgId) as { currency: string; income_cents: number; expense_cents: number }[];
+
+    const summary: Record<string, { income: number; expense: number; balance: number }> = {
+      USD: { income: 0, expense: 0, balance: 0 },
+      ZiG: { income: 0, expense: 0, balance: 0 },
+    };
+
+    for (const t of totals) {
+      const cur = t.currency || 'USD';
+      const inc = fromCents(t.income_cents || 0);
+      const exp = fromCents(t.expense_cents || 0);
+      summary[cur] = {
+        income: inc,
+        expense: exp,
+        balance: Math.round((inc - exp) * 100) / 100,
+      };
+    }
+
+    return {
+      entries,
+      summary,
+    };
+  });
+
+  // Post an EasyBook CashBook Entry (Income or Expense)
+  app.post('/api/sme/cashbook', { preHandler: staff }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const b = z
+      .object({
+        entryDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/).default(() => new Date().toISOString().slice(0, 10)),
+        entryType: z.enum(['INCOME', 'EXPENSE']),
+        category: z.string().trim().min(2).max(80),
+        description: z.string().trim().min(2).max(200),
+        paymentMethod: z.enum(['CASH', 'ECOCASH', 'BANK']).default('CASH'),
+        currency: z.enum(['USD', 'ZiG']).default('USD'),
+        amount: money.positive(),
+        receiptVoucherRef: z.string().trim().max(80).optional(),
+      })
+      .strict()
+      .parse(req.body);
+
+    const ref = b.receiptVoucherRef || `BK-${b.entryType[0]}-${Date.now().toString().slice(-6)}`;
+
+    const res = db
+      .prepare(
+        `INSERT INTO cashbook_entries
+          (organisation_id, entry_date, entry_type, category, description, payment_method, currency, amount_cents, receipt_voucher_ref, reconciled, created_by_name)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+      )
+      .run(
+        orgId,
+        b.entryDate,
+        b.entryType,
+        b.category,
+        b.description,
+        b.paymentMethod,
+        b.currency,
+        toCents(b.amount),
+        ref,
+        req.user!.name,
+      );
+
+    return reply.code(201).send({
+      ok: true,
+      id: Number(res.lastInsertRowid),
+      receiptVoucherRef: ref,
+      amount: b.amount,
+      currency: b.currency,
+    });
+  });
+
+  // Delete / Reverse a CashBook Entry
+  app.delete('/api/sme/cashbook/:id', { preHandler: exec }, async (req, reply) => {
+    const orgId = req.user!.organisationId;
+    const entryId = Number((req.params as { id: string }).id);
+
+    const deleted = db.prepare('DELETE FROM cashbook_entries WHERE id = ? AND organisation_id = ?').run(entryId, orgId);
+    if (deleted.changes === 0) {
+      return reply.code(404).send({ error: 'NOT_FOUND', message: 'Cashbook entry not found' });
+    }
+
+    return reply.code(200).send({ ok: true, deletedId: entryId });
+  });
 }
